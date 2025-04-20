@@ -551,17 +551,23 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                     position_factor = position_factors.iloc[idx]
                     break
             
-            # Calculate position size with position factor (allowing up to 4x leverage)
-            position_size = floor(capital * position_factor * 4 / open_price)
+            # Calculate position size with position factor
+            if use_volatility_sizing:
+                # For volatility-based sizing, allow up to 4x leverage
+                position_size = floor(capital * position_factor * 4 / open_price)
+                actual_leverage = position_factor * 4
+            else:
+                # For VIX-based sizing, use the position factor directly (already includes desired leverage)
+                position_size = floor(capital * position_factor / open_price)
+                actual_leverage = position_factor
             
             # Always print position factor for debugging
             sizing_method = "volatility-based" if use_volatility_sizing else "VIX-based"
-            actual_leverage = position_factor * 4
             print(f"  Date: {date_str}, Position factor: {position_factor:.2f}x, Actual leverage: {actual_leverage:.2f}x ({sizing_method})")
         else:
-            # Calculate position size (fixed, with 4x leverage)
-            position_size = floor(capital * 4 / open_price)
-            print(f"  Date: {date_str}, Using fixed 4x leverage")
+            # Calculate position size (fixed, with 1x leverage)
+            position_size = floor(capital / open_price)
+            print(f"  Date: {date_str}, Using fixed 1x leverage")
         
         # Skip days with insufficient capital
         if position_size <= 0:
@@ -949,16 +955,16 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
         initial_capital=100000, 
-        lookback_days=14,  # 使用90天的回溯期
-        # start_date=date(2022, 1, 1), 
-        # end_date=date(2024, 1, 1),
-        start_date=date(2010, 6, 25), 
-        end_date=date(2025, 1, 8),
+        lookback_days=90,  # 使用90天的回溯期
+        start_date=date(2022, 1, 1), 
+        end_date=date(2024, 1, 1),
+        # start_date=date(2010, 10, 13), 
+        # end_date=date(2025, 1, 8),
         # random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots',  # 图表保存目录
-        use_dynamic_leverage=False,  # 使用VIX动态杠杆
-        use_volatility_sizing=True,  # 使用波动率动态杠杆
+        use_dynamic_leverage=True,  # 使用VIX动态杠杆
+        use_volatility_sizing=False,  # 使用波动率动态杠杆
         volatility_target=0.02  # 目标日波动率为2%
     )
     
