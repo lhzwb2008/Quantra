@@ -507,7 +507,153 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
     # Create trades DataFrame
     trades_df = pd.DataFrame(all_trades)
     
-    return daily_df, monthly, trades_df
+    # 计算策略性能指标
+    print("\n计算策略性能指标...")
+    metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital)
+    
+    # 打印简化的性能指标
+    print("\n策略性能指标:")
+    print(f"Size: 100%")
+    print(f"Total Return: {metrics['total_return']*100:.1f}%")
+    print(f"IRR: {metrics['irr']*100:.1f}%")
+    print(f"Vol: {metrics['volatility']*100:.1f}%")
+    print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    print(f"Hit Ratio: {metrics['hit_ratio']*100:.1f}%")
+    print(f"MDD: {metrics['mdd']*100:.1f}%")
+    print(f"Alpha: {metrics['alpha']*100:.1f}%")
+    print(f"Beta: {metrics['beta']:.2f}")
+    
+    return daily_df, monthly, trades_df, metrics
+
+def calculate_performance_metrics(daily_df, trades_df, initial_capital, 
+                                 risk_free_rate=0.02, spy_return=0.072, 
+                                 spy_volatility=0.202, correlation=-0.03,
+                                 trading_days_per_year=252):
+    """
+    计算策略的性能指标
+    
+    参数:
+        daily_df: 包含每日回测结果的DataFrame
+        trades_df: 包含所有交易的DataFrame
+        initial_capital: 初始资金
+        risk_free_rate: 无风险利率，默认为2%
+        spy_return: SPY基准年化收益率，默认为7.2%
+        spy_volatility: SPY基准年化波动率，默认为20.2%
+        correlation: 策略与市场的相关性，默认为-0.03
+        trading_days_per_year: 一年的交易日数量，默认为252
+        
+    返回:
+        包含各种性能指标的字典
+    """
+    metrics = {}
+    
+    # 确保daily_df有数据
+    if len(daily_df) == 0:
+        print("警告: 没有足够的数据来计算性能指标")
+        # 返回默认值
+        return {
+            'total_return': 0, 'irr': 0, 'volatility': 0, 'sharpe_ratio': 0,
+            'hit_ratio': 0, 'mdd': 0, 'alpha': 0, 'beta': 0
+        }
+    
+    # 1. 总回报率 (Total Return)
+    final_capital = daily_df['capital'].iloc[-1]
+    metrics['total_return'] = final_capital / initial_capital - 1
+    
+    # 2. 年化收益率 (IRR - Internal Rate of Return)
+    # 获取回测的开始和结束日期
+    start_date = daily_df.index[0]
+    end_date = daily_df.index[-1]
+    # 计算实际年数（考虑实际日历日而不仅仅是交易日）
+    years = (end_date - start_date).days / 365.25
+    # 如果时间跨度太短，使用交易日计算
+    if years < 0.1:  # 少于约36天
+        trading_days = len(daily_df)
+        years = trading_days / trading_days_per_year
+    
+    # 计算年化收益率 (CAGR - Compound Annual Growth Rate)
+    if years > 0:
+        metrics['irr'] = (1 + metrics['total_return']) ** (1 / years) - 1
+    else:
+        metrics['irr'] = 0
+    
+    # 3. 波动率 (Vol - Volatility)
+    # 计算日收益率的标准差，然后年化
+    daily_returns = daily_df['daily_return']
+    # 移除异常值（如果有）
+    daily_returns = daily_returns[daily_returns.between(daily_returns.quantile(0.001), 
+                                                      daily_returns.quantile(0.999))]
+    metrics['volatility'] = daily_returns.std() * np.sqrt(trading_days_per_year)
+    
+    # 4. 夏普比率 (Sharpe Ratio)
+    if metrics['volatility'] > 0:
+        metrics['sharpe_ratio'] = (metrics['irr'] - risk_free_rate) / metrics['volatility']
+    else:
+        metrics['sharpe_ratio'] = 0
+    
+    # 5. 胜率 (Hit Ratio)
+    if len(trades_df) > 0:
+        winning_trades = trades_df[trades_df['pnl'] > 0]
+        metrics['hit_ratio'] = len(winning_trades) / len(trades_df)
+        
+        # 计算平均盈利和平均亏损
+        avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0
+        losing_trades = trades_df[trades_df['pnl'] <= 0]
+        avg_loss = losing_trades['pnl'].mean() if len(losing_trades) > 0 else 0
+        
+        # 计算盈亏比
+        metrics['profit_loss_ratio'] = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+    else:
+        metrics['hit_ratio'] = 0
+        metrics['profit_loss_ratio'] = 0
+    
+    # 6. 最大回撤 (MDD - Maximum Drawdown)
+    # 计算每日资金的累计最大值
+    daily_df['peak'] = daily_df['capital'].cummax()
+    # 计算每日回撤
+    daily_df['drawdown'] = (daily_df['capital'] - daily_df['peak']) / daily_df['peak']
+    # 最大回撤
+    metrics['mdd'] = daily_df['drawdown'].min() * -1
+    
+    # 计算回撤持续时间
+    # 找到每个回撤开始的点
+    drawdown_begins = (daily_df['peak'] != daily_df['peak'].shift(1)) & (daily_df['peak'] != daily_df['capital'])
+    # 找到每个回撤结束的点（资金达到新高）
+    drawdown_ends = daily_df['capital'] == daily_df['peak']
+    
+    # 计算最长回撤持续时间（交易日）
+    if drawdown_begins.any() and drawdown_ends.any():
+        begin_dates = daily_df.index[drawdown_begins]
+        end_dates = daily_df.index[drawdown_ends]
+        
+        max_duration = 0
+        for begin_date in begin_dates:
+            # 找到这个回撤之后的第一个结束点
+            end_date = end_dates[end_dates > begin_date]
+            if len(end_date) > 0:
+                duration = (end_date.min() - begin_date).days
+                max_duration = max(max_duration, duration)
+        
+        metrics['max_drawdown_duration'] = max_duration
+    else:
+        metrics['max_drawdown_duration'] = 0
+    
+    # 7 & 8. Alpha和Beta
+    # 这需要市场基准数据，这里我们使用提供的SPY参数
+    
+    # 计算Beta
+    metrics['beta'] = correlation * (metrics['volatility'] / spy_volatility)
+    
+    # 计算Alpha (使用CAPM公式)
+    metrics['alpha'] = metrics['irr'] - (risk_free_rate + metrics['beta'] * (spy_return - risk_free_rate))
+    
+    # 计算Calmar比率 (年化收益率/最大回撤)
+    if metrics['mdd'] > 0:
+        metrics['calmar_ratio'] = metrics['irr'] / metrics['mdd']
+    else:
+        metrics['calmar_ratio'] = float('inf')  # 如果没有回撤，设为无穷大
+    
+    return metrics
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='trading_plots'):
     """
@@ -535,13 +681,13 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='tr
 # 示例用法
 if __name__ == "__main__":
     # 运行回测，随机生成5个交易日的图表
-    daily_results, monthly_results, trades = run_backtest(
+    daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
         initial_capital=100000, 
         lookback_days=14, 
         start_date=date(2007, 5, 1), 
-        end_date=date(2024, 4, 1),
-        # random_plots=5,  # 随机生成5个交易日的图表
-        plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
+        end_date=date(2024, 4, 30),
+        random_plots=5,  # 随机生成5个交易日的图表
+        # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots'  # 图表保存目录
     )
