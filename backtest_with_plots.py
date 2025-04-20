@@ -3,9 +3,14 @@ import numpy as np
 from math import floor
 import matplotlib.pyplot as plt
 from datetime import datetime, time, timedelta, date
+import random
+import os
+from plot_trading_day import plot_trading_day
 
-# Copy the helper functions from the notebook
 def calculate_vwap_incrementally(prices, volumes):
+    """
+    Calculate VWAP incrementally for a series of prices and volumes
+    """
     cum_vol = 0
     cum_pv = 0
     vwaps = []
@@ -24,6 +29,9 @@ def calculate_vwap_incrementally(prices, volumes):
     return vwaps
 
 def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
+    """
+    Simulate trading for a single day using curr.band + VWAP strategy
+    """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
     trailing_stop = np.nan
@@ -178,7 +186,27 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
     
     return trades
 
-def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date=None, end_date=None, debug_days=None):
+def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date=None, end_date=None, 
+                debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots'):
+    """
+    Run the backtest on SPY data
+    
+    Parameters:
+        data_path: Path to the SPY minute data CSV file
+        initial_capital: Initial capital for the backtest
+        lookback_days: Number of days to use for calculating the Noise Area
+        start_date: Start date for the backtest (datetime.date)
+        end_date: End date for the backtest (datetime.date)
+        debug_days: List of dates to print detailed debug information for
+        plot_days: List of specific dates to plot
+        random_plots: Number of random trading days to plot (0 for none)
+        plots_dir: Directory to save plots in
+        
+    Returns:
+        DataFrame with daily results
+        DataFrame with monthly results
+        DataFrame with trades
+    """
     # Load and process data
     print(f"Loading data from {data_path}...")
     spy_df = pd.read_csv(data_path, parse_dates=['DateTime'])
@@ -197,19 +225,46 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
         spy_df = spy_df[spy_df['Date'] <= end_date]
         print(f"Filtered data to end at {end_date}")
     
-    # Get previous day's close for each day
-    spy_df['prev_close'] = spy_df.groupby('Date')['Close'].transform('last').shift(1)
+    # Use DayOpen and DayClose from the filtered data
+    # These represent the 9:30 AM open price and 4:00 PM close price
+    spy_df['prev_close'] = spy_df.groupby('Date')['DayClose'].transform('first').shift(1)
     
-    # Calculate daily open price (first price of the day)
-    spy_df['day_open'] = spy_df.groupby('Date')['Open'].transform('first')
+    # Use the 9:30 AM price as the opening price for the day
+    spy_df['day_open'] = spy_df.groupby('Date')['DayOpen'].transform('first')
     
-    # Calculate Open_day as per the paper: max/min of yesterday's close and today's open
-    # For upper bound: max(Open, prev_close)
-    # For lower bound: min(Open, prev_close)
-    spy_df['upper_ref'] = spy_df.apply(lambda row: max(row['day_open'], row['prev_close']) 
-                                      if not pd.isna(row['prev_close']) else row['day_open'], axis=1)
-    spy_df['lower_ref'] = spy_df.apply(lambda row: min(row['day_open'], row['prev_close']) 
-                                      if not pd.isna(row['prev_close']) else row['day_open'], axis=1)
+    # 为每个交易日计算一次参考价格，并将其应用于该日的所有时间点
+    # 这确保了整个交易日使用相同的参考价格
+    unique_dates = spy_df['Date'].unique()
+    
+    # 创建临时DataFrame来存储每个日期的参考价格
+    date_refs = []
+    for d in unique_dates:
+        day_data = spy_df[spy_df['Date'] == d].iloc[0]  # 获取该日第一行数据
+        day_open = day_data['day_open']
+        prev_close = day_data['prev_close']
+        
+        # 计算该日的参考价格
+        if not pd.isna(prev_close):
+            upper_ref = max(day_open, prev_close)
+            lower_ref = min(day_open, prev_close)
+        else:
+            upper_ref = day_open
+            lower_ref = day_open
+            
+        date_refs.append({
+            'Date': d,
+            'upper_ref': upper_ref,
+            'lower_ref': lower_ref
+        })
+    
+    # 创建日期参考价格DataFrame
+    date_refs_df = pd.DataFrame(date_refs)
+    
+    # 将参考价格合并回主DataFrame
+    spy_df = spy_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
+    spy_df = pd.merge(spy_df, date_refs_df, on='Date', how='left')
+    
+    print("已为每个交易日计算固定的参考价格")
     
     # Calculate return from open for each minute (using day_open for consistency)
     spy_df['ret'] = spy_df['Close'] / spy_df['day_open'] - 1
@@ -227,16 +282,29 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
     # Merge sigma back to the main dataframe
     spy_df = pd.merge(spy_df, sigma, on=['Date', 'Time'], how='left')
     
-    # Fill NaN values in sigma with a reasonable default
-    spy_df['sigma'] = spy_df['sigma'].fillna(0.001)  # 0.1% default
+    # 检查每个交易日是否有足够的sigma数据
+    # 创建一个标记，记录哪些日期的sigma数据不完整
+    incomplete_sigma_dates = set()
+    for date in spy_df['Date'].unique():
+        day_data = spy_df[spy_df['Date'] == date]
+        if day_data['sigma'].isna().any():
+            incomplete_sigma_dates.add(date)
+            print(f"警告: {date} 的sigma数据不完整，将跳过该交易日")
+    
+    # 移除sigma数据不完整的日期
+    spy_df = spy_df[~spy_df['Date'].isin(incomplete_sigma_dates)]
+    
+    # 确保所有剩余的sigma值都有有效数据（不应该有NaN值了）
+    if spy_df['sigma'].isna().any():
+        print(f"警告: 仍有{spy_df['sigma'].isna().sum()}个缺失的sigma值")
     
     # Calculate upper and lower boundaries of the Noise Area using the correct reference prices
     spy_df['UpperBound'] = spy_df['upper_ref'] * (1 + spy_df['sigma'])
     spy_df['LowerBound'] = spy_df['lower_ref'] * (1 - spy_df['sigma'])
     
-    # Define allowed trading times (semi-hourly intervals)
+    # Define allowed trading times (semi-hourly intervals starting from 10:00)
     allowed_times = [
-        '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30',
+        '10:00', '10:30', '11:00', '11:30', '12:00', '12:30',
         '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00'
     ]
     
@@ -248,6 +316,43 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
     # Run the backtest day by day
     print("Running backtest...")
     unique_dates = sorted(spy_df['Date'].unique())
+    
+    # 如果指定了随机生成图表的数量，随机选择交易日
+    days_with_trades = []
+    if random_plots > 0:
+        # 先运行回测，记录有交易的日期
+        for trade_date in unique_dates:
+            day_spy = spy_df[spy_df['Date'] == trade_date].copy()
+            if len(day_spy) < 10:  # 跳过数据不足的日期
+                continue
+                
+            prev_close = day_spy['prev_close'].iloc[0] if not pd.isna(day_spy['prev_close'].iloc[0]) else None
+            if prev_close is None:
+                continue
+                
+            # 模拟当天交易
+            trades = simulate_day(day_spy, prev_close, allowed_times, 100, debug=False)
+            if trades:  # 如果有交易
+                days_with_trades.append(trade_date)
+        
+        # 如果有交易的日期少于请求的随机图表数量，调整随机图表数量
+        random_plots = min(random_plots, len(days_with_trades))
+        # 随机选择日期
+        if random_plots > 0:
+            random_plot_days = random.sample(days_with_trades, random_plots)
+        else:
+            random_plot_days = []
+    else:
+        random_plot_days = []
+    
+    # 合并指定的绘图日期和随机选择的日期
+    if plot_days is None:
+        plot_days = []
+    all_plot_days = list(set(plot_days + random_plot_days))
+    
+    # 确保绘图目录存在
+    if all_plot_days and plots_dir:
+        os.makedirs(plots_dir, exist_ok=True)
     
     for i, trade_date in enumerate(unique_dates):
         # Get data for the current day
@@ -288,6 +393,61 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
         
         # Simulate trading for the day
         trades = simulate_day(day_spy, prev_close, allowed_times, position_size, debug=debug)
+        
+        # 检查是否需要为这一天生成图表
+        if trade_date in all_plot_days:
+            # 打印出计算时的参数
+            print(f"\nPlotting day {trade_date}:")
+            print(f"  Previous close: {prev_close:.2f}")
+            print(f"  Day open: {open_price:.2f}")
+            print(f"  Upper reference: {day_spy['upper_ref'].iloc[0]:.2f}")
+            print(f"  Lower reference: {day_spy['lower_ref'].iloc[0]:.2f}")
+            
+            # 打印前五分钟的sigma和各条线的值
+            print("\n前五分钟的数据:")
+            print("  时间    |   价格   |   sigma  |  上界线  |  下界线  |   VWAP   ")
+            print("---------|----------|----------|----------|----------|----------")
+            
+            # 获取前五分钟的数据（或者所有数据，如果不足五分钟）
+            first_minutes = min(5, len(day_spy))
+            
+            # 计算VWAP
+            prices = []
+            volumes = []
+            vwaps = []
+            
+            for i in range(first_minutes):
+                row = day_spy.iloc[i]
+                time_str = row['Time']
+                price = row['Close']
+                sigma = row['sigma']
+                upper = row['UpperBound']
+                lower = row['LowerBound']
+                
+                # 更新VWAP计算
+                prices.append(price)
+                volumes.append(row['Volume'])
+                vwap = calculate_vwap_incrementally(prices, volumes)[-1]
+                vwaps.append(vwap)
+                
+                print(f"  {time_str} | {price:8.2f} | {sigma:8.6f} | {upper:8.2f} | {lower:8.2f} | {vwap:8.2f}")
+            
+            # 为当天的交易生成图表
+            plot_path = os.path.join(plots_dir, f"trade_visualization_{trade_date}")
+            
+            # 添加交易类型到文件名
+            sides = [trade['side'] for trade in trades]
+            if 'Long' in sides and 'Short' not in sides:
+                plot_path += "_Long.png"
+            elif 'Short' in sides and 'Long' not in sides:
+                plot_path += "_Short.png"
+            elif 'Long' in sides and 'Short' in sides:
+                plot_path += "_Mixed.png"
+            else:
+                plot_path += ".png"  # 没有交易
+                
+            # 生成并保存图表
+            plot_trading_day(day_spy, trades, save_path=plot_path)
         
         # Calculate daily P&L
         day_pnl = sum(trade['pnl'] for trade in trades)
@@ -349,102 +509,39 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
     
     return daily_df, monthly, trades_df
 
-# Main execution
+def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='trading_plots'):
+    """
+    为指定的日期生成交易图表
+    
+    参数:
+        data_path: SPY分钟数据CSV文件的路径
+        dates_to_plot: 要绘制的日期列表 (datetime.date 对象列表)
+        lookback_days: 用于计算Noise Area的天数
+        plots_dir: 保存图表的目录
+    """
+    # 运行回测，指定要绘制的日期
+    _, _, _ = run_backtest(
+        data_path=data_path,
+        lookback_days=lookback_days,
+        plot_days=dates_to_plot,
+        plots_dir=plots_dir
+    )
+    
+    print(f"\n已为以下日期生成图表:")
+    for d in dates_to_plot:
+        print(f"- {d}")
+    print(f"图表保存在 '{plots_dir}' 目录中")
+
+# 示例用法
 if __name__ == "__main__":
-    # Focus on January 20, 2022 for detailed debugging
-    debug_date = date(2022, 1, 20)
-    
-    print(f"Running detailed debug for {debug_date}...")
-    debug_results, debug_monthly, debug_trades = run_backtest(
-        "spy_all.csv", 
+    # 运行回测，随机生成5个交易日的图表
+    daily_results, monthly_results, trades = run_backtest(
+        'spy_market_hours.csv', 
         initial_capital=100000, 
         lookback_days=14, 
-        start_date=debug_date, 
-        end_date=debug_date,
-        debug_days=[debug_date]
+        start_date=date(2007, 5, 1), 
+        end_date=date(2024, 4, 1),
+        # random_plots=5,  # 随机生成5个交易日的图表
+        plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
+        plots_dir='trading_plots'  # 图表保存目录
     )
-    
-    # Also run for the full 2022 year
-    start_date_full = date(2022, 1, 1)
-    end_date_full = date(2022, 12, 31)
-    
-    print("\nRunning backtest for 2022 to debug win rate...")
-    daily_results_full, monthly_results_full, trades_full = run_backtest(
-        "spy_all.csv", 
-        initial_capital=100000, 
-        lookback_days=14, 
-        start_date=start_date_full, 
-        end_date=end_date_full
-    )
-    
-    # Calculate more detailed trade statistics
-    if len(trades_full) > 0:
-        # Calculate win rate
-        trades_full["is_win"] = trades_full["pnl"] > 0
-        win_rate = trades_full["is_win"].mean() * 100
-        
-        # Calculate average win and loss
-        avg_win = trades_full[trades_full["pnl"] > 0]["pnl"].mean()
-        avg_loss = trades_full[trades_full["pnl"] < 0]["pnl"].mean()
-        
-        # Calculate win/loss ratio
-        win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
-        
-        # Calculate profit factor
-        total_wins = trades_full[trades_full["pnl"] > 0]["pnl"].sum()
-        total_losses = abs(trades_full[trades_full["pnl"] < 0]["pnl"].sum())
-        profit_factor = total_wins / total_losses if total_losses != 0 else float("inf")
-        
-        # Calculate by side (long vs short)
-        long_trades = trades_full[trades_full["side"] == "Long"]
-        short_trades = trades_full[trades_full["side"] == "Short"]
-        
-        long_win_rate = long_trades["is_win"].mean() * 100 if len(long_trades) > 0 else 0
-        short_win_rate = short_trades["is_win"].mean() * 100 if len(short_trades) > 0 else 0
-        
-        # Calculate by exit reason
-        stop_loss_trades = trades_full[trades_full["exit_reason"] == "Stop Loss"]
-        market_close_trades = trades_full[trades_full["exit_reason"] == "Market Close"]
-        
-        stop_loss_win_rate = stop_loss_trades["is_win"].mean() * 100 if len(stop_loss_trades) > 0 else 0
-        market_close_win_rate = market_close_trades["is_win"].mean() * 100 if len(market_close_trades) > 0 else 0
-        
-        # Calculate by year
-        trades_full["year"] = trades_full["entry_time"].dt.year
-        yearly_stats = trades_full.groupby("year").apply(
-            lambda x: pd.Series({
-                "trades": len(x),
-                "win_rate": x["is_win"].mean() * 100,
-                "avg_pnl": x["pnl"].mean(),
-                "total_pnl": x["pnl"].sum()
-            })
-        )
-        
-        # Print detailed statistics
-        print("\nDetailed Trade Statistics (Full Period 2007-2024):\n")
-        print(f"Total Trades: {len(trades_full)}")
-        print(f"Win Rate: {win_rate:.1f}%")
-        print(f"Average Win: ${avg_win:.2f}")
-        print(f"Average Loss: ${avg_loss:.2f}")
-        print(f"Win/Loss Ratio: {win_loss_ratio:.2f}")
-        print(f"Profit Factor: {profit_factor:.2f}")
-        print(f"Average P&L per Trade: ${trades_full['pnl'].mean():.2f}")
-        
-        print("\nBy Side:")
-        print(f"Long Trades: {len(long_trades)} (Win Rate: {long_win_rate:.1f}%)")
-        print(f"Short Trades: {len(short_trades)} (Win Rate: {short_win_rate:.1f}%)")
-        
-        print("\nBy Exit Reason:")
-        print(f"Stop Loss Exits: {len(stop_loss_trades)} (Win Rate: {stop_loss_win_rate:.1f}%)")
-        print(f"Market Close Exits: {len(market_close_trades)} (Win Rate: {market_close_win_rate:.1f}%)")
-        
-        print("\nYearly Statistics:")
-        print(yearly_stats)
-        
-        # Save results to CSV files
-        trades_full.to_csv("trades_full_period.csv")
-        daily_results_full.to_csv("daily_results_full_period.csv")
-        monthly_results_full.to_csv("monthly_results_full_period.csv")
-        yearly_stats.to_csv("yearly_stats.csv")
-        
-        print("\nResults saved to CSV files.")
