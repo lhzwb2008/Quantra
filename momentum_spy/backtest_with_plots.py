@@ -276,11 +276,11 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             print(f"\nUsing simplified VIX thresholds for position sizing:")
             print(f"Lower threshold: 15")
             print(f"Middle threshold: 20")
-            print(f"Upper threshold: 25")
+            print(f"Upper threshold: 30")
             
             # Create a rule-based position sizing with 4 levels based on VIX thresholds
-            # VIX > 25: 50% position (very high volatility)
-            # VIX between 20 and 25: 100% position (high volatility)
+            # VIX > 30: 50% position (very high volatility)
+            # VIX between 20 and 30: 100% position (high volatility)
             # VIX between 15 and 20: 200% position (moderate volatility)
             # VIX < 15: 400% position (low volatility)
             
@@ -288,7 +288,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             vix_daily['position_factor'] = 1.0
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 25, 'position_factor'] = 0.5  # 50% when VIX is very high
+            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 50% when VIX is very high
             vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is moderate
             vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is low
             
@@ -956,8 +956,8 @@ if __name__ == "__main__":
         'spy_market_hours.csv', 
         initial_capital=100000, 
         lookback_days=90,  # 使用90天的回溯期
-        start_date=date(2022, 1, 1), 
-        end_date=date(2024, 1, 1),
+        start_date=date(2023, 1, 1), 
+        end_date=date(2025, 5, 1),
         # start_date=date(2010, 10, 13), 
         # end_date=date(2025, 1, 8),
         # random_plots=5,  # 随机生成5个交易日的图表
