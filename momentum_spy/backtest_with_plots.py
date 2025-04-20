@@ -37,7 +37,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
     trailing_stop = np.nan
     trade_entry_time = None
     trades = []
-    trade_completed = False  # Flag to track if a trade has been completed for the day
     
     # Calculate VWAP incrementally during simulation
     prices = []
@@ -64,8 +63,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
         vwap = calculate_vwap_incrementally(prices, volumes)[-1]
         vwaps.append(vwap)
         
-        # Entry signals at allowed times only if no trade has been completed for the day
-        if position == 0 and current_time in allowed_times and not trade_completed:
+        # Entry signals at allowed times
+        if position == 0 and current_time in allowed_times:
             if price > upper:
                 # Long entry
                 position = 1
@@ -117,7 +116,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
                         
                     position = 0
                     trailing_stop = np.nan
-                    trade_completed = True  # Mark that a trade has been completed for the day
                     
             elif position == -1:  # Short position
                 new_stop = min(lower, vwap)
@@ -146,7 +144,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
                         
                     position = 0
                     trailing_stop = np.nan
-                    trade_completed = True  # Mark that a trade has been completed for the day
     
     # Close any open position at the end of the day
     if position != 0:
@@ -188,7 +185,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
 
 def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
-                vix_path='vix_all.csv', use_dynamic_leverage=True):
+                vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
+                volatility_target=0.02):
     """
     Run the backtest on SPY data
     
@@ -274,20 +272,25 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             print("\nSample VIX data (first 5 days):")
             print(vix_daily.head())
             
-            # Create a rule-based position sizing with 4 levels based on VIX levels
-            # Default is 100% position size (normal market)
-            # If VIX > 30, reduce to 50% (very high volatility)
-            # If VIX between 20-30, use 100% (high volatility)
-            # If VIX between 15-20, use 200% (low volatility)
-            # If VIX < 15, use 400% (very low volatility)
+            # Use simplified VIX thresholds as requested
+            print(f"\nUsing simplified VIX thresholds for position sizing:")
+            print(f"Lower threshold: 15")
+            print(f"Middle threshold: 20")
+            print(f"Upper threshold: 25")
             
-            # First set all to default 100%
+            # Create a rule-based position sizing with 4 levels based on VIX thresholds
+            # VIX > 25: 50% position (very high volatility)
+            # VIX between 20 and 25: 100% position (high volatility)
+            # VIX between 15 and 20: 200% position (moderate volatility)
+            # VIX < 15: 400% position (low volatility)
+            
+            # First set all to default 100% (between middle and upper threshold)
             vix_daily['position_factor'] = 1.0
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 50% when VIX is very high
-            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is low
-            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is very low
+            vix_daily.loc[vix_daily['Open'] > 25, 'position_factor'] = 0.5  # 50% when VIX is very high
+            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is moderate
+            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is low
             
             # Print some statistics about VIX levels and position factors
             vix_counts = {
@@ -325,6 +328,50 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     if end_date is not None:
         spy_df = spy_df[spy_df['Date'] <= end_date]
         print(f"Filtered data to end at {end_date}")
+        
+    # Calculate daily returns for volatility-based position sizing
+    if use_volatility_sizing:
+        print("\nUsing volatility-based position sizing with target volatility of 2%")
+        # Calculate daily returns based on close-to-close
+        spy_daily = spy_df.groupby('Date')['Close'].last().reset_index()
+        spy_daily['prev_close'] = spy_daily['Close'].shift(1)
+        spy_daily['daily_return'] = spy_daily['Close'] / spy_daily['prev_close'] - 1
+        
+        # Calculate rolling 14-day volatility
+        spy_daily['rolling_mean'] = spy_daily['daily_return'].rolling(window=14).mean()
+        spy_daily['rolling_std'] = spy_daily['daily_return'].rolling(window=14).std()
+        
+        # Calculate position factor based on target volatility / actual volatility
+        # Formula: min(4, σtarget/σSPY,t)
+        spy_daily['position_factor'] = volatility_target / (spy_daily['rolling_std'] * np.sqrt(252))
+        spy_daily['position_factor'] = spy_daily['position_factor'].clip(upper=4.0)  # Cap at 4x leverage
+        
+        # Fill NaN values with 1.0 (default position size)
+        spy_daily['position_factor'] = spy_daily['position_factor'].fillna(1.0)
+        
+        # Create a date-indexed series for easy lookup
+        position_factors = spy_daily.set_index('Date')['position_factor']
+        
+        # Print some statistics about position factors
+        print(f"\nVolatility-based position sizing statistics:")
+        print(f"Mean position factor: {position_factors.mean():.2f}x")
+        print(f"Median position factor: {position_factors.median():.2f}x")
+        print(f"Min position factor: {position_factors.min():.2f}x")
+        print(f"Max position factor: {position_factors.max():.2f}x")
+        
+        # Print distribution of position factors
+        bins = [0, 1, 2, 3, 4]
+        bin_labels = ['0-1x', '1-2x', '2-3x', '3-4x']
+        position_factor_counts = pd.cut(position_factors, bins=bins, labels=bin_labels).value_counts()
+        print("\nDistribution of position factors:")
+        for label, count in position_factor_counts.items():
+            print(f"  {label}: {count} days ({count/len(position_factors)*100:.1f}%)")
+        
+        # If both use_dynamic_leverage and use_volatility_sizing are enabled, use_volatility_sizing takes precedence
+        if use_dynamic_leverage:
+            print("\nNote: Both VIX-based and volatility-based position sizing are enabled.")
+            print("Volatility-based position sizing will be used.")
+            use_dynamic_leverage = False
     
     # Use DayOpen and DayClose from the filtered data
     # These represent the 9:30 AM open price and 4:00 PM close price
@@ -480,7 +527,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         debug = debug_days is not None and trade_date in debug_days
         
         # Calculate position size with dynamic position sizing if enabled
-        if use_dynamic_leverage:
+        if use_dynamic_leverage or use_volatility_sizing:
             # Get the position factor for this date
             # Convert trade_date to the same format as position_factors index
             date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
@@ -504,14 +551,17 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                     position_factor = position_factors.iloc[idx]
                     break
             
-            # Calculate position size with position factor
-            position_size = floor(capital * position_factor / open_price)
+            # Calculate position size with position factor (allowing up to 4x leverage)
+            position_size = floor(capital * position_factor * 4 / open_price)
             
             # Always print position factor for debugging
-            print(f"  Date: {date_str}, Position factor: {position_factor:.2f}x (VIX-based)")
+            sizing_method = "volatility-based" if use_volatility_sizing else "VIX-based"
+            actual_leverage = position_factor * 4
+            print(f"  Date: {date_str}, Position factor: {position_factor:.2f}x, Actual leverage: {actual_leverage:.2f}x ({sizing_method})")
         else:
-            # Calculate position size (fixed, no position adjustment)
-            position_size = floor(capital / open_price)
+            # Calculate position size (fixed, with 4x leverage)
+            position_size = floor(capital * 4 / open_price)
+            print(f"  Date: {date_str}, Using fixed 4x leverage")
         
         # Skip days with insufficient capital
         if position_size <= 0:
@@ -676,6 +726,11 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     print(f"MDD: {metrics['mdd']*100:.1f}%")
     print(f"Alpha: {metrics['alpha']*100:.1f}%")
     print(f"Beta: {metrics['beta']:.2f}")
+    print(f"Exposure Time: {metrics['exposure_time']*100:.1f}%")
+    
+    # 打印SPY买入持有的对比
+    print(f"\nSPY Buy & Hold Return: {metrics['spy_buy_hold_return']*100:.1f}%")
+    print(f"Strategy vs SPY: {metrics['relative_performance']*100:.1f}%")
     
     return daily_df, monthly, trades_df, metrics
 
@@ -798,19 +853,68 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     # 计算Beta
     metrics['beta'] = correlation * (metrics['volatility'] / spy_volatility)
     
-    # 计算Alpha (使用CAPM公式)
-    metrics['alpha'] = metrics['irr'] - (risk_free_rate + metrics['beta'] * (spy_return - risk_free_rate))
+    # 计算Alpha (相对于SPY买入持有策略)
+    # 计算SPY买入持有的回报率
+    years = (end_date - start_date).days / 365.25
+    if years > 0:
+        spy_total_return = (1 + spy_return) ** years - 1
+        spy_irr = spy_total_return  # 对于买入持有策略，总回报率等于年化收益率
+    else:
+        spy_total_return = 0
+        spy_irr = 0
+    
+    # Alpha是策略年化收益率与SPY买入持有年化收益率的差值
+    metrics['alpha'] = metrics['irr'] - spy_irr
     
     # 计算Calmar比率 (年化收益率/最大回撤)
     if metrics['mdd'] > 0:
         metrics['calmar_ratio'] = metrics['irr'] / metrics['mdd']
     else:
         metrics['calmar_ratio'] = float('inf')  # 如果没有回撤，设为无穷大
+        
+    # 计算曝光时间 (Exposure Time)
+    if len(trades_df) > 0:
+        # 计算每笔交易的持仓时间（以分钟为单位）
+        trades_df['duration'] = (trades_df['exit_time'] - trades_df['entry_time']).dt.total_seconds() / 60
+        
+        # 计算总交易时间（分钟）
+        total_trade_minutes = trades_df['duration'].sum()
+        
+        # 计算回测总时间（分钟）
+        # 假设每个交易日有6.5小时（390分钟）
+        trading_minutes_per_day = 390
+        total_backtest_minutes = len(daily_df) * trading_minutes_per_day
+        
+        # 计算曝光时间百分比
+        metrics['exposure_time'] = total_trade_minutes / total_backtest_minutes
+    else:
+        metrics['exposure_time'] = 0
+        
+    # 计算SPY买入持有策略的表现
+    # 获取回测的开始和结束日期
+    start_date = daily_df.index[0]
+    end_date = daily_df.index[-1]
+    
+    # 计算SPY买入持有的回报率（使用提供的年化回报率）
+    years = (end_date - start_date).days / 365.25
+    if years > 0:
+        spy_total_return = (1 + spy_return) ** years - 1
+    else:
+        spy_total_return = 0
+    
+    # 添加SPY买入持有的指标
+    metrics['spy_buy_hold_return'] = spy_total_return
+    
+    # 计算相对表现（策略回报率 / SPY回报率）
+    if spy_total_return != 0:
+        metrics['relative_performance'] = metrics['total_return'] / spy_total_return
+    else:
+        metrics['relative_performance'] = float('inf') if metrics['total_return'] > 0 else 0
     
     return metrics
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
-                      use_dynamic_leverage=True):
+                      use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02):
     """
     为指定的日期生成交易图表
     
@@ -819,7 +923,9 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         dates_to_plot: 要绘制的日期列表 (datetime.date 对象列表)
         lookback_days: 用于计算Noise Area的天数
         plots_dir: 保存图表的目录
-        use_dynamic_leverage: 是否使用动态杠杆
+        use_dynamic_leverage: 是否使用VIX动态杠杆
+        use_volatility_sizing: 是否使用波动率动态杠杆
+        volatility_target: 目标日波动率
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -827,7 +933,9 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         lookback_days=lookback_days,
         plot_days=dates_to_plot,
         plots_dir=plots_dir,
-        use_dynamic_leverage=use_dynamic_leverage
+        use_dynamic_leverage=use_dynamic_leverage,
+        use_volatility_sizing=use_volatility_sizing,
+        volatility_target=volatility_target
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -840,12 +948,22 @@ if __name__ == "__main__":
     # 运行回测，随机生成5个交易日的图表
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
-        initial_capital=1000000, 
-        lookback_days=90,  # 使用90天的回溯期
-        start_date=date(2023, 1, 1), 
-        end_date=date(2025, 3, 31),
-        random_plots=5,  # 随机生成5个交易日的图表
+        initial_capital=100000, 
+        lookback_days=14,  # 使用90天的回溯期
+        # start_date=date(2022, 1, 1), 
+        # end_date=date(2024, 1, 1),
+        start_date=date(2010, 6, 25), 
+        end_date=date(2025, 1, 8),
+        # random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots',  # 图表保存目录
-        use_dynamic_leverage=True  # 使用动态杠杆
+        use_dynamic_leverage=False,  # 使用VIX动态杠杆
+        use_volatility_sizing=True,  # 使用波动率动态杠杆
+        volatility_target=0.02  # 目标日波动率为2%
     )
+    
+    # 如果想使用VIX动态杠杆，可以使用以下参数：
+    # use_dynamic_leverage=True, use_volatility_sizing=False
+    
+    # 如果想使用固定杠杆，可以使用以下参数：
+    # use_dynamic_leverage=False, use_volatility_sizing=False
