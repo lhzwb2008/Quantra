@@ -685,7 +685,7 @@ if __name__ == "__main__":
         'spy_market_hours.csv', 
         initial_capital=100000, 
         lookback_days=14, 
-        start_date=date(2007, 5, 1), 
+        start_date=date(2023, 5, 1), 
         end_date=date(2024, 4, 30),
         random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
