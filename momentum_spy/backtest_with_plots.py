@@ -845,25 +845,13 @@ if __name__ == "__main__":
         'spy_market_hours.csv', 
         initial_capital=100000, 
         lookback_days=90,  # 使用90天的回溯期
-        # start_date=date(2010, 6, 25), 
-        # end_date=date(2025, 1, 8),
-        start_date=date(2023, 5, 1), 
-        end_date=date(2024, 4, 30),
+        start_date=date(2010, 6, 25), 
+        end_date=date(2025, 1, 8),
+        # start_date=date(2023, 5, 1), 
+        # end_date=date(2024, 4, 30),
         random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots',  # 图表保存目录
         use_dynamic_leverage=True,  # 使用动态杠杆
         volatility_target=0.02  # 目标波动率为2%
     )
-    
-    # 也可以运行不使用动态杠杆的版本进行比较
-    # daily_results_no_leverage, monthly_results_no_leverage, trades_no_leverage, metrics_no_leverage = run_backtest(
-    #     'spy_market_hours.csv', 
-    #     initial_capital=100000, 
-    #     lookback_days=14, 
-    #     start_date=date(2023, 5, 1), 
-    #     end_date=date(2024, 4, 30),
-    #     random_plots=0,
-    #     plots_dir='trading_plots',
-    #     use_dynamic_leverage=False
-    # )
