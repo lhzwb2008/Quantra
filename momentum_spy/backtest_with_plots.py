@@ -186,9 +186,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
     
     return trades
 
-def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date=None, end_date=None, 
+def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
-                vix_path='vix_all.csv', use_dynamic_leverage=True, volatility_target=0.02):
+                vix_path='vix_all.csv', use_dynamic_leverage=True):
     """
     Run the backtest on SPY data
     
@@ -203,8 +203,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
         random_plots: Number of random trading days to plot (0 for none)
         plots_dir: Directory to save plots in
         vix_path: Path to the VIX data CSV file
-        use_dynamic_leverage: Whether to use dynamic leverage based on volatility
-        volatility_target: Target volatility for dynamic leverage (default 2%)
+        use_dynamic_leverage: Whether to use dynamic leverage based on VIX levels
         
     Returns:
         DataFrame with daily results
@@ -810,8 +809,8 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     
     return metrics
 
-def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='trading_plots', 
-                      use_dynamic_leverage=True, volatility_target=0.02):
+def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
+                      use_dynamic_leverage=True):
     """
     为指定的日期生成交易图表
     
@@ -821,7 +820,6 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='tr
         lookback_days: 用于计算Noise Area的天数
         plots_dir: 保存图表的目录
         use_dynamic_leverage: 是否使用动态杠杆
-        volatility_target: 目标波动率（默认2%）
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -829,8 +827,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='tr
         lookback_days=lookback_days,
         plot_days=dates_to_plot,
         plots_dir=plots_dir,
-        use_dynamic_leverage=use_dynamic_leverage,
-        volatility_target=volatility_target
+        use_dynamic_leverage=use_dynamic_leverage
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -843,15 +840,12 @@ if __name__ == "__main__":
     # 运行回测，随机生成5个交易日的图表
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
-        initial_capital=100000, 
+        initial_capital=1000000, 
         lookback_days=90,  # 使用90天的回溯期
-        start_date=date(2010, 6, 25), 
-        end_date=date(2025, 1, 8),
-        # start_date=date(2023, 5, 1), 
-        # end_date=date(2024, 4, 30),
+        start_date=date(2023, 1, 1), 
+        end_date=date(2025, 3, 31),
         random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots',  # 图表保存目录
-        use_dynamic_leverage=True,  # 使用动态杠杆
-        volatility_target=0.02  # 目标波动率为2%
+        use_dynamic_leverage=True  # 使用动态杠杆
     )
