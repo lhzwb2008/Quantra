@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from math import floor
+from math import floor, sqrt
 import matplotlib.pyplot as plt
 from datetime import datetime, time, timedelta, date
 import random
@@ -187,7 +187,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
     return trades
 
 def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date=None, end_date=None, 
-                debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots'):
+                debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
+                vix_path='vix_all.csv', use_dynamic_leverage=True, volatility_target=0.02):
     """
     Run the backtest on SPY data
     
@@ -201,20 +202,121 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
         plot_days: List of specific dates to plot
         random_plots: Number of random trading days to plot (0 for none)
         plots_dir: Directory to save plots in
+        vix_path: Path to the VIX data CSV file
+        use_dynamic_leverage: Whether to use dynamic leverage based on volatility
+        volatility_target: Target volatility for dynamic leverage (default 2%)
         
     Returns:
         DataFrame with daily results
         DataFrame with monthly results
         DataFrame with trades
+        Dictionary with performance metrics
     """
-    # Load and process data
-    print(f"Loading data from {data_path}...")
+    # Load and process SPY data
+    print(f"Loading SPY data from {data_path}...")
     spy_df = pd.read_csv(data_path, parse_dates=['DateTime'])
     spy_df.sort_values('DateTime', inplace=True)
     
     # Extract date and time components
     spy_df['Date'] = spy_df['DateTime'].dt.date
     spy_df['Time'] = spy_df['DateTime'].dt.strftime('%H:%M')
+    
+    # Load and process VIX data for position sizing
+    if use_dynamic_leverage:
+        print("Loading VIX data for dynamic position sizing...")
+        try:
+            # Load VIX data
+            vix_df = pd.read_csv(vix_path)
+            
+            # Process VIX data - handle concatenated header if needed
+            if 'DateTimeOpenHighLowClose' in vix_df.columns:
+                print("Processing VIX data with concatenated header...")
+                # Extract column names
+                vix_columns = ['DateTime', 'Open', 'High', 'Low', 'Close']
+                
+                # Create a new DataFrame with proper columns
+                new_vix_df = pd.DataFrame(columns=vix_columns)
+                
+                # Process each row
+                for i, row in vix_df.iterrows():
+                    # First row might be the header
+                    if i == 0 and not row[0].startswith('2'):  # Skip if it's a header
+                        continue
+                    
+                    # Split the concatenated data
+                    values = row[0].split()
+                    if len(values) >= 5:  # Ensure we have enough values
+                        date_str = values[0]
+                        time_str = values[1]
+                        datetime_str = f"{date_str} {time_str}"
+                        
+                        # Add to new DataFrame
+                        new_vix_df.loc[len(new_vix_df)] = [
+                            datetime_str,
+                            float(values[2]),
+                            float(values[3]),
+                            float(values[4]),
+                            float(values[5]) if len(values) > 5 else float(values[4])
+                        ]
+                
+                vix_df = new_vix_df
+            
+            # Ensure DateTime is parsed correctly
+            vix_df['DateTime'] = pd.to_datetime(vix_df['DateTime'])
+            
+            # Extract date from DateTime
+            vix_df['Date'] = vix_df['DateTime'].dt.date
+            
+            # Get daily opening VIX value (first value of each day)
+            vix_daily = vix_df.groupby('Date')['Open'].first().reset_index()
+            vix_daily['Date'] = pd.to_datetime(vix_daily['Date'])
+            
+            # Print some sample VIX data for debugging
+            print("\nSample VIX data (first 5 days):")
+            print(vix_daily.head())
+            
+            # Create a rule-based position sizing with 4 levels based on VIX levels
+            # Default is 100% position size (normal market)
+            # If VIX > 30, reduce to 50% (very high volatility)
+            # If VIX between 20-30, use 100% (high volatility)
+            # If VIX between 15-20, use 200% (low volatility)
+            # If VIX < 15, use 400% (very low volatility)
+            
+            # First set all to default 100%
+            vix_daily['position_factor'] = 1.0
+            
+            # Then apply the rules in order
+            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 50% when VIX is very high
+            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is low
+            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is very low
+            
+            # Print some statistics about VIX levels and position factors
+            vix_counts = {
+                'VIX > 30 (50% position)': len(vix_daily[vix_daily['Open'] > 30]),
+                'VIX 20-30 (100% position)': len(vix_daily[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20)]),
+                'VIX 15-20 (200% position)': len(vix_daily[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15)]),
+                'VIX < 15 (400% position)': len(vix_daily[vix_daily['Open'] <= 15])
+            }
+            
+            print("\nVIX level distribution:")
+            for label, count in vix_counts.items():
+                print(f"  {label}: {count} days ({count/len(vix_daily)*100:.1f}%)")
+            
+            # Create a date-indexed series for easy lookup
+            # Convert index to date (not datetime) for consistent lookup
+            position_factors = vix_daily.set_index('Date')['position_factor']
+            
+            # Print the first few entries in position_factors for debugging
+            print("\nFirst 5 entries in position_factors:")
+            print(position_factors.head())
+            print(f"position_factors index type: {type(position_factors.index[0])}")
+            
+            print(f"VIX-based position sizing completed. Found {len(vix_daily)} daily VIX records.")
+            
+        except Exception as e:
+            print(f"Error loading or processing VIX data: {e}")
+            print("Falling back to fixed position sizing (100%)...")
+            use_dynamic_leverage = False
     
     # Filter data by date range if specified
     if start_date is not None:
@@ -375,8 +477,42 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
         # Get the opening price for the day
         open_price = day_spy['day_open'].iloc[0]
         
-        # Calculate position size (fixed, no VIX adjustment)
-        position_size = floor(capital / open_price)
+        # Check if this is a debug day
+        debug = debug_days is not None and trade_date in debug_days
+        
+        # Calculate position size with dynamic position sizing if enabled
+        if use_dynamic_leverage:
+            # Get the position factor for this date
+            # Convert trade_date to the same format as position_factors index
+            date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
+            
+            # Debug output to check if the date exists in position_factors
+            if i < 5 or i % 100 == 0:  # Print for first 5 days and then every 100 days
+                print(f"DEBUG: Looking up position factor for date {date_str}")
+                # Convert position_factors index to strings for comparison
+                str_index = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in position_factors.index[:5]]
+                if date_str in str_index:
+                    idx_pos = str_index.index(date_str)
+                    print(f"DEBUG: Found position factor: {position_factors.iloc[idx_pos]:.2f}x")
+                else:
+                    print(f"DEBUG: Date not found in position_factors index")
+                    print(f"DEBUG: First 5 dates in position_factors: {str_index}")
+            
+            # Try to find the position factor using string comparison
+            position_factor = 1.0  # Default
+            for idx, idx_date in enumerate(position_factors.index):
+                if hasattr(idx_date, 'strftime') and idx_date.strftime('%Y-%m-%d') == date_str:
+                    position_factor = position_factors.iloc[idx]
+                    break
+            
+            # Calculate position size with position factor
+            position_size = floor(capital * position_factor / open_price)
+            
+            # Always print position factor for debugging
+            print(f"  Date: {date_str}, Position factor: {position_factor:.2f}x (VIX-based)")
+        else:
+            # Calculate position size (fixed, no position adjustment)
+            position_size = floor(capital / open_price)
         
         # Skip days with insufficient capital
         if position_size <= 0:
@@ -387,9 +523,6 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
                 'daily_return': 0
             })
             continue
-        
-        # Check if this is a debug day
-        debug = debug_days is not None and trade_date in debug_days
         
         # Simulate trading for the day
         trades = simulate_day(day_spy, prev_close, allowed_times, position_size, debug=debug)
@@ -480,11 +613,22 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
             pnl = trade['pnl']
             exit_reason = trade['exit_reason']
             
-            trade_detail = f"{entry_time}-{exit_time} {side} {entry_price:.2f}->{exit_price:.2f} ${pnl:.2f} ({exit_reason})"
+            # Calculate position percentage relative to capital
+            position_percentage = (position_size * open_price / capital_start) * 100
+            leverage_text = f"{position_percentage:.0f}%" if position_percentage <= 100 else f"{position_percentage/100:.1f}x"
+            
+            trade_detail = f"{entry_time}-{exit_time} {side} {entry_price:.2f}->{exit_price:.2f} ${pnl:.2f} ({exit_reason}, 仓位: {leverage_text})"
             trade_details.append(trade_detail)
         
         trade_details_str = ', '.join(trade_details) if trade_details else "No trades"
-        print(f"{trade_date}: {trade_details_str}, P&L=${day_pnl:.2f}, Return={daily_return*100:.2f}%")
+        
+        # Add position factor information if using dynamic leverage
+        if use_dynamic_leverage and trades:
+            position_info = f", 仓位系数: {position_factor:.2f}x"
+        else:
+            position_info = ""
+            
+        print(f"{trade_date}: {trade_details_str}, P&L=${day_pnl:.2f}, Return={daily_return*100:.2f}%{position_info}")
     
     # Create daily results DataFrame
     daily_df = pd.DataFrame(daily_results)
@@ -513,7 +657,18 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=14, start_date
     
     # 打印简化的性能指标
     print("\n策略性能指标:")
-    print(f"Size: 100%")
+    if use_dynamic_leverage:
+        print(f"Strategy: Momentum Curr.Band + VWAP with VIX-based Position Sizing")
+        # Calculate average position factor
+        if 'position_factors' in locals():
+            avg_position = position_factors.mean()
+            max_position = position_factors.max()
+            min_position = position_factors.min()
+            print(f"Average Position: {avg_position:.2f}x, Max Position: {max_position:.2f}x, Min Position: {min_position:.2f}x")
+    else:
+        print(f"Strategy: Momentum Curr.Band + VWAP")
+        print(f"Size: 100%")
+    
     print(f"Total Return: {metrics['total_return']*100:.1f}%")
     print(f"IRR: {metrics['irr']*100:.1f}%")
     print(f"Vol: {metrics['volatility']*100:.1f}%")
@@ -655,7 +810,8 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     
     return metrics
 
-def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='trading_plots'):
+def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='trading_plots', 
+                      use_dynamic_leverage=True, volatility_target=0.02):
     """
     为指定的日期生成交易图表
     
@@ -664,13 +820,17 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=14, plots_dir='tr
         dates_to_plot: 要绘制的日期列表 (datetime.date 对象列表)
         lookback_days: 用于计算Noise Area的天数
         plots_dir: 保存图表的目录
+        use_dynamic_leverage: 是否使用动态杠杆
+        volatility_target: 目标波动率（默认2%）
     """
     # 运行回测，指定要绘制的日期
-    _, _, _ = run_backtest(
+    _, _, _, _ = run_backtest(
         data_path=data_path,
         lookback_days=lookback_days,
         plot_days=dates_to_plot,
-        plots_dir=plots_dir
+        plots_dir=plots_dir,
+        use_dynamic_leverage=use_dynamic_leverage,
+        volatility_target=volatility_target
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -684,10 +844,26 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
         initial_capital=100000, 
-        lookback_days=14, 
+        lookback_days=90,  # 使用90天的回溯期
+        # start_date=date(2010, 6, 25), 
+        # end_date=date(2025, 1, 8),
         start_date=date(2023, 5, 1), 
         end_date=date(2024, 4, 30),
         random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
-        plots_dir='trading_plots'  # 图表保存目录
+        plots_dir='trading_plots',  # 图表保存目录
+        use_dynamic_leverage=True,  # 使用动态杠杆
+        volatility_target=0.02  # 目标波动率为2%
     )
+    
+    # 也可以运行不使用动态杠杆的版本进行比较
+    # daily_results_no_leverage, monthly_results_no_leverage, trades_no_leverage, metrics_no_leverage = run_backtest(
+    #     'spy_market_hours.csv', 
+    #     initial_capital=100000, 
+    #     lookback_days=14, 
+    #     start_date=date(2023, 5, 1), 
+    #     end_date=date(2024, 4, 30),
+    #     random_plots=0,
+    #     plots_dir='trading_plots',
+    #     use_dynamic_leverage=False
+    # )
