@@ -706,9 +706,13 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     # Create trades DataFrame
     trades_df = pd.DataFrame(all_trades)
     
+    # 准备SPY数据用于计算买入持有回报率
+    # 创建每日SPY收盘价数据
+    spy_daily_data = spy_df.groupby('Date')['Close'].last().reset_index()
+    
     # 计算策略性能指标
     print("\n计算策略性能指标...")
-    metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital)
+    metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, spy_data=spy_daily_data)
     
     # 打印简化的性能指标
     print("\n策略性能指标:")
@@ -730,9 +734,10 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
     print(f"Hit Ratio: {metrics['hit_ratio']*100:.1f}%")
     print(f"MDD: {metrics['mdd']*100:.1f}%")
-    print(f"Alpha: {metrics['alpha']*100:.1f}%")
-    print(f"Beta: {metrics['beta']:.2f}")
-    print(f"Exposure Time: {metrics['exposure_time']*100:.1f}%")
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Avg Daily Trades: {metrics['avg_daily_trades']:.2f}")
+    print(f"Max Daily Loss: ${metrics['max_daily_loss']:.2f}")
+    print(f"Max Daily Gain: ${metrics['max_daily_gain']:.2f}")
     
     # 打印SPY买入持有的对比
     print(f"\nSPY Buy & Hold Return: {metrics['spy_buy_hold_return']*100:.1f}%")
@@ -743,7 +748,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
 def calculate_performance_metrics(daily_df, trades_df, initial_capital, 
                                  risk_free_rate=0.02, spy_return=0.072, 
                                  spy_volatility=0.202, correlation=-0.03,
-                                 trading_days_per_year=252):
+                                 trading_days_per_year=252, **kwargs):
     """
     计算策略的性能指标
     
@@ -806,7 +811,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     else:
         metrics['sharpe_ratio'] = 0
     
-    # 5. 胜率 (Hit Ratio)
+    # 5. 胜率 (Hit Ratio)和交易统计
     if len(trades_df) > 0:
         winning_trades = trades_df[trades_df['pnl'] > 0]
         metrics['hit_ratio'] = len(winning_trades) / len(trades_df)
@@ -818,9 +823,27 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
         
         # 计算盈亏比
         metrics['profit_loss_ratio'] = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+        
+        # 总交易次数
+        metrics['total_trades'] = len(trades_df)
+        
+        # 计算每日交易次数
+        daily_trade_counts = trades_df.groupby('Date').size()
+        metrics['avg_daily_trades'] = daily_trade_counts.mean() if len(daily_trade_counts) > 0 else 0
+        metrics['max_daily_trades'] = daily_trade_counts.max() if len(daily_trade_counts) > 0 else 0
+        
+        # 计算每日盈亏
+        daily_pnl = trades_df.groupby('Date')['pnl'].sum()
+        metrics['max_daily_loss'] = daily_pnl.min() if len(daily_pnl) > 0 and daily_pnl.min() < 0 else 0
+        metrics['max_daily_gain'] = daily_pnl.max() if len(daily_pnl) > 0 else 0
     else:
         metrics['hit_ratio'] = 0
         metrics['profit_loss_ratio'] = 0
+        metrics['total_trades'] = 0
+        metrics['avg_daily_trades'] = 0
+        metrics['max_daily_trades'] = 0
+        metrics['max_daily_loss'] = 0
+        metrics['max_daily_gain'] = 0
     
     # 6. 最大回撤 (MDD - Maximum Drawdown)
     # 计算每日资金的累计最大值
@@ -901,21 +924,46 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     start_date = daily_df.index[0]
     end_date = daily_df.index[-1]
     
-    # 计算SPY买入持有的回报率（使用提供的年化回报率）
-    years = (end_date - start_date).days / 365.25
-    if years > 0:
-        spy_total_return = (1 + spy_return) ** years - 1
+    # 使用实际SPY数据计算买入持有回报率
+    # 注意：这个参数需要从run_backtest函数传入
+    if 'spy_data' in kwargs and not kwargs['spy_data'].empty:
+        spy_data = kwargs['spy_data']
+        # 获取回测期间的第一个和最后一个交易日的收盘价
+        spy_start_price = spy_data[spy_data['Date'] == start_date.date()]['Close'].iloc[-1] if not spy_data[spy_data['Date'] == start_date.date()].empty else None
+        spy_end_price = spy_data[spy_data['Date'] == end_date.date()]['Close'].iloc[-1] if not spy_data[spy_data['Date'] == end_date.date()].empty else None
+        
+        if spy_start_price is not None and spy_end_price is not None:
+            spy_total_return = spy_end_price / spy_start_price - 1
+        else:
+            # 如果找不到精确的日期，使用最接近的日期
+            spy_data_sorted = spy_data.sort_values('Date')
+            spy_data_filtered = spy_data_sorted[(spy_data_sorted['Date'] >= start_date.date()) & 
+                                               (spy_data_sorted['Date'] <= end_date.date())]
+            
+            if not spy_data_filtered.empty:
+                spy_start_price = spy_data_filtered.iloc[0]['Close']
+                spy_end_price = spy_data_filtered.iloc[-1]['Close']
+                spy_total_return = spy_end_price / spy_start_price - 1
+            else:
+                # 如果仍然找不到数据，使用默认的年化回报率
+                years = (end_date - start_date).days / 365.25
+                if years > 0:
+                    spy_total_return = (1 + spy_return) ** years - 1
+                else:
+                    spy_total_return = 0
     else:
-        spy_total_return = 0
+        # 如果没有提供SPY数据，使用默认的年化回报率
+        years = (end_date - start_date).days / 365.25
+        if years > 0:
+            spy_total_return = (1 + spy_return) ** years - 1
+        else:
+            spy_total_return = 0
     
     # 添加SPY买入持有的指标
     metrics['spy_buy_hold_return'] = spy_total_return
     
-    # 计算相对表现（策略回报率 / SPY回报率）
-    if spy_total_return != 0:
-        metrics['relative_performance'] = metrics['total_return'] / spy_total_return
-    else:
-        metrics['relative_performance'] = float('inf') if metrics['total_return'] > 0 else 0
+    # 计算超额收益（策略回报率 - SPY回报率）
+    metrics['relative_performance'] = metrics['total_return'] - spy_total_return
     
     return metrics
 
@@ -955,9 +1003,9 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
         initial_capital=100000, 
-        lookback_days=90,  # 使用90天的回溯期
-        start_date=date(2023, 1, 1), 
-        end_date=date(2025, 5, 1),
+        lookback_days=30,  
+        start_date=date(2025, 3, 1), 
+        end_date=date(2025, 4, 1),
         # start_date=date(2010, 10, 13), 
         # end_date=date(2025, 1, 8),
         # random_plots=5,  # 随机生成5个交易日的图表
