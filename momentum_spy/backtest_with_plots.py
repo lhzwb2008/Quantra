@@ -28,9 +28,21 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
+def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None):
+    # For tracking VIX filter effects
+    vix_filtered_longs = 0
+    vix_filtered_shorts = 0
     """
     Simulate trading for a single day using curr.band + VWAP strategy
+    
+    Parameters:
+        day_df: DataFrame with intraday data
+        prev_close: Previous day's closing price
+        allowed_times: List of times when trading is allowed
+        position_size: Position size for trades
+        debug: Whether to print debug information
+        use_vix_filter: Whether to use VIX-based trading restrictions
+        current_vix: Current day's VIX value (used if use_vix_filter is True)
     """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
@@ -65,27 +77,57 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
         
         # Entry signals at allowed times
         if position == 0 and current_time in allowed_times:
+            # Check VIX filter conditions if enabled
+            can_go_long = True
+            can_go_short = True
+            
+            if use_vix_filter and current_vix is not None:
+                if current_vix > 30:
+                    # Only allow short positions when VIX > 30
+                    can_go_long = False
+                    if debug:
+                        print(f"VIX FILTER: VIX={current_vix:.2f} > 30, only short positions allowed")
+                elif current_vix < 15:
+                    # Only allow long positions when VIX < 15
+                    can_go_short = False
+                    if debug:
+                        print(f"VIX FILTER: VIX={current_vix:.2f} < 15, only long positions allowed")
+            
+            # Check for potential long entry
             if price > upper:
-                # Long entry
-                position = 1
-                entry_price = price
-                trade_entry_time = row['DateTime']
-                # Trailing stop: max(UpperBound, VWAP)
-                trailing_stop = max(upper, vwap)
-                
-                if debug:
-                    print(f"LONG ENTRY at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                if can_go_long:
+                    # Long entry allowed
+                    position = 1
+                    entry_price = price
+                    trade_entry_time = row['DateTime']
+                    # Trailing stop: max(UpperBound, VWAP)
+                    trailing_stop = max(upper, vwap)
                     
+                    if debug:
+                        print(f"LONG ENTRY at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                else:
+                    # Long entry filtered out by VIX
+                    vix_filtered_longs += 1
+                    if debug:
+                        print(f"FILTERED LONG at {current_time}: Price={price:.2f} > Upper={upper:.2f}, VIX={current_vix:.2f}")
+                    
+            # Check for potential short entry
             elif price < lower:
-                # Short entry
-                position = -1
-                entry_price = price
-                trade_entry_time = row['DateTime']
-                # Trailing stop: min(LowerBound, VWAP)
-                trailing_stop = min(lower, vwap)
-                
-                if debug:
-                    print(f"SHORT ENTRY at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                if can_go_short:
+                    # Short entry allowed
+                    position = -1
+                    entry_price = price
+                    trade_entry_time = row['DateTime']
+                    # Trailing stop: min(LowerBound, VWAP)
+                    trailing_stop = min(lower, vwap)
+                    
+                    if debug:
+                        print(f"SHORT ENTRY at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                else:
+                    # Short entry filtered out by VIX
+                    vix_filtered_shorts += 1
+                    if debug:
+                        print(f"FILTERED SHORT at {current_time}: Price={price:.2f} < Lower={lower:.2f}, VIX={current_vix:.2f}")
         
         # Update trailing stop and check for exit signals
         if position != 0:
@@ -226,17 +268,30 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
             if debug:
                 print(f"SHORT EXIT at {last_time} (CLOSE): Price={last_price:.2f}, P&L=${pnl:.2f}")
     
-    return trades
+    # Add VIX filter stats to the return value if filtering was used
+    if use_vix_filter:
+        result = {
+            'trades': trades,
+            'vix_stats': {
+                'filtered_longs': vix_filtered_longs,
+                'filtered_shorts': vix_filtered_shorts,
+                'vix_level': current_vix
+            }
+        }
+        return result
+    else:
+        return trades
 
 def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
-                volatility_target=0.02, check_interval_minutes=30):
+                volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
+                use_vix_filter=False):
     """
-    Run the backtest on SPY data
+    Run the backtest on SPY or QQQ data
     
     Parameters:
-        data_path: Path to the SPY minute data CSV file
+        data_path: Path to the SPY or QQQ minute data CSV file
         initial_capital: Initial capital for the backtest
         lookback_days: Number of days to use for calculating the Noise Area
         start_date: Start date for the backtest (datetime.date)
@@ -250,6 +305,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         use_volatility_sizing: Whether to use volatility-based position sizing
         volatility_target: Target daily volatility for position sizing
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
+        use_qqq: Whether to use QQQ data instead of SPY (default: False)
+        use_vix_filter: Whether to use VIX-based trading restrictions (only short when VIX>30, only long when VIX<15)
         
     Returns:
         DataFrame with daily results
@@ -257,18 +314,21 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         DataFrame with trades
         Dictionary with performance metrics
     """
-    # Load and process SPY data
-    print(f"Loading SPY data from {data_path}...")
-    spy_df = pd.read_csv(data_path, parse_dates=['DateTime'])
-    spy_df.sort_values('DateTime', inplace=True)
+    # Determine which ticker to use
+    ticker = "QQQ" if use_qqq else "SPY"
+    
+    # Load and process data
+    print(f"Loading {ticker} data from {data_path}...")
+    price_df = pd.read_csv(data_path, parse_dates=['DateTime'])
+    price_df.sort_values('DateTime', inplace=True)
     
     # Extract date and time components
-    spy_df['Date'] = spy_df['DateTime'].dt.date
-    spy_df['Time'] = spy_df['DateTime'].dt.strftime('%H:%M')
+    price_df['Date'] = price_df['DateTime'].dt.date
+    price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
     
-    # Load and process VIX data for position sizing
-    if use_dynamic_leverage:
-        print("Loading VIX data for dynamic position sizing...")
+    # Load and process VIX data for position sizing or VIX filter
+    if use_dynamic_leverage or use_vix_filter:
+        print(f"Loading VIX data for {ticker} {'dynamic position sizing' if use_dynamic_leverage else ''} {'and' if use_dynamic_leverage and use_vix_filter else ''} {'VIX-based trading filter' if use_vix_filter else ''}...")
         try:
             # Load VIX data
             vix_df = pd.read_csv(vix_path)
@@ -291,9 +351,13 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                     # Split the concatenated data
                     values = row[0].split()
                     if len(values) >= 5:  # Ensure we have enough values
+                        # Remove leading digit if present (e.g., "02008-01-02" -> "2008-01-02")
                         date_str = values[0]
+                        if date_str[0].isdigit() and date_str[1].isdigit():
+                            date_str = date_str[1:]
                         time_str = values[1]
                         datetime_str = f"{date_str} {time_str}"
+                        print(f"DEBUG: Parsed VIX date: {date_str}, time: {time_str}")
                         
                         # Add to new DataFrame
                         new_vix_df.loc[len(new_vix_df)] = [
@@ -351,6 +415,13 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             print("\nVIX level distribution:")
             for label, count in vix_counts.items():
                 print(f"  {label}: {count} days ({count/len(vix_daily)*100:.1f}%)")
+                
+            # If using VIX filter, print additional information
+            if use_vix_filter:
+                print("\nVIX-based trading filter enabled:")
+                print(f"  When VIX > 30: Only SHORT positions allowed ({vix_counts['VIX > 30 (50% position)']} days)")
+                print(f"  When VIX < 15: Only LONG positions allowed ({vix_counts['VIX < 15 (400% position)']} days)")
+                print(f"  Otherwise: Both LONG and SHORT positions allowed ({vix_counts['VIX 20-30 (100% position)'] + vix_counts['VIX 15-20 (200% position)']} days)")
             
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
@@ -370,35 +441,35 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     
     # Filter data by date range if specified
     if start_date is not None:
-        spy_df = spy_df[spy_df['Date'] >= start_date]
+        price_df = price_df[price_df['Date'] >= start_date]
         print(f"Filtered data to start from {start_date}")
     
     if end_date is not None:
-        spy_df = spy_df[spy_df['Date'] <= end_date]
+        price_df = price_df[price_df['Date'] <= end_date]
         print(f"Filtered data to end at {end_date}")
         
     # Calculate daily returns for volatility-based position sizing
     if use_volatility_sizing:
-        print("\nUsing volatility-based position sizing with target volatility of 2%")
+        print(f"\nUsing volatility-based position sizing with target volatility of {volatility_target*100}%")
         # Calculate daily returns based on close-to-close
-        spy_daily = spy_df.groupby('Date')['Close'].last().reset_index()
-        spy_daily['prev_close'] = spy_daily['Close'].shift(1)
-        spy_daily['daily_return'] = spy_daily['Close'] / spy_daily['prev_close'] - 1
+        daily_prices = price_df.groupby('Date')['Close'].last().reset_index()
+        daily_prices['prev_close'] = daily_prices['Close'].shift(1)
+        daily_prices['daily_return'] = daily_prices['Close'] / daily_prices['prev_close'] - 1
         
         # Calculate rolling 14-day volatility
-        spy_daily['rolling_mean'] = spy_daily['daily_return'].rolling(window=14).mean()
-        spy_daily['rolling_std'] = spy_daily['daily_return'].rolling(window=14).std()
+        daily_prices['rolling_mean'] = daily_prices['daily_return'].rolling(window=14).mean()
+        daily_prices['rolling_std'] = daily_prices['daily_return'].rolling(window=14).std()
         
         # Calculate position factor based on target volatility / actual volatility
-        # Formula: min(4, σtarget/σSPY,t)
-        spy_daily['position_factor'] = volatility_target / (spy_daily['rolling_std'] * np.sqrt(252))
-        spy_daily['position_factor'] = spy_daily['position_factor'].clip(upper=4.0)  # Cap at 4x leverage
+        # Formula: min(4, σtarget/σ_ticker,t)
+        daily_prices['position_factor'] = volatility_target / (daily_prices['rolling_std'] * np.sqrt(252))
+        daily_prices['position_factor'] = daily_prices['position_factor'].clip(upper=4.0)  # Cap at 4x leverage
         
         # Fill NaN values with 1.0 (default position size)
-        spy_daily['position_factor'] = spy_daily['position_factor'].fillna(1.0)
+        daily_prices['position_factor'] = daily_prices['position_factor'].fillna(1.0)
         
         # Create a date-indexed series for easy lookup
-        position_factors = spy_daily.set_index('Date')['position_factor']
+        position_factors = daily_prices.set_index('Date')['position_factor']
         
         # Print some statistics about position factors
         print(f"\nVolatility-based position sizing statistics:")
@@ -421,21 +492,38 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             print("Volatility-based position sizing will be used.")
             use_dynamic_leverage = False
     
+    # Check if DayOpen and DayClose columns exist, create them if they don't
+    if 'DayOpen' not in price_df.columns or 'DayClose' not in price_df.columns:
+        print(f"Creating DayOpen and DayClose columns for {ticker} data...")
+        # For each day, get the first row (9:30 AM opening price)
+        opening_prices = price_df.groupby('Date').first().reset_index()
+        opening_prices = opening_prices[['Date', 'Open']].rename(columns={'Open': 'DayOpen'})
+
+        # For each day, get the last row (4:00 PM closing price)
+        closing_prices = price_df.groupby('Date').last().reset_index()
+        closing_prices = closing_prices[['Date', 'Close']].rename(columns={'Close': 'DayClose'})
+
+        # Merge the opening and closing prices back to the main dataframe
+        price_df = pd.merge(price_df, opening_prices, on='Date', how='left')
+        price_df = pd.merge(price_df, closing_prices, on='Date', how='left')
+        
+        print(f"Added DayOpen and DayClose columns to {ticker} data")
+    
     # Use DayOpen and DayClose from the filtered data
     # These represent the 9:30 AM open price and 4:00 PM close price
-    spy_df['prev_close'] = spy_df.groupby('Date')['DayClose'].transform('first').shift(1)
+    price_df['prev_close'] = price_df.groupby('Date')['DayClose'].transform('first').shift(1)
     
     # Use the 9:30 AM price as the opening price for the day
-    spy_df['day_open'] = spy_df.groupby('Date')['DayOpen'].transform('first')
+    price_df['day_open'] = price_df.groupby('Date')['DayOpen'].transform('first')
     
     # 为每个交易日计算一次参考价格，并将其应用于该日的所有时间点
     # 这确保了整个交易日使用相同的参考价格
-    unique_dates = spy_df['Date'].unique()
+    unique_dates = price_df['Date'].unique()
     
     # 创建临时DataFrame来存储每个日期的参考价格
     date_refs = []
     for d in unique_dates:
-        day_data = spy_df[spy_df['Date'] == d].iloc[0]  # 获取该日第一行数据
+        day_data = price_df[price_df['Date'] == d].iloc[0]  # 获取该日第一行数据
         day_open = day_data['day_open']
         prev_close = day_data['prev_close']
         
@@ -457,18 +545,18 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     date_refs_df = pd.DataFrame(date_refs)
     
     # 将参考价格合并回主DataFrame
-    spy_df = spy_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
-    spy_df = pd.merge(spy_df, date_refs_df, on='Date', how='left')
+    price_df = price_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
+    price_df = pd.merge(price_df, date_refs_df, on='Date', how='left')
     
     print("已为每个交易日计算固定的参考价格")
     
     # Calculate return from open for each minute (using day_open for consistency)
-    spy_df['ret'] = spy_df['Close'] / spy_df['day_open'] - 1
+    price_df['ret'] = price_df['Close'] / price_df['day_open'] - 1
     
     # Calculate the Noise Area boundaries
-    print("Calculating Noise Area boundaries...")
+    print(f"Calculating Noise Area boundaries for {ticker}...")
     # Pivot to get time-of-day in columns
-    pivot = spy_df.pivot(index='Date', columns='Time', values='ret').abs()
+    pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
     # Calculate rolling average of absolute returns for each time-of-day
     # This ensures we're using the previous 14 days for each time point
     sigma = pivot.rolling(window=lookback_days, min_periods=1).mean().shift(1)
@@ -476,27 +564,27 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     sigma = sigma.stack().reset_index(name='sigma')
     
     # Merge sigma back to the main dataframe
-    spy_df = pd.merge(spy_df, sigma, on=['Date', 'Time'], how='left')
+    price_df = pd.merge(price_df, sigma, on=['Date', 'Time'], how='left')
     
     # 检查每个交易日是否有足够的sigma数据
     # 创建一个标记，记录哪些日期的sigma数据不完整
     incomplete_sigma_dates = set()
-    for date in spy_df['Date'].unique():
-        day_data = spy_df[spy_df['Date'] == date]
+    for date in price_df['Date'].unique():
+        day_data = price_df[price_df['Date'] == date]
         if day_data['sigma'].isna().any():
             incomplete_sigma_dates.add(date)
             print(f"警告: {date} 的sigma数据不完整，将跳过该交易日")
     
     # 移除sigma数据不完整的日期
-    spy_df = spy_df[~spy_df['Date'].isin(incomplete_sigma_dates)]
+    price_df = price_df[~price_df['Date'].isin(incomplete_sigma_dates)]
     
     # 确保所有剩余的sigma值都有有效数据（不应该有NaN值了）
-    if spy_df['sigma'].isna().any():
-        print(f"警告: 仍有{spy_df['sigma'].isna().sum()}个缺失的sigma值")
+    if price_df['sigma'].isna().any():
+        print(f"警告: 仍有{price_df['sigma'].isna().sum()}个缺失的sigma值")
     
     # Calculate upper and lower boundaries of the Noise Area using the correct reference prices
-    spy_df['UpperBound'] = spy_df['upper_ref'] * (1 + spy_df['sigma'])
-    spy_df['LowerBound'] = spy_df['lower_ref'] * (1 - spy_df['sigma'])
+    price_df['UpperBound'] = price_df['upper_ref'] * (1 + price_df['sigma'])
+    price_df['LowerBound'] = price_df['lower_ref'] * (1 - price_df['sigma'])
     
     # Generate allowed trading times based on the check interval
     allowed_times = []
@@ -528,24 +616,31 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     all_trades = []
     
     # Run the backtest day by day
-    print("Running backtest...")
-    unique_dates = sorted(spy_df['Date'].unique())
+    print(f"Running {ticker} backtest...")
+    unique_dates = sorted(price_df['Date'].unique())
     
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
     if random_plots > 0:
         # 先运行回测，记录有交易的日期
         for trade_date in unique_dates:
-            day_spy = spy_df[spy_df['Date'] == trade_date].copy()
-            if len(day_spy) < 10:  # 跳过数据不足的日期
+            day_data = price_df[price_df['Date'] == trade_date].copy()
+            if len(day_data) < 10:  # 跳过数据不足的日期
                 continue
                 
-            prev_close = day_spy['prev_close'].iloc[0] if not pd.isna(day_spy['prev_close'].iloc[0]) else None
+            prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
             if prev_close is None:
                 continue
                 
             # 模拟当天交易
-            trades = simulate_day(day_spy, prev_close, allowed_times, 100, debug=False)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False)
+            
+            # Extract trades from the result
+            if isinstance(simulation_result, dict):
+                trades = simulation_result['trades']
+            else:
+                trades = simulation_result
+                
             if trades:  # 如果有交易
                 days_with_trades.append(trade_date)
         
@@ -570,11 +665,11 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     
     for i, trade_date in enumerate(unique_dates):
         # Get data for the current day
-        day_spy = spy_df[spy_df['Date'] == trade_date].copy()
-        day_spy = day_spy.sort_values('DateTime').reset_index(drop=True)
+        day_data = price_df[price_df['Date'] == trade_date].copy()
+        day_data = day_data.sort_values('DateTime').reset_index(drop=True)
         
         # Skip days with insufficient data
-        if len(day_spy) < 10:  # Arbitrary threshold
+        if len(day_data) < 10:  # Arbitrary threshold
             print(f"{trade_date}: Insufficient data, skipping")
             daily_results.append({
                 'Date': trade_date,
@@ -584,10 +679,10 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             continue
         
         # Get the previous day's close
-        prev_close = day_spy['prev_close'].iloc[0] if not pd.isna(day_spy['prev_close'].iloc[0]) else None
+        prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
         
         # Get the opening price for the day
-        open_price = day_spy['day_open'].iloc[0]
+        open_price = day_data['day_open'].iloc[0]
         
         # Check if this is a debug day
         debug = debug_days is not None and trade_date in debug_days
@@ -644,17 +739,61 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             })
             continue
         
+        # Get current VIX value if using VIX filter or dynamic leverage
+        current_vix = None
+        if use_vix_filter or use_dynamic_leverage:
+            # Use the same position factor lookup logic for VIX filter
+            # This ensures we're using the same VIX value for both position sizing and filtering
+            if use_dynamic_leverage:
+                # We already have the position factor, now get the corresponding VIX value
+                # Find the VIX threshold that corresponds to this position factor
+                if position_factor == 0.5:  # VIX > 30
+                    current_vix = 35  # Use a representative value
+                elif position_factor == 1.0:  # VIX between 20-30
+                    current_vix = 25  # Use a representative value
+                elif position_factor == 2.0:  # VIX between 15-20
+                    current_vix = 17.5  # Use a representative value
+                elif position_factor == 4.0:  # VIX < 15
+                    current_vix = 12.5  # Use a representative value
+                
+                if debug and current_vix is not None:
+                    print(f"  Current VIX (from position factor): {current_vix:.2f}")
+            else:
+                # Try to find the VIX value for this date directly
+                vix_date_match = vix_daily[vix_daily['Date'] == pd.to_datetime(date_str).date()]
+                if not vix_date_match.empty:
+                    current_vix = vix_date_match['Open'].iloc[0]
+                    if debug:
+                        print(f"  Current VIX (direct lookup): {current_vix:.2f}")
+                else:
+                    print(f"  Warning: No VIX data found for {date_str}, using default trading rules")
+        
         # Simulate trading for the day
-        trades = simulate_day(day_spy, prev_close, allowed_times, position_size, debug=debug)
+        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
+                             use_vix_filter=use_vix_filter, current_vix=current_vix)
+        
+        # Extract trades and VIX stats from the result
+        if isinstance(simulation_result, dict):
+            trades = simulation_result['trades']
+            vix_stats = simulation_result.get('vix_stats')
+            
+            # Print VIX filter stats if available
+            if vix_stats and (vix_stats['filtered_longs'] > 0 or vix_stats['filtered_shorts'] > 0):
+                print(f"  VIX FILTER STATS: VIX={vix_stats['vix_level']:.2f}, " 
+                      f"Filtered Longs: {vix_stats['filtered_longs']}, "
+                      f"Filtered Shorts: {vix_stats['filtered_shorts']}")
+        else:
+            # For backward compatibility with old code
+            trades = simulation_result
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
             # 打印出计算时的参数
-            print(f"\nPlotting day {trade_date}:")
+            print(f"\nPlotting {ticker} day {trade_date}:")
             print(f"  Previous close: {prev_close:.2f}")
             print(f"  Day open: {open_price:.2f}")
-            print(f"  Upper reference: {day_spy['upper_ref'].iloc[0]:.2f}")
-            print(f"  Lower reference: {day_spy['lower_ref'].iloc[0]:.2f}")
+            print(f"  Upper reference: {day_data['upper_ref'].iloc[0]:.2f}")
+            print(f"  Lower reference: {day_data['lower_ref'].iloc[0]:.2f}")
             
             # 打印前五分钟的sigma和各条线的值
             print("\n前五分钟的数据:")
@@ -662,7 +801,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             print("---------|----------|----------|----------|----------|----------")
             
             # 获取前五分钟的数据（或者所有数据，如果不足五分钟）
-            first_minutes = min(5, len(day_spy))
+            first_minutes = min(5, len(day_data))
             
             # 计算VWAP
             prices = []
@@ -670,7 +809,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             vwaps = []
             
             for i in range(first_minutes):
-                row = day_spy.iloc[i]
+                row = day_data.iloc[i]
                 time_str = row['Time']
                 price = row['Close']
                 sigma = row['sigma']
@@ -686,7 +825,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 print(f"  {time_str} | {price:8.2f} | {sigma:8.6f} | {upper:8.2f} | {lower:8.2f} | {vwap:8.2f}")
             
             # 为当天的交易生成图表
-            plot_path = os.path.join(plots_dir, f"trade_visualization_{trade_date}")
+            plot_path = os.path.join(plots_dir, f"{ticker}_trade_visualization_{trade_date}")
             
             # 添加交易类型到文件名
             sides = [trade['side'] for trade in trades]
@@ -700,7 +839,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 plot_path += ".png"  # 没有交易
                 
             # 生成并保存图表
-            plot_trading_day(day_spy, trades, save_path=plot_path)
+            plot_trading_day(day_data, trades, save_path=plot_path)
         
         # Calculate daily P&L
         day_pnl = sum(trade['pnl'] for trade in trades)
@@ -771,18 +910,18 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     # Create trades DataFrame
     trades_df = pd.DataFrame(all_trades)
     
-    # 准备SPY数据用于计算买入持有回报率
-    # 创建每日SPY收盘价数据
-    spy_daily_data = spy_df.groupby('Date')['Close'].last().reset_index()
+    # 准备数据用于计算买入持有回报率
+    # 创建每日收盘价数据
+    daily_price_data = price_df.groupby('Date')['Close'].last().reset_index()
     
     # 计算策略性能指标
-    print("\n计算策略性能指标...")
-    metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, spy_data=spy_daily_data)
+    print(f"\n计算{ticker}策略性能指标...")
+    metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, spy_data=daily_price_data)
     
     # 打印简化的性能指标
-    print("\n策略性能指标:")
+    print(f"\n{ticker}策略性能指标:")
     if use_dynamic_leverage:
-        print(f"Strategy: Momentum Curr.Band + VWAP with VIX-based Position Sizing")
+        print(f"Strategy: {ticker} Momentum Curr.Band + VWAP with VIX-based Position Sizing")
         # Calculate average position factor
         if 'position_factors' in locals():
             avg_position = position_factors.mean()
@@ -790,7 +929,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             min_position = position_factors.min()
             print(f"Average Position: {avg_position:.2f}x, Max Position: {max_position:.2f}x, Min Position: {min_position:.2f}x")
     else:
-        print(f"Strategy: Momentum Curr.Band + VWAP")
+        print(f"Strategy: {ticker} Momentum Curr.Band + VWAP")
         print(f"Size: 100%")
     
     print(f"Total Return: {metrics['total_return']*100:.1f}%")
@@ -804,9 +943,9 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     print(f"Max Daily Loss: ${metrics['max_daily_loss']:.2f}")
     print(f"Max Daily Gain: ${metrics['max_daily_gain']:.2f}")
     
-    # 打印SPY买入持有的对比
-    print(f"\nSPY Buy & Hold Return: {metrics['spy_buy_hold_return']*100:.1f}%")
-    print(f"Strategy vs SPY: {metrics['relative_performance']*100:.1f}%")
+    # 打印买入持有的对比
+    print(f"\n{ticker} Buy & Hold Return: {metrics['spy_buy_hold_return']*100:.1f}%")
+    print(f"Strategy vs {ticker}: {metrics['relative_performance']*100:.1f}%")
     
     return daily_df, monthly, trades_df, metrics
 
@@ -1067,26 +1206,40 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 
 # 示例用法
 if __name__ == "__main__":
-    # 运行回测，随机生成5个交易日的图表
-    daily_results, monthly_results, trades, metrics = run_backtest(
-        'spy_market_hours.csv', 
+    # 运行SPY回测，随机生成5个交易日的图表
+    # daily_results, monthly_results, trades, metrics = run_backtest(
+    #     'spy_market_hours.csv', 
+    #     initial_capital=100000, 
+    #     lookback_days=14,  
+    #     # start_date=date(2023, 1, 1), 
+    #     # end_date=date(2025, 1, 1),
+    #     start_date=date(2010, 6, 25), 
+    #     end_date=date(2025, 1, 8),
+    #     random_plots=5,  # 随机生成5个交易日的图表
+    #     # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
+    #     plots_dir='trading_plots',  # 图表保存目录
+    #     use_dynamic_leverage=False,  # 使用VIX动态杠杆
+    #     use_volatility_sizing=False,  # 使用波动率动态杠杆
+    #     volatility_target=0.02,  # 目标日波动率为2%
+    #     check_interval_minutes=30  # 交易检查间隔（分钟）
+    # )
+    
+    # 运行QQQ回测示例
+    daily_results_qqq, monthly_results_qqq, trades_qqq, metrics_qqq = run_backtest(
+        'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
         initial_capital=100000, 
-        lookback_days=14,  
+        lookback_days=7,
         # start_date=date(2023, 1, 1), 
         # end_date=date(2025, 1, 1),
         start_date=date(2010, 6, 25), 
         end_date=date(2025, 1, 8),
-        random_plots=5,  # 随机生成5个交易日的图表
-        # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
-        plots_dir='trading_plots',  # 图表保存目录
-        use_dynamic_leverage=False,  # 使用VIX动态杠杆
-        use_volatility_sizing=False,  # 使用波动率动态杠杆
-        volatility_target=0.02,  # 目标日波动率为2%
-        check_interval_minutes=30  # 交易检查间隔（分钟）
+        random_plots=5,
+        plots_dir='trading_plots_qqq',  # QQQ图表保存目录
+        use_dynamic_leverage=True,
+        use_volatility_sizing=False,
+        volatility_target=0.02,
+        check_interval_minutes=10,
+        use_qqq=True,  # 使用QQQ数据替代SPY
+        use_vix_filter=False  # 设置为True启用VIX过滤器
     )
     
-    # 如果想使用VIX动态杠杆，可以使用以下参数：
-    # use_dynamic_leverage=True, use_volatility_sizing=False
-    
-    # 如果想使用固定杠杆，可以使用以下参数：
-    # use_dynamic_leverage=False, use_volatility_sizing=False
