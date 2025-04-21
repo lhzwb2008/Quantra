@@ -145,8 +145,53 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
                     position = 0
                     trailing_stop = np.nan
     
-    # Close any open position at the end of the day
-    if position != 0:
+    # Find the 15:40 data point if it exists
+    close_time_rows = day_df[day_df['Time'] == '15:40']
+    
+    # If we have a 15:40 data point and still have an open position, close it
+    if not close_time_rows.empty and position != 0:
+        close_row = close_time_rows.iloc[0]
+        exit_time = close_row['DateTime']
+        close_price = close_row['Close']
+        
+        if position == 1:  # Long position
+            pnl = position_size * (close_price - entry_price)
+            trades.append({
+                'entry_time': trade_entry_time,
+                'exit_time': exit_time,
+                'side': 'Long',
+                'entry_price': entry_price,
+                'exit_price': close_price,
+                'pnl': pnl,
+                'exit_reason': 'Intraday Close'
+            })
+            
+            if debug:
+                print(f"LONG EXIT at 15:40 (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
+            
+            position = 0
+            trailing_stop = np.nan
+                
+        else:  # Short position
+            pnl = position_size * (entry_price - close_price)
+            trades.append({
+                'entry_time': trade_entry_time,
+                'exit_time': exit_time,
+                'side': 'Short',
+                'entry_price': entry_price,
+                'exit_price': close_price,
+                'pnl': pnl,
+                'exit_reason': 'Intraday Close'
+            })
+            
+            if debug:
+                print(f"SHORT EXIT at 15:40 (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
+            
+            position = 0
+            trailing_stop = np.nan
+    
+    # If we still have an open position at the end of the day (no 15:40 data point), close it
+    elif position != 0:
         exit_time = day_df.iloc[-1]['DateTime']
         last_price = day_df.iloc[-1]['Close']
         last_time = day_df.iloc[-1]['Time']
@@ -186,7 +231,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False):
 def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
-                volatility_target=0.02):
+                volatility_target=0.02, check_interval_minutes=30):
     """
     Run the backtest on SPY data
     
@@ -202,6 +247,9 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         plots_dir: Directory to save plots in
         vix_path: Path to the VIX data CSV file
         use_dynamic_leverage: Whether to use dynamic leverage based on VIX levels
+        use_volatility_sizing: Whether to use volatility-based position sizing
+        volatility_target: Target daily volatility for position sizing
+        check_interval_minutes: Interval in minutes between trading checks (default: 30)
         
     Returns:
         DataFrame with daily results
@@ -450,11 +498,29 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     spy_df['UpperBound'] = spy_df['upper_ref'] * (1 + spy_df['sigma'])
     spy_df['LowerBound'] = spy_df['lower_ref'] * (1 - spy_df['sigma'])
     
-    # Define allowed trading times (semi-hourly intervals starting from 10:00)
-    allowed_times = [
-        '10:00', '10:30', '11:00', '11:30', '12:00', '12:30',
-        '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00'
-    ]
+    # Generate allowed trading times based on the check interval
+    allowed_times = []
+    start_hour, start_minute = 10, 0  # Start at 10:00
+    end_hour, end_minute = 15, 40     # End at 15:40 (new closing time)
+    
+    current_hour, current_minute = start_hour, start_minute
+    while current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute):
+        # Add current time to allowed_times
+        allowed_times.append(f"{current_hour:02d}:{current_minute:02d}")
+        
+        # Increment by check_interval_minutes
+        current_minute += check_interval_minutes
+        if current_minute >= 60:
+            current_hour += current_minute // 60
+            current_minute = current_minute % 60
+    
+    # Always ensure 15:40 is included for position closing
+    if '15:40' not in allowed_times:
+        allowed_times.append('15:40')
+        allowed_times.sort()
+    
+    print(f"Using check interval of {check_interval_minutes} minutes")
+    print(f"Allowed trading times: {allowed_times}")
     
     # Initialize backtest variables
     capital = initial_capital
@@ -526,12 +592,11 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         # Check if this is a debug day
         debug = debug_days is not None and trade_date in debug_days
         
+        # Convert trade_date to string format for consistent display
+        date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
+        
         # Calculate position size with dynamic position sizing if enabled
         if use_dynamic_leverage or use_volatility_sizing:
-            # Get the position factor for this date
-            # Convert trade_date to the same format as position_factors index
-            date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
-            
             # Debug output to check if the date exists in position_factors
             if i < 5 or i % 100 == 0:  # Print for first 5 days and then every 100 days
                 print(f"DEBUG: Looking up position factor for date {date_str}")
@@ -968,7 +1033,8 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     return metrics
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
-                      use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02):
+                      use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
+                      check_interval_minutes=30):
     """
     为指定的日期生成交易图表
     
@@ -980,6 +1046,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         use_dynamic_leverage: 是否使用VIX动态杠杆
         use_volatility_sizing: 是否使用波动率动态杠杆
         volatility_target: 目标日波动率
+        check_interval_minutes: 交易检查间隔（分钟）
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -989,7 +1056,8 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         plots_dir=plots_dir,
         use_dynamic_leverage=use_dynamic_leverage,
         use_volatility_sizing=use_volatility_sizing,
-        volatility_target=volatility_target
+        volatility_target=volatility_target,
+        check_interval_minutes=check_interval_minutes
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1003,17 +1071,18 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'spy_market_hours.csv', 
         initial_capital=100000, 
-        lookback_days=30,  
-        start_date=date(2025, 3, 1), 
-        end_date=date(2025, 4, 1),
-        # start_date=date(2010, 10, 13), 
-        # end_date=date(2025, 1, 8),
-        # random_plots=5,  # 随机生成5个交易日的图表
+        lookback_days=14,  
+        # start_date=date(2023, 1, 1), 
+        # end_date=date(2025, 1, 1),
+        start_date=date(2010, 6, 25), 
+        end_date=date(2025, 1, 8),
+        random_plots=5,  # 随机生成5个交易日的图表
         # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
         plots_dir='trading_plots',  # 图表保存目录
-        use_dynamic_leverage=True,  # 使用VIX动态杠杆
+        use_dynamic_leverage=False,  # 使用VIX动态杠杆
         use_volatility_sizing=False,  # 使用波动率动态杠杆
-        volatility_target=0.02  # 目标日波动率为2%
+        volatility_target=0.02,  # 目标日波动率为2%
+        check_interval_minutes=30  # 交易检查间隔（分钟）
     )
     
     # 如果想使用VIX动态杠杆，可以使用以下参数：
