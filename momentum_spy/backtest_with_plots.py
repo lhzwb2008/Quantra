@@ -28,7 +28,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None):
+def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01):
     # For tracking VIX filter effects
     vix_filtered_longs = 0
     vix_filtered_shorts = 0
@@ -142,7 +142,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 if price < trailing_stop and current_time in allowed_times:
                     # Exit long position
                     exit_time = row['DateTime']
-                    pnl = position_size * (price - entry_price)
+                    # Calculate transaction fees (entry and exit)
+                    transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+                    pnl = position_size * (price - entry_price) - transaction_fees
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -170,7 +172,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 if price > trailing_stop and current_time in allowed_times:
                     # Exit short position
                     exit_time = row['DateTime']
-                    pnl = position_size * (entry_price - price)
+                    # Calculate transaction fees (entry and exit)
+                    transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+                    pnl = position_size * (entry_price - price) - transaction_fees
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -197,7 +201,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         close_price = close_row['Close']
         
         if position == 1:  # Long position
-            pnl = position_size * (close_price - entry_price)
+            # Calculate transaction fees (entry and exit)
+            transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+            pnl = position_size * (close_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
@@ -215,7 +221,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
             trailing_stop = np.nan
                 
         else:  # Short position
-            pnl = position_size * (entry_price - close_price)
+            # Calculate transaction fees (entry and exit)
+            transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+            pnl = position_size * (entry_price - close_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
@@ -239,7 +247,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         last_time = day_df.iloc[-1]['Time']
         
         if position == 1:  # Long position
-            pnl = position_size * (last_price - entry_price)
+            # Calculate transaction fees (entry and exit)
+            transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+            pnl = position_size * (last_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
@@ -254,7 +264,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 print(f"LONG EXIT at {last_time} (CLOSE): Price={last_price:.2f}, P&L=${pnl:.2f}")
                 
         else:  # Short position
-            pnl = position_size * (entry_price - last_price)
+            # Calculate transaction fees (entry and exit)
+            transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+            pnl = position_size * (entry_price - last_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
@@ -286,7 +298,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
-                use_vix_filter=False):
+                use_vix_filter=False, transaction_fee_per_share=0.01):
     """
     Run the backtest on SPY or QQQ data
     
@@ -380,57 +392,25 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             vix_daily = vix_df.groupby('Date')['Open'].first().reset_index()
             vix_daily['Date'] = pd.to_datetime(vix_daily['Date'])
             
-            # Print some sample VIX data for debugging
-            print("\nSample VIX data (first 5 days):")
-            print(vix_daily.head())
-            
-            # Use simplified VIX thresholds as requested
-            print(f"\nUsing simplified VIX thresholds for position sizing:")
-            print(f"Lower threshold: 15")
-            print(f"Middle threshold: 20")
-            print(f"Upper threshold: 30")
-            
-            # Create a rule-based position sizing with 4 levels based on VIX thresholds
-            # VIX > 30: 50% position (very high volatility)
-            # VIX between 20 and 30: 100% position (high volatility)
+            # Create a rule-based position sizing with 5 levels based on VIX thresholds
+            # VIX > 30: 25% position (extreme volatility)
+            # VIX between 25 and 30: 50% position (very high volatility)
+            # VIX between 20 and 25: 100% position (high volatility)
             # VIX between 15 and 20: 200% position (moderate volatility)
             # VIX < 15: 400% position (low volatility)
             
-            # First set all to default 100% (between middle and upper threshold)
+            # First set all to default 100% (between 20 and 25 threshold)
             vix_daily['position_factor'] = 1.0
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 50% when VIX is very high
+            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.25  # 25% when VIX is extreme
+            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.5  # 50% when VIX is very high
+            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is high
             vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is moderate
             vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is low
-            
-            # Print some statistics about VIX levels and position factors
-            vix_counts = {
-                'VIX > 30 (50% position)': len(vix_daily[vix_daily['Open'] > 30]),
-                'VIX 20-30 (100% position)': len(vix_daily[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20)]),
-                'VIX 15-20 (200% position)': len(vix_daily[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15)]),
-                'VIX < 15 (400% position)': len(vix_daily[vix_daily['Open'] <= 15])
-            }
-            
-            print("\nVIX level distribution:")
-            for label, count in vix_counts.items():
-                print(f"  {label}: {count} days ({count/len(vix_daily)*100:.1f}%)")
-                
-            # If using VIX filter, print additional information
-            if use_vix_filter:
-                print("\nVIX-based trading filter enabled:")
-                print(f"  When VIX > 30: Only SHORT positions allowed ({vix_counts['VIX > 30 (50% position)']} days)")
-                print(f"  When VIX < 15: Only LONG positions allowed ({vix_counts['VIX < 15 (400% position)']} days)")
-                print(f"  Otherwise: Both LONG and SHORT positions allowed ({vix_counts['VIX 20-30 (100% position)'] + vix_counts['VIX 15-20 (200% position)']} days)")
-            
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
             position_factors = vix_daily.set_index('Date')['position_factor']
-            
-            # Print the first few entries in position_factors for debugging
-            print("\nFirst 5 entries in position_factors:")
-            print(position_factors.head())
-            print(f"position_factors index type: {type(position_factors.index[0])}")
             
             print(f"VIX-based position sizing completed. Found {len(vix_daily)} daily VIX records.")
             
@@ -614,6 +594,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     capital = initial_capital
     daily_results = []
     all_trades = []
+    total_transaction_fees = 0  # Track total transaction fees
     
     # Run the backtest day by day
     print(f"Running {ticker} backtest...")
@@ -692,17 +673,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         
         # Calculate position size with dynamic position sizing if enabled
         if use_dynamic_leverage or use_volatility_sizing:
-            # Debug output to check if the date exists in position_factors
-            if i < 5 or i % 100 == 0:  # Print for first 5 days and then every 100 days
-                print(f"DEBUG: Looking up position factor for date {date_str}")
-                # Convert position_factors index to strings for comparison
-                str_index = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in position_factors.index[:5]]
-                if date_str in str_index:
-                    idx_pos = str_index.index(date_str)
-                    print(f"DEBUG: Found position factor: {position_factors.iloc[idx_pos]:.2f}x")
-                else:
-                    print(f"DEBUG: Date not found in position_factors index")
-                    print(f"DEBUG: First 5 dates in position_factors: {str_index}")
+            # Find position factor without debug output
             
             # Try to find the position factor using string comparison
             position_factor = 1.0  # Default
@@ -721,17 +692,15 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 position_size = floor(capital * position_factor / open_price)
                 actual_leverage = position_factor
             
-            # Always print position factor for debugging
+            # Calculate position factor and leverage (no logging)
             sizing_method = "volatility-based" if use_volatility_sizing else "VIX-based"
-            print(f"  Date: {date_str}, Position factor: {position_factor:.2f}x, Actual leverage: {actual_leverage:.2f}x ({sizing_method})")
         else:
             # Calculate position size (fixed, with 1x leverage)
             position_size = floor(capital / open_price)
-            print(f"  Date: {date_str}, Using fixed 1x leverage")
         
         # Skip days with insufficient capital
         if position_size <= 0:
-            print(f"{trade_date}: Insufficient capital, skipping")
+            # Skip day with insufficient capital (no logging)
             daily_results.append({
                 'Date': trade_date,
                 'capital': capital,
@@ -747,10 +716,12 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             if use_dynamic_leverage:
                 # We already have the position factor, now get the corresponding VIX value
                 # Find the VIX threshold that corresponds to this position factor
-                if position_factor == 0.5:  # VIX > 30
+                if position_factor == 0.25:  # VIX > 30
                     current_vix = 35  # Use a representative value
-                elif position_factor == 1.0:  # VIX between 20-30
-                    current_vix = 25  # Use a representative value
+                elif position_factor == 0.5:  # VIX between 25-30
+                    current_vix = 27.5  # Use a representative value
+                elif position_factor == 1.0:  # VIX between 20-25
+                    current_vix = 22.5  # Use a representative value
                 elif position_factor == 2.0:  # VIX between 15-20
                     current_vix = 17.5  # Use a representative value
                 elif position_factor == 4.0:  # VIX < 15
@@ -770,18 +741,15 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         
         # Simulate trading for the day
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
-                             use_vix_filter=use_vix_filter, current_vix=current_vix)
+                             use_vix_filter=use_vix_filter, current_vix=current_vix,
+                             transaction_fee_per_share=transaction_fee_per_share)
         
         # Extract trades and VIX stats from the result
         if isinstance(simulation_result, dict):
             trades = simulation_result['trades']
             vix_stats = simulation_result.get('vix_stats')
             
-            # Print VIX filter stats if available
-            if vix_stats and (vix_stats['filtered_longs'] > 0 or vix_stats['filtered_shorts'] > 0):
-                print(f"  VIX FILTER STATS: VIX={vix_stats['vix_level']:.2f}, " 
-                      f"Filtered Longs: {vix_stats['filtered_longs']}, "
-                      f"Filtered Shorts: {vix_stats['filtered_shorts']}")
+            # Process VIX filter stats (no logging)
         else:
             # For backward compatibility with old code
             trades = simulation_result
@@ -841,8 +809,19 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             # 生成并保存图表
             plot_trading_day(day_data, trades, save_path=plot_path)
         
-        # Calculate daily P&L
-        day_pnl = sum(trade['pnl'] for trade in trades)
+        # Calculate daily P&L and track transaction fees
+        day_pnl = 0
+        day_transaction_fees = 0
+        for trade in trades:
+            day_pnl += trade['pnl']
+            # Extract transaction fees from each trade
+            if 'transaction_fees' not in trade:
+                # Calculate transaction fees if not already in trade data
+                trade['transaction_fees'] = position_size * transaction_fee_per_share * 2  # Buy and sell fees
+            day_transaction_fees += trade['transaction_fees']
+        
+        # Add to total transaction fees
+        total_transaction_fees += day_transaction_fees
         
         # Update capital and calculate daily return
         capital_start = capital
@@ -861,33 +840,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             trade['Date'] = trade_date
             all_trades.append(trade)
         
-        # Print detailed trade information
-        trade_details = []
-        for trade in trades:
-            entry_time = trade['entry_time'].strftime('%H:%M')
-            exit_time = trade['exit_time'].strftime('%H:%M')
-            side = trade['side']
-            entry_price = trade['entry_price']
-            exit_price = trade['exit_price']
-            pnl = trade['pnl']
-            exit_reason = trade['exit_reason']
-            
-            # Calculate position percentage relative to capital
-            position_percentage = (position_size * open_price / capital_start) * 100
-            leverage_text = f"{position_percentage:.0f}%" if position_percentage <= 100 else f"{position_percentage/100:.1f}x"
-            
-            trade_detail = f"{entry_time}-{exit_time} {side} {entry_price:.2f}->{exit_price:.2f} ${pnl:.2f} ({exit_reason}, 仓位: {leverage_text})"
-            trade_details.append(trade_detail)
-        
-        trade_details_str = ', '.join(trade_details) if trade_details else "No trades"
-        
-        # Add position factor information if using dynamic leverage
-        if use_dynamic_leverage and trades:
-            position_info = f", 仓位系数: {position_factor:.2f}x"
-        else:
-            position_info = ""
-            
-        print(f"{trade_date}: {trade_details_str}, P&L=${day_pnl:.2f}, Return={daily_return*100:.2f}%{position_info}")
+        # Process trades without daily logging
     
     # Create daily results DataFrame
     daily_df = pd.DataFrame(daily_results)
@@ -917,6 +870,16 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     # 计算策略性能指标
     print(f"\n计算{ticker}策略性能指标...")
     metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, spy_data=daily_price_data)
+    
+    # 打印交易费用统计
+    print(f"\n{ticker}交易费用统计:")
+    print(f"总交易费用: ${total_transaction_fees:.2f}")
+    if len(trades_df) > 0:
+        print(f"平均每笔交易费用: ${total_transaction_fees / len(trades_df):.2f}")
+    if len(daily_df) > 0:
+        print(f"平均每日交易费用: ${total_transaction_fees / len(daily_df):.2f}")
+    print(f"交易费用占初始资金比例: {total_transaction_fees / initial_capital * 100:.2f}%")
+    print(f"交易费用占总收益比例: {total_transaction_fees / (capital - initial_capital) * 100:.2f}%" if capital > initial_capital else "交易费用占总收益比例: N/A (无盈利)")
     
     # 打印简化的性能指标
     print(f"\n{ticker}策略性能指标:")
@@ -1173,7 +1136,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
-                      check_interval_minutes=30):
+                      check_interval_minutes=30, transaction_fee_per_share=0.01):
     """
     为指定的日期生成交易图表
     
@@ -1196,7 +1159,8 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         use_dynamic_leverage=use_dynamic_leverage,
         use_volatility_sizing=use_volatility_sizing,
         volatility_target=volatility_target,
-        check_interval_minutes=check_interval_minutes
+        check_interval_minutes=check_interval_minutes,
+        transaction_fee_per_share=transaction_fee_per_share
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1229,17 +1193,17 @@ if __name__ == "__main__":
         'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
         initial_capital=100000, 
         lookback_days=7,
-        # start_date=date(2023, 1, 1), 
-        # end_date=date(2025, 1, 1),
-        start_date=date(2010, 6, 25), 
-        end_date=date(2025, 1, 8),
-        random_plots=5,
-        plots_dir='trading_plots_qqq',  # QQQ图表保存目录
+        start_date=date(2020, 1, 1), 
+        end_date=date(2025, 5, 1),
+        # start_date=date(2010, 6, 25), 
+        # end_date=date(2025, 1, 8),
+        # random_plots=5,
+        # plots_dir='trading_plots_qqq',  # QQQ图表保存目录
         use_dynamic_leverage=True,
         use_volatility_sizing=False,
         volatility_target=0.02,
         check_interval_minutes=10,
         use_qqq=True,  # 使用QQQ数据替代SPY
-        use_vix_filter=False  # 设置为True启用VIX过滤器
+        use_vix_filter=False,  # 设置为True启用VIX过滤器
+        transaction_fee_per_share=0.01  # 每股交易费用
     )
-    
