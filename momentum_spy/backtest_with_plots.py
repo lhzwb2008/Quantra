@@ -28,7 +28,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01):
+def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True):
     # For tracking VIX filter effects
     vix_filtered_longs = 0
     vix_filtered_shorts = 0
@@ -43,6 +43,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         debug: Whether to print debug information
         use_vix_filter: Whether to use VIX-based trading restrictions
         current_vix: Current day's VIX value (used if use_vix_filter is True)
+        transaction_fee_per_share: Fee per share for each transaction
+        strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
+                          or relaxed stop-loss (AND relationship between VWAP and boundary)
     """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
@@ -132,19 +135,36 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         # Update trailing stop and check for exit signals
         if position != 0:
             if position == 1:  # Long position
-                new_stop = max(upper, vwap)
-                # Only update in favorable direction (raise the stop)
-                trailing_stop = max(trailing_stop, new_stop)
-                
-                if debug and current_time in allowed_times:
-                    print(f"LONG UPDATE at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                # Calculate stop levels
+                if strict_stop_loss:
+                    # OR relationship (original behavior): exit if price < max(upper, vwap)
+                    new_stop = max(upper, vwap)
+                    # Only update in favorable direction (raise the stop)
+                    trailing_stop = max(trailing_stop, new_stop)
                     
-                if price < trailing_stop and current_time in allowed_times:
+                    if debug and current_time in allowed_times:
+                        print(f"LONG UPDATE at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                        
+                    # Exit if price crosses below the trailing stop
+                    exit_condition = price < trailing_stop
+                else:
+                    # AND relationship: exit only if price < upper AND price < vwap
+                    # Track upper and vwap separately
+                    if debug and current_time in allowed_times:
+                        print(f"LONG UPDATE at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}")
+                    
+                    # Exit if price crosses below both upper bound and VWAP
+                    exit_condition = price < upper and price < vwap
+                
+                # Check for exit
+                if exit_condition and current_time in allowed_times:
                     # Exit long position
                     exit_time = row['DateTime']
                     # Calculate transaction fees (entry and exit)
                     transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
                     pnl = position_size * (price - entry_price) - transaction_fees
+                    
+                    exit_reason = 'Stop Loss (Strict)' if strict_stop_loss else 'Stop Loss (Relaxed)'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -152,29 +172,49 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         'entry_price': entry_price,
                         'exit_price': price,
                         'pnl': pnl,
-                        'exit_reason': 'Stop Loss'
+                        'exit_reason': exit_reason
                     })
                     
                     if debug:
-                        print(f"LONG EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
+                        if strict_stop_loss:
+                            print(f"LONG EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
+                        else:
+                            print(f"LONG EXIT at {current_time}: Price={price:.2f} < Upper={upper:.2f} AND Price={price:.2f} < VWAP={vwap:.2f}, P&L=${pnl:.2f}")
                         
                     position = 0
                     trailing_stop = np.nan
                     
             elif position == -1:  # Short position
-                new_stop = min(lower, vwap)
-                # Only update in favorable direction (lower the stop)
-                trailing_stop = min(trailing_stop, new_stop)
-                
-                if debug and current_time in allowed_times:
-                    print(f"SHORT UPDATE at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                # Calculate stop levels
+                if strict_stop_loss:
+                    # OR relationship (original behavior): exit if price > min(lower, vwap)
+                    new_stop = min(lower, vwap)
+                    # Only update in favorable direction (lower the stop)
+                    trailing_stop = min(trailing_stop, new_stop)
                     
-                if price > trailing_stop and current_time in allowed_times:
+                    if debug and current_time in allowed_times:
+                        print(f"SHORT UPDATE at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
+                    
+                    # Exit if price crosses above the trailing stop
+                    exit_condition = price > trailing_stop
+                else:
+                    # AND relationship: exit only if price > lower AND price > vwap
+                    # Track lower and vwap separately
+                    if debug and current_time in allowed_times:
+                        print(f"SHORT UPDATE at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}")
+                    
+                    # Exit if price crosses above both lower bound and VWAP
+                    exit_condition = price > lower and price > vwap
+                
+                # Check for exit
+                if exit_condition and current_time in allowed_times:
                     # Exit short position
                     exit_time = row['DateTime']
                     # Calculate transaction fees (entry and exit)
                     transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
                     pnl = position_size * (entry_price - price) - transaction_fees
+                    
+                    exit_reason = 'Stop Loss (Strict)' if strict_stop_loss else 'Stop Loss (Relaxed)'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -182,11 +222,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         'entry_price': entry_price,
                         'exit_price': price,
                         'pnl': pnl,
-                        'exit_reason': 'Stop Loss'
+                        'exit_reason': exit_reason
                     })
                     
                     if debug:
-                        print(f"SHORT EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
+                        if strict_stop_loss:
+                            print(f"SHORT EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
+                        else:
+                            print(f"SHORT EXIT at {current_time}: Price={price:.2f} > Lower={lower:.2f} AND Price={price:.2f} > VWAP={vwap:.2f}, P&L=${pnl:.2f}")
                         
                     position = 0
                     trailing_stop = np.nan
@@ -298,7 +341,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
-                use_vix_filter=False, transaction_fee_per_share=0.01):
+                use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True):
     """
     Run the backtest on SPY or QQQ data
     
@@ -319,6 +362,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
         use_qqq: Whether to use QQQ data instead of SPY (default: False)
         use_vix_filter: Whether to use VIX-based trading restrictions (only short when VIX>30, only long when VIX<15)
+        strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
+                          or relaxed stop-loss (AND relationship between VWAP and boundary)
         
     Returns:
         DataFrame with daily results
@@ -614,7 +659,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False, strict_stop_loss=strict_stop_loss)
             
             # Extract trades from the result
             if isinstance(simulation_result, dict):
@@ -742,7 +787,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         # Simulate trading for the day
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
                              use_vix_filter=use_vix_filter, current_vix=current_vix,
-                             transaction_fee_per_share=transaction_fee_per_share)
+                             transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss)
         
         # Extract trades and VIX stats from the result
         if isinstance(simulation_result, dict):
@@ -1136,7 +1181,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
-                      check_interval_minutes=30, transaction_fee_per_share=0.01):
+                      check_interval_minutes=30, transaction_fee_per_share=0.01, strict_stop_loss=True):
     """
     为指定的日期生成交易图表
     
@@ -1149,6 +1194,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         use_volatility_sizing: 是否使用波动率动态杠杆
         volatility_target: 目标日波动率
         check_interval_minutes: 交易检查间隔（分钟）
+        strict_stop_loss: 是否使用严格止损（VWAP和边界的OR关系）或宽松止损（VWAP和边界的AND关系）
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -1160,7 +1206,8 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         use_volatility_sizing=use_volatility_sizing,
         volatility_target=volatility_target,
         check_interval_minutes=check_interval_minutes,
-        transaction_fee_per_share=transaction_fee_per_share
+        transaction_fee_per_share=transaction_fee_per_share,
+        strict_stop_loss=strict_stop_loss
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1170,40 +1217,24 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 
 # 示例用法
 if __name__ == "__main__":
-    # 运行SPY回测，随机生成5个交易日的图表
-    # daily_results, monthly_results, trades, metrics = run_backtest(
-    #     'spy_market_hours.csv', 
-    #     initial_capital=100000, 
-    #     lookback_days=14,  
-    #     # start_date=date(2023, 1, 1), 
-    #     # end_date=date(2025, 1, 1),
-    #     start_date=date(2010, 6, 25), 
-    #     end_date=date(2025, 1, 8),
-    #     random_plots=5,  # 随机生成5个交易日的图表
-    #     # plot_days=[date(2022, 1, 20), date(2022, 1, 31), date(2022, 4, 29)],  # 指定要绘制的日期
-    #     plots_dir='trading_plots',  # 图表保存目录
-    #     use_dynamic_leverage=False,  # 使用VIX动态杠杆
-    #     use_volatility_sizing=False,  # 使用波动率动态杠杆
-    #     volatility_target=0.02,  # 目标日波动率为2%
-    #     check_interval_minutes=30  # 交易检查间隔（分钟）
-    # )
-    
-    # 运行QQQ回测示例
-    daily_results_qqq, monthly_results_qqq, trades_qqq, metrics_qqq = run_backtest(
+    # 运行回测
+    daily_results, monthly_results, trades, metrics = run_backtest(
+        # 'spy_market_hours.csv', 
         'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
-        initial_capital=100000, 
-        lookback_days=7,
-        start_date=date(2020, 1, 1), 
-        end_date=date(2025, 5, 1),
-        # start_date=date(2010, 6, 25), 
-        # end_date=date(2025, 1, 8),
-        # random_plots=5,
-        # plots_dir='trading_plots_qqq',  # QQQ图表保存目录
-        use_dynamic_leverage=True,
-        use_volatility_sizing=False,
-        volatility_target=0.02,
-        check_interval_minutes=10,
         use_qqq=True,  # 使用QQQ数据替代SPY
-        use_vix_filter=False,  # 设置为True启用VIX过滤器
-        transaction_fee_per_share=0.01  # 每股交易费用
+        initial_capital=100000, 
+        lookback_days=10,
+        # start_date=date(2023, 4, 1), 
+        # end_date=date(2025, 4, 1),
+        start_date=date(2010, 6, 25), 
+        end_date=date(2025, 1, 8),
+        use_dynamic_leverage=True,
+        check_interval_minutes=10,
+        transaction_fee_per_share=0.01,  # 每股交易费用
+        random_plots=5,
+        plots_dir='trading_plots_qqq',  # QQQ图表保存目录
+        # use_volatility_sizing=False,
+        # volatility_target=0.02,
+        # use_vix_filter=False,  # 设置为True启用VIX过滤器
+        # strict_stop_loss=True  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
     )
