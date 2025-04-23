@@ -1335,7 +1335,7 @@ if __name__ == "__main__":
         use_qqq=True,  # 使用QQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2020, 4, 1), 
+        start_date=date(2024, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
