@@ -1317,14 +1317,14 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 # 示例用法
 if __name__ == "__main__":
     # 交易时间配置
-    trading_start_time = (10, 00)  # 交易开始时间 9:40
-    trading_end_time = (15, 50)   # 交易结束时间 15:50
+    trading_start_time = (9, 40)
+    trading_end_time = (15, 40) 
     
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        # 'spy_market_hours.csv', 
-        'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
-        use_qqq=True,  # 使用QQQ数据替代SPY
+        'spy_market_hours.csv', 
+        # 'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
+        # use_qqq=True,  # 使用QQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
         start_date=date(2022, 4, 1), 
@@ -1332,11 +1332,11 @@ if __name__ == "__main__":
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.01,  # 每股交易费用
-        random_plots=5,
-        plots_dir='trading_plots_qqq',  # QQQ图表保存目录
         # 交易时间配置
         trading_start_time=trading_start_time,  # 交易开始时间
         trading_end_time=trading_end_time,      # 交易结束时间
+        # random_plots=5,
+        # plots_dir='trading_plots_qqq',  # QQQ图表保存目录
         # use_volatility_sizing=False,
         # volatility_target=0.02,
         # use_vix_filter=False,  # 设置为True启用VIX过滤器
