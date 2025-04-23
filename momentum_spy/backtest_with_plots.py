@@ -28,7 +28,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True):
+def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50)):
     # For tracking VIX filter effects
     vix_filtered_longs = 0
     vix_filtered_shorts = 0
@@ -234,10 +234,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                     position = 0
                     trailing_stop = np.nan
     
-    # Find the 15:40 data point if it exists
-    close_time_rows = day_df[day_df['Time'] == '15:40']
+    # Get the end time string in HH:MM format
+    end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
     
-    # If we have a 15:40 data point and still have an open position, close it
+    # Find the end time data point if it exists
+    close_time_rows = day_df[day_df['Time'] == end_time_str]
+    
+    # If we have an end time data point and still have an open position, close it
     if not close_time_rows.empty and position != 0:
         close_row = close_time_rows.iloc[0]
         exit_time = close_row['DateTime']
@@ -258,7 +261,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
             })
             
             if debug:
-                print(f"LONG EXIT at 15:40 (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
+                print(f"LONG EXIT at {end_time_str} (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
             
             position = 0
             trailing_stop = np.nan
@@ -278,12 +281,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
             })
             
             if debug:
-                print(f"SHORT EXIT at 15:40 (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
+                print(f"SHORT EXIT at {end_time_str} (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
             
             position = 0
             trailing_stop = np.nan
     
-    # If we still have an open position at the end of the day (no 15:40 data point), close it
+    # If we still have an open position at the end of the day (no end time data point), close it
     elif position != 0:
         exit_time = day_df.iloc[-1]['DateTime']
         last_price = day_df.iloc[-1]['Close']
@@ -341,7 +344,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
-                use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True):
+                use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True,
+                trading_start_time=(10, 00), trading_end_time=(15, 40)):
     """
     Run the backtest on SPY or QQQ data
     
@@ -613,8 +617,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
     
     # Generate allowed trading times based on the check interval
     allowed_times = []
-    start_hour, start_minute = 10, 0  # Start at 10:00
-    end_hour, end_minute = 15, 40     # End at 15:40 (new closing time)
+    start_hour, start_minute = trading_start_time  # Use configurable start time
+    end_hour, end_minute = trading_end_time        # Use configurable end time
     
     current_hour, current_minute = start_hour, start_minute
     while current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute):
@@ -627,9 +631,9 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             current_hour += current_minute // 60
             current_minute = current_minute % 60
     
-    # Always ensure 15:40 is included for position closing
-    if '15:40' not in allowed_times:
-        allowed_times.append('15:40')
+    # Always ensure 15:50 is included for position closing
+    if '15:50' not in allowed_times:
+        allowed_times.append('15:50')
         allowed_times.sort()
     
     print(f"Using check interval of {check_interval_minutes} minutes")
@@ -787,7 +791,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         # Simulate trading for the day
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
                              use_vix_filter=use_vix_filter, current_vix=current_vix,
-                             transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss)
+                             transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
+                             trading_end_time=trading_end_time)
         
         # Extract trades and VIX stats from the result
         if isinstance(simulation_result, dict):
@@ -940,20 +945,64 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         print(f"Strategy: {ticker} Momentum Curr.Band + VWAP")
         print(f"Size: 100%")
     
-    print(f"Total Return: {metrics['total_return']*100:.1f}%")
-    print(f"IRR: {metrics['irr']*100:.1f}%")
-    print(f"Vol: {metrics['volatility']*100:.1f}%")
-    print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    # 创建一个表格格式来对比策略和买入持有的指标
+    print("\n性能指标对比:")
+    print(f"{'指标':<20} | {'策略':<15} | {f'{ticker} Buy & Hold':<15}")
+    print("-" * 55)
+    
+    # 总回报率
+    print(f"{'Total Return':<20} | {metrics['total_return']*100:>14.1f}% | {metrics['spy_buy_hold_return']*100:>14.1f}%")
+    
+    # 年化收益率
+    if 'spy_irr' in metrics:
+        spy_irr = metrics['spy_irr']
+    else:
+        # 如果没有计算过，使用总回报率计算
+        years = (daily_df.index[-1] - daily_df.index[0]).days / 365.25
+        if years > 0:
+            spy_irr = (1 + metrics['spy_buy_hold_return']) ** (1 / years) - 1
+        else:
+            spy_irr = 0
+    print(f"{'IRR':<20} | {metrics['irr']*100:>14.1f}% | {spy_irr*100:>14.1f}%")
+    
+    # 波动率
+    if 'spy_volatility' in metrics:
+        print(f"{'Volatility':<20} | {metrics['volatility']*100:>14.1f}% | {metrics['spy_volatility']*100:>14.1f}%")
+    else:
+        print(f"{'Volatility':<20} | {metrics['volatility']*100:>14.1f}% | {'N/A':>14}")
+    
+    # 夏普比率
+    if 'spy_sharpe_ratio' in metrics:
+        print(f"{'Sharpe Ratio':<20} | {metrics['sharpe_ratio']:>14.2f} | {metrics['spy_sharpe_ratio']:>14.2f}")
+    else:
+        print(f"{'Sharpe Ratio':<20} | {metrics['sharpe_ratio']:>14.2f} | {'N/A':>14}")
+    
+    # 最大回撤
+    if 'spy_mdd' in metrics:
+        print(f"{'Max Drawdown':<20} | {metrics['mdd']*100:>14.1f}% | {metrics['spy_mdd']*100:>14.1f}%")
+    else:
+        print(f"{'Max Drawdown':<20} | {metrics['mdd']*100:>14.1f}% | {'N/A':>14}")
+    
+    # Calmar比率
+    if 'spy_calmar_ratio' in metrics and 'calmar_ratio' in metrics:
+        print(f"{'Calmar Ratio':<20} | {metrics['calmar_ratio']:>14.2f} | {metrics['spy_calmar_ratio']:>14.2f}")
+    
+    # 胜率
+    if 'spy_hit_ratio' in metrics:
+        print(f"{'Hit Ratio':<20} | {metrics['hit_ratio']*100:>14.1f}% | {metrics['spy_hit_ratio']*100:>14.1f}%")
+    else:
+        print(f"{'Hit Ratio':<20} | {metrics['hit_ratio']*100:>14.1f}% | {'N/A':>14}")
+    
+    # 其他策略特有指标
+    print(f"\n策略特有指标:")
     print(f"Hit Ratio: {metrics['hit_ratio']*100:.1f}%")
-    print(f"MDD: {metrics['mdd']*100:.1f}%")
     print(f"Total Trades: {metrics['total_trades']}")
     print(f"Avg Daily Trades: {metrics['avg_daily_trades']:.2f}")
     print(f"Max Daily Loss: ${metrics['max_daily_loss']:.2f}")
     print(f"Max Daily Gain: ${metrics['max_daily_gain']:.2f}")
     
-    # 打印买入持有的对比
-    print(f"\n{ticker} Buy & Hold Return: {metrics['spy_buy_hold_return']*100:.1f}%")
-    print(f"Strategy vs {ticker}: {metrics['relative_performance']*100:.1f}%")
+    # 打印超额收益
+    print(f"\n策略超额收益: {metrics['relative_performance']*100:.1f}%")
     
     return daily_df, monthly, trades_df, metrics
 
@@ -1131,12 +1180,12 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
     else:
         metrics['exposure_time'] = 0
         
-    # 计算SPY买入持有策略的表现
+    # 计算买入持有策略的表现
     # 获取回测的开始和结束日期
     start_date = daily_df.index[0]
     end_date = daily_df.index[-1]
     
-    # 使用实际SPY数据计算买入持有回报率
+    # 使用实际数据计算买入持有回报率
     # 注意：这个参数需要从run_backtest函数传入
     if 'spy_data' in kwargs and not kwargs['spy_data'].empty:
         spy_data = kwargs['spy_data']
@@ -1171,17 +1220,65 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
         else:
             spy_total_return = 0
     
-    # 添加SPY买入持有的指标
+    # 添加买入持有的指标
     metrics['spy_buy_hold_return'] = spy_total_return
     
-    # 计算超额收益（策略回报率 - SPY回报率）
+    # 计算超额收益（策略回报率 - 买入持有回报率）
     metrics['relative_performance'] = metrics['total_return'] - spy_total_return
+    
+    # 计算买入持有策略的其他技术指标
+    # 创建买入持有策略的每日回报率序列
+    if 'spy_data' in kwargs and not kwargs['spy_data'].empty:
+        spy_data = kwargs['spy_data']
+        spy_data_sorted = spy_data.sort_values('Date')
+        spy_data_filtered = spy_data_sorted[(spy_data_sorted['Date'] >= start_date.date()) & 
+                                           (spy_data_sorted['Date'] <= end_date.date())]
+        
+        if not spy_data_filtered.empty:
+            # 计算每日收益率
+            spy_data_filtered['prev_close'] = spy_data_filtered['Close'].shift(1)
+            spy_data_filtered['daily_return'] = spy_data_filtered['Close'] / spy_data_filtered['prev_close'] - 1
+            
+            # 计算买入持有策略的波动率
+            spy_daily_returns = spy_data_filtered['daily_return'].dropna()
+            if len(spy_daily_returns) > 0:
+                # 移除异常值
+                spy_daily_returns = spy_daily_returns[spy_daily_returns.between(
+                    spy_daily_returns.quantile(0.001), spy_daily_returns.quantile(0.999))]
+                
+                # 计算年化波动率
+                metrics['spy_volatility'] = spy_daily_returns.std() * np.sqrt(trading_days_per_year)
+                
+                # 计算夏普比率
+                years = (end_date - start_date).days / 365.25
+                if years > 0:
+                    spy_irr = (1 + spy_total_return) ** (1 / years) - 1
+                    metrics['spy_sharpe_ratio'] = (spy_irr - risk_free_rate) / metrics['spy_volatility'] if metrics['spy_volatility'] > 0 else 0
+                else:
+                    metrics['spy_sharpe_ratio'] = 0
+                
+                # 计算最大回撤
+                spy_data_filtered['peak'] = spy_data_filtered['Close'].cummax()
+                spy_data_filtered['drawdown'] = (spy_data_filtered['Close'] - spy_data_filtered['peak']) / spy_data_filtered['peak']
+                metrics['spy_mdd'] = spy_data_filtered['drawdown'].min() * -1
+                
+                # 计算Calmar比率
+                if metrics['spy_mdd'] > 0 and years > 0:
+                    metrics['spy_calmar_ratio'] = spy_irr / metrics['spy_mdd']
+                else:
+                    metrics['spy_calmar_ratio'] = float('inf')  # 如果没有回撤，设为无穷大
+                
+                # 计算买入持有策略的胜率（正收益天数比例）
+                positive_days = (spy_daily_returns > 0).sum()
+                total_days = len(spy_daily_returns)
+                metrics['spy_hit_ratio'] = positive_days / total_days if total_days > 0 else 0
     
     return metrics
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
-                      check_interval_minutes=30, transaction_fee_per_share=0.01, strict_stop_loss=True):
+                      check_interval_minutes=30, transaction_fee_per_share=0.01, strict_stop_loss=True,
+                      trading_start_time=(9, 40), trading_end_time=(15, 50)):
     """
     为指定的日期生成交易图表
     
@@ -1207,7 +1304,9 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         volatility_target=volatility_target,
         check_interval_minutes=check_interval_minutes,
         transaction_fee_per_share=transaction_fee_per_share,
-        strict_stop_loss=strict_stop_loss
+        strict_stop_loss=strict_stop_loss,
+        trading_start_time=trading_start_time,
+        trading_end_time=trading_end_time
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1217,6 +1316,10 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 
 # 示例用法
 if __name__ == "__main__":
+    # 交易时间配置
+    trading_start_time = (10, 00)  # 交易开始时间 9:40
+    trading_end_time = (15, 50)   # 交易结束时间 15:50
+    
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
         # 'spy_market_hours.csv', 
@@ -1224,15 +1327,16 @@ if __name__ == "__main__":
         use_qqq=True,  # 使用QQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
-        # start_date=date(2023, 4, 1), 
-        # end_date=date(2025, 4, 1),
-        start_date=date(2010, 6, 25), 
-        end_date=date(2025, 1, 8),
+        start_date=date(2022, 4, 1), 
+        end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.01,  # 每股交易费用
         random_plots=5,
         plots_dir='trading_plots_qqq',  # QQQ图表保存目录
+        # 交易时间配置
+        trading_start_time=trading_start_time,  # 交易开始时间
+        trading_end_time=trading_end_time,      # 交易结束时间
         # use_volatility_sizing=False,
         # volatility_target=0.02,
         # use_vix_filter=False,  # 设置为True启用VIX过滤器

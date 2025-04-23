@@ -1,0 +1,4 @@
+*.csv
+*.pdf
+trading_plots*
+.DS_Store
