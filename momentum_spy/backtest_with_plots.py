@@ -28,7 +28,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50)):
+def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf')):
     # For tracking VIX filter effects
     vix_filtered_longs = 0
     vix_filtered_shorts = 0
@@ -46,12 +46,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         transaction_fee_per_share: Fee per share for each transaction
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
+        max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
     """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
     trailing_stop = np.nan
     trade_entry_time = None
     trades = []
+    positions_opened_today = 0  # Counter for positions opened today
     
     # Calculate VWAP incrementally during simulation
     prices = []
@@ -79,7 +81,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         vwaps.append(vwap)
         
         # Entry signals at allowed times
-        if position == 0 and current_time in allowed_times:
+        if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
             # Check VIX filter conditions if enabled
             can_go_long = True
             can_go_short = True
@@ -97,12 +99,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         print(f"VIX FILTER: VIX={current_vix:.2f} < 15, only long positions allowed")
             
             # Check for potential long entry
-            if price > upper:
+            if price > upper and price > vwap:  # Only open long if price > upper AND price > vwap
                 if can_go_long:
                     # Long entry allowed
                     position = 1
                     entry_price = price
                     trade_entry_time = row['DateTime']
+                    positions_opened_today += 1  # Increment positions counter
                     # Trailing stop: max(UpperBound, VWAP)
                     trailing_stop = max(upper, vwap)
                     
@@ -115,12 +118,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         print(f"FILTERED LONG at {current_time}: Price={price:.2f} > Upper={upper:.2f}, VIX={current_vix:.2f}")
                     
             # Check for potential short entry
-            elif price < lower:
+            elif price < lower and price < vwap:  # Only open short if price < lower AND price < vwap
                 if can_go_short:
                     # Short entry allowed
                     position = -1
                     entry_price = price
                     trade_entry_time = row['DateTime']
+                    positions_opened_today += 1  # Increment positions counter
                     # Trailing stop: min(LowerBound, VWAP)
                     trailing_stop = min(lower, vwap)
                     
@@ -345,7 +349,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
                 use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True,
-                trading_start_time=(10, 00), trading_end_time=(15, 40)):
+                trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf')):
     """
     Run the backtest on SPY or QQQ data
     
@@ -368,6 +372,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         use_vix_filter: Whether to use VIX-based trading restrictions (only short when VIX>30, only long when VIX<15)
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
+        max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
         
     Returns:
         DataFrame with daily results
@@ -631,9 +636,10 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             current_hour += current_minute // 60
             current_minute = current_minute % 60
     
-    # Always ensure 15:50 is included for position closing
-    if '15:50' not in allowed_times:
-        allowed_times.append('15:50')
+    # Always ensure trading_end_time is included for position closing
+    end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
+    if end_time_str not in allowed_times:
+        allowed_times.append(end_time_str)
         allowed_times.sort()
     
     print(f"Using check interval of {check_interval_minutes} minutes")
@@ -663,7 +669,8 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False, strict_stop_loss=strict_stop_loss)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False, 
+                                           strict_stop_loss=strict_stop_loss, max_positions_per_day=max_positions_per_day)
             
             # Extract trades from the result
             if isinstance(simulation_result, dict):
@@ -792,7 +799,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
                              use_vix_filter=use_vix_filter, current_vix=current_vix,
                              transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
-                             trading_end_time=trading_end_time)
+                             trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day)
         
         # Extract trades and VIX stats from the result
         if isinstance(simulation_result, dict):
@@ -1278,7 +1285,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
                       check_interval_minutes=30, transaction_fee_per_share=0.01, strict_stop_loss=True,
-                      trading_start_time=(9, 40), trading_end_time=(15, 50)):
+                      trading_start_time=(9, 40), trading_end_time=(15, 50), max_positions_per_day=float('inf')):
     """
     为指定的日期生成交易图表
     
@@ -1306,7 +1313,8 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         transaction_fee_per_share=transaction_fee_per_share,
         strict_stop_loss=strict_stop_loss,
         trading_start_time=trading_start_time,
-        trading_end_time=trading_end_time
+        trading_end_time=trading_end_time,
+        max_positions_per_day=max_positions_per_day
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1327,7 +1335,7 @@ if __name__ == "__main__":
         use_qqq=True,  # 使用QQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2022, 4, 1), 
+        start_date=date(2020, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1335,6 +1343,7 @@ if __name__ == "__main__":
         # 交易时间配置
         trading_start_time=trading_start_time,  # 交易开始时间
         trading_end_time=trading_end_time,      # 交易结束时间
+        max_positions_per_day=3,  # 每天最多开仓3次
         # random_plots=5,
         # plots_dir='trading_plots_qqq',  # QQQ图表保存目录
         # use_volatility_sizing=False,
