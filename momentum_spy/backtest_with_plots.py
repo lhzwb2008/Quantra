@@ -1322,9 +1322,9 @@ if __name__ == "__main__":
     
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        'spy_market_hours.csv', 
-        # 'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
-        # use_qqq=True,  # 使用QQQ数据替代SPY
+        # 'spy_market_hours.csv', 
+        'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
+        use_qqq=True,  # 使用QQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
         start_date=date(2022, 4, 1), 
