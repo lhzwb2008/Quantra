@@ -369,10 +369,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             vix_daily['position_factor'] = 0.5
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 35, 'position_factor'] = 0.125  # 12.5% when VIX is extreme
-            vix_daily.loc[(vix_daily['Open'] <= 35) & (vix_daily['Open'] > 30), 'position_factor'] = 0.25  # 25% when VIX is very high
-            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.5  # 50% when VIX is high
-            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is moderate
+            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 12.5% when VIX is extreme
+            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is moderate
             vix_daily.loc[vix_daily['Open'] <= 20, 'position_factor'] = 2.0  # 200% when VIX is low
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
@@ -1152,25 +1150,21 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
     print(f"图表保存在 '{plots_dir}' 目录中")
 
 # 示例用法
-if __name__ == "__main__":
-    # 交易时间配置
-    trading_start_time = (9, 40)
-    trading_end_time = (15, 40) 
-    
+if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
         'tqqq_market_hours.csv',  # 使用过滤后的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2024, 4, 1), 
+        start_date=date(2020, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.01,  # 每股交易费用
         # 交易时间配置
-        trading_start_time=trading_start_time,  # 交易开始时间
-        trading_end_time=trading_end_time,      # 交易结束时间
+        trading_start_time=(9, 40),  # 交易开始时间
+        trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
         strict_stop_loss=True  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
     )
