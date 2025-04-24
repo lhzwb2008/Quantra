@@ -1155,9 +1155,9 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'tqqq_market_hours.csv',  # 使用过滤后的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
-        initial_capital=100000, 
+        initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2020, 4, 1), 
+        start_date=date(2024, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1166,5 +1166,7 @@ if __name__ == "__main__":
         trading_start_time=(9, 40),  # 交易开始时间
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        strict_stop_loss=True  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
+        strict_stop_loss=True,  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
+        random_plots=5,  # 随机选择5天生成图表
+        plots_dir='trading_plots'  # 图表保存目录
     )
