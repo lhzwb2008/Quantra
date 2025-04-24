@@ -28,10 +28,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, use_vix_filter=False, current_vix=None, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf')):
-    # For tracking VIX filter effects
-    vix_filtered_longs = 0
-    vix_filtered_shorts = 0
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf')):
     """
     Simulate trading for a single day using curr.band + VWAP strategy
     
@@ -40,9 +37,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         prev_close: Previous day's closing price
         allowed_times: List of times when trading is allowed
         position_size: Position size for trades
-        debug: Whether to print debug information
-        use_vix_filter: Whether to use VIX-based trading restrictions
-        current_vix: Current day's VIX value (used if use_vix_filter is True)
         transaction_fee_per_share: Fee per share for each transaction
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
@@ -59,11 +53,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
     prices = []
     volumes = []
     vwaps = []
-    
-    if debug:
-        print(f"\nSimulating day: {day_df['Date'].iloc[0]}")
-        print(f"Open: {day_df['Open'].iloc[0]}, Prev Close: {prev_close}")
-        print(f"Upper Ref: {day_df['upper_ref'].iloc[0]}, Lower Ref: {day_df['lower_ref'].iloc[0]}")
     
     for idx, row in day_df.iterrows():
         current_time = row['Time']
@@ -82,59 +71,25 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
         
         # Entry signals at allowed times
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
-            # Check VIX filter conditions if enabled
-            can_go_long = True
-            can_go_short = True
-            
-            if use_vix_filter and current_vix is not None:
-                if current_vix > 30:
-                    # Only allow short positions when VIX > 30
-                    can_go_long = False
-                    if debug:
-                        print(f"VIX FILTER: VIX={current_vix:.2f} > 30, only short positions allowed")
-                elif current_vix < 15:
-                    # Only allow long positions when VIX < 15
-                    can_go_short = False
-                    if debug:
-                        print(f"VIX FILTER: VIX={current_vix:.2f} < 15, only long positions allowed")
-            
             # Check for potential long entry
             if price > upper and price > vwap:  # Only open long if price > upper AND price > vwap
-                if can_go_long:
-                    # Long entry allowed
-                    position = 1
-                    entry_price = price
-                    trade_entry_time = row['DateTime']
-                    positions_opened_today += 1  # Increment positions counter
-                    # Trailing stop: max(UpperBound, VWAP)
-                    trailing_stop = max(upper, vwap)
-                    
-                    if debug:
-                        print(f"LONG ENTRY at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
-                else:
-                    # Long entry filtered out by VIX
-                    vix_filtered_longs += 1
-                    if debug:
-                        print(f"FILTERED LONG at {current_time}: Price={price:.2f} > Upper={upper:.2f}, VIX={current_vix:.2f}")
+                # Long entry allowed
+                position = 1
+                entry_price = price
+                trade_entry_time = row['DateTime']
+                positions_opened_today += 1  # Increment positions counter
+                # Trailing stop: max(UpperBound, VWAP)
+                trailing_stop = max(upper, vwap)
                     
             # Check for potential short entry
             elif price < lower and price < vwap:  # Only open short if price < lower AND price < vwap
-                if can_go_short:
-                    # Short entry allowed
-                    position = -1
-                    entry_price = price
-                    trade_entry_time = row['DateTime']
-                    positions_opened_today += 1  # Increment positions counter
-                    # Trailing stop: min(LowerBound, VWAP)
-                    trailing_stop = min(lower, vwap)
-                    
-                    if debug:
-                        print(f"SHORT ENTRY at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
-                else:
-                    # Short entry filtered out by VIX
-                    vix_filtered_shorts += 1
-                    if debug:
-                        print(f"FILTERED SHORT at {current_time}: Price={price:.2f} < Lower={lower:.2f}, VIX={current_vix:.2f}")
+                # Short entry allowed
+                position = -1
+                entry_price = price
+                trade_entry_time = row['DateTime']
+                positions_opened_today += 1  # Increment positions counter
+                # Trailing stop: min(LowerBound, VWAP)
+                trailing_stop = min(lower, vwap)
         
         # Update trailing stop and check for exit signals
         if position != 0:
@@ -146,16 +101,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                     # Only update in favorable direction (raise the stop)
                     trailing_stop = max(trailing_stop, new_stop)
                     
-                    if debug and current_time in allowed_times:
-                        print(f"LONG UPDATE at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
-                        
                     # Exit if price crosses below the trailing stop
                     exit_condition = price < trailing_stop
                 else:
                     # AND relationship: exit only if price < upper AND price < vwap
                     # Track upper and vwap separately
-                    if debug and current_time in allowed_times:
-                        print(f"LONG UPDATE at {current_time}: Price={price:.2f}, Upper={upper:.2f}, VWAP={vwap:.2f}")
                     
                     # Exit if price crosses below both upper bound and VWAP
                     exit_condition = price < upper and price < vwap
@@ -179,12 +129,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         'exit_reason': exit_reason
                     })
                     
-                    if debug:
-                        if strict_stop_loss:
-                            print(f"LONG EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
-                        else:
-                            print(f"LONG EXIT at {current_time}: Price={price:.2f} < Upper={upper:.2f} AND Price={price:.2f} < VWAP={vwap:.2f}, P&L=${pnl:.2f}")
-                        
                     position = 0
                     trailing_stop = np.nan
                     
@@ -196,16 +140,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                     # Only update in favorable direction (lower the stop)
                     trailing_stop = min(trailing_stop, new_stop)
                     
-                    if debug and current_time in allowed_times:
-                        print(f"SHORT UPDATE at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}, Stop={trailing_stop:.2f}")
-                    
                     # Exit if price crosses above the trailing stop
                     exit_condition = price > trailing_stop
                 else:
                     # AND relationship: exit only if price > lower AND price > vwap
                     # Track lower and vwap separately
-                    if debug and current_time in allowed_times:
-                        print(f"SHORT UPDATE at {current_time}: Price={price:.2f}, Lower={lower:.2f}, VWAP={vwap:.2f}")
                     
                     # Exit if price crosses above both lower bound and VWAP
                     exit_condition = price > lower and price > vwap
@@ -229,12 +168,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                         'exit_reason': exit_reason
                     })
                     
-                    if debug:
-                        if strict_stop_loss:
-                            print(f"SHORT EXIT at {current_time}: Price={price:.2f}, Stop={trailing_stop:.2f}, P&L=${pnl:.2f}")
-                        else:
-                            print(f"SHORT EXIT at {current_time}: Price={price:.2f} > Lower={lower:.2f} AND Price={price:.2f} > VWAP={vwap:.2f}, P&L=${pnl:.2f}")
-                        
                     position = 0
                     trailing_stop = np.nan
     
@@ -264,9 +197,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 'exit_reason': 'Intraday Close'
             })
             
-            if debug:
-                print(f"LONG EXIT at {end_time_str} (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
-            
             position = 0
             trailing_stop = np.nan
                 
@@ -283,9 +213,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 'pnl': pnl,
                 'exit_reason': 'Intraday Close'
             })
-            
-            if debug:
-                print(f"SHORT EXIT at {end_time_str} (INTRADAY CLOSE): Price={close_price:.2f}, P&L=${pnl:.2f}")
             
             position = 0
             trailing_stop = np.nan
@@ -309,9 +236,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 'pnl': pnl,
                 'exit_reason': 'Market Close'
             })
-            
-            if debug:
-                print(f"LONG EXIT at {last_time} (CLOSE): Price={last_price:.2f}, P&L=${pnl:.2f}")
                 
         else:  # Short position
             # Calculate transaction fees (entry and exit)
@@ -326,29 +250,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
                 'pnl': pnl,
                 'exit_reason': 'Market Close'
             })
-            
-            if debug:
-                print(f"SHORT EXIT at {last_time} (CLOSE): Price={last_price:.2f}, P&L=${pnl:.2f}")
     
-    # Add VIX filter stats to the return value if filtering was used
-    if use_vix_filter:
-        result = {
-            'trades': trades,
-            'vix_stats': {
-                'filtered_longs': vix_filtered_longs,
-                'filtered_shorts': vix_filtered_shorts,
-                'vix_level': current_vix
-            }
-        }
-        return result
-    else:
-        return trades
+    return trades
 
 def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
-                debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
+                plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, 
-                use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True,
+                transaction_fee_per_share=0.01, strict_stop_loss=True,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf')):
     """
     Run the backtest on any 1-minute k-line data
@@ -360,7 +269,6 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         lookback_days: Number of days to use for calculating the Noise Area
         start_date: Start date for the backtest (datetime.date)
         end_date: End date for the backtest (datetime.date)
-        debug_days: List of dates to print detailed debug information for
         plot_days: List of specific dates to plot
         random_plots: Number of random trading days to plot (0 for none)
         plots_dir: Directory to save plots in
@@ -369,7 +277,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         use_volatility_sizing: Whether to use volatility-based position sizing
         volatility_target: Target daily volatility for position sizing
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
-        use_vix_filter: Whether to use VIX-based trading restrictions (only short when VIX>30, only long when VIX<15)
+        transaction_fee_per_share: Fee per share for each transaction
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
@@ -396,9 +304,9 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     price_df['Date'] = price_df['DateTime'].dt.date
     price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
     
-    # Load and process VIX data for position sizing or VIX filter
-    if use_dynamic_leverage or use_vix_filter:
-        print(f"Loading VIX data for {ticker} {'dynamic position sizing' if use_dynamic_leverage else ''} {'and' if use_dynamic_leverage and use_vix_filter else ''} {'VIX-based trading filter' if use_vix_filter else ''}...")
+    # Load and process VIX data for position sizing
+    if use_dynamic_leverage:
+        print(f"Loading VIX data for {ticker} dynamic position sizing...")
         try:
             # Load VIX data
             vix_df = pd.read_csv(vix_path)
@@ -461,11 +369,11 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             vix_daily['position_factor'] = 0.5
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.125  # 12.5% when VIX is extreme
-            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.25  # 25% when VIX is very high
-            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 0.5  # 50% when VIX is high
-            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 1.0  # 100% when VIX is moderate
-            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 2.0  # 200% when VIX is low
+            vix_daily.loc[vix_daily['Open'] > 35, 'position_factor'] = 0.125  # 12.5% when VIX is extreme
+            vix_daily.loc[(vix_daily['Open'] <= 35) & (vix_daily['Open'] > 30), 'position_factor'] = 0.25  # 25% when VIX is very high
+            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.5  # 50% when VIX is high
+            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is moderate
+            vix_daily.loc[vix_daily['Open'] <= 20, 'position_factor'] = 2.0  # 200% when VIX is low
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
             position_factors = vix_daily.set_index('Date')['position_factor']
@@ -673,14 +581,11 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, debug=False, 
-                                           strict_stop_loss=strict_stop_loss, max_positions_per_day=max_positions_per_day)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
+                                           transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss)
             
             # Extract trades from the result
-            if isinstance(simulation_result, dict):
-                trades = simulation_result['trades']
-            else:
-                trades = simulation_result
+            trades = simulation_result
                 
             if trades:  # 如果有交易
                 days_with_trades.append(trade_date)
@@ -725,9 +630,6 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         # Get the opening price for the day
         open_price = day_data['day_open'].iloc[0]
         
-        # Check if this is a debug day
-        debug = debug_days is not None and trade_date in debug_days
-        
         # Convert trade_date to string format for consistent display
         date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
         
@@ -767,92 +669,17 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 'daily_return': 0
             })
             continue
-        
-        # Get current VIX value if using VIX filter or dynamic leverage
-        current_vix = None
-        if use_vix_filter or use_dynamic_leverage:
-            # Use the same position factor lookup logic for VIX filter
-            # This ensures we're using the same VIX value for both position sizing and filtering
-            if use_dynamic_leverage:
-                # We already have the position factor, now get the corresponding VIX value
-                # Find the VIX threshold that corresponds to this position factor
-                if position_factor == 0.125:  # VIX > 30
-                    current_vix = 35  # Use a representative value
-                elif position_factor == 0.25:  # VIX between 25-30
-                    current_vix = 27.5  # Use a representative value
-                elif position_factor == 0.5:  # VIX between 20-25
-                    current_vix = 22.5  # Use a representative value
-                elif position_factor == 1.0:  # VIX between 15-20
-                    current_vix = 17.5  # Use a representative value
-                elif position_factor == 2.0:  # VIX < 15
-                    current_vix = 12.5  # Use a representative value
                 
-                if debug and current_vix is not None:
-                    print(f"  Current VIX (from position factor): {current_vix:.2f}")
-            else:
-                # Try to find the VIX value for this date directly
-                vix_date_match = vix_daily[vix_daily['Date'] == pd.to_datetime(date_str).date()]
-                if not vix_date_match.empty:
-                    current_vix = vix_date_match['Open'].iloc[0]
-                    if debug:
-                        print(f"  Current VIX (direct lookup): {current_vix:.2f}")
-                else:
-                    print(f"  Warning: No VIX data found for {date_str}, using default trading rules")
-        
         # Simulate trading for the day
-        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, debug=debug, 
-                             use_vix_filter=use_vix_filter, current_vix=current_vix,
-                             transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
-                             trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day)
+        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
+                           transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
+                           trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day)
         
-        # Extract trades and VIX stats from the result
-        if isinstance(simulation_result, dict):
-            trades = simulation_result['trades']
-            vix_stats = simulation_result.get('vix_stats')
-            
-            # Process VIX filter stats (no logging)
-        else:
-            # For backward compatibility with old code
-            trades = simulation_result
+        # Extract trades from the result
+        trades = simulation_result
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
-            # 打印出计算时的参数
-            print(f"\nPlotting {ticker} day {trade_date}:")
-            print(f"  Previous close: {prev_close:.2f}")
-            print(f"  Day open: {open_price:.2f}")
-            print(f"  Upper reference: {day_data['upper_ref'].iloc[0]:.2f}")
-            print(f"  Lower reference: {day_data['lower_ref'].iloc[0]:.2f}")
-            
-            # 打印前五分钟的sigma和各条线的值
-            print("\n前五分钟的数据:")
-            print("  时间    |   价格   |   sigma  |  上界线  |  下界线  |   VWAP   ")
-            print("---------|----------|----------|----------|----------|----------")
-            
-            # 获取前五分钟的数据（或者所有数据，如果不足五分钟）
-            first_minutes = min(5, len(day_data))
-            
-            # 计算VWAP
-            prices = []
-            volumes = []
-            vwaps = []
-            
-            for i in range(first_minutes):
-                row = day_data.iloc[i]
-                time_str = row['Time']
-                price = row['Close']
-                sigma = row['sigma']
-                upper = row['UpperBound']
-                lower = row['LowerBound']
-                
-                # 更新VWAP计算
-                prices.append(price)
-                volumes.append(row['Volume'])
-                vwap = calculate_vwap_incrementally(prices, volumes)[-1]
-                vwaps.append(vwap)
-                
-                print(f"  {time_str} | {price:8.2f} | {sigma:8.6f} | {upper:8.2f} | {lower:8.2f} | {vwap:8.2f}")
-            
             # 为当天的交易生成图表
             plot_path = os.path.join(plots_dir, f"{ticker}_trade_visualization_{trade_date}")
             
@@ -900,8 +727,6 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         for trade in trades:
             trade['Date'] = trade_date
             all_trades.append(trade)
-        
-        # Process trades without daily logging
     
     # Create daily results DataFrame
     daily_df = pd.DataFrame(daily_results)
@@ -1326,7 +1151,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         print(f"- {d}")
     print(f"图表保存在 '{plots_dir}' 目录中")
 
-    # 示例用法
+# 示例用法
 if __name__ == "__main__":
     # 交易时间配置
     trading_start_time = (9, 40)
@@ -1334,8 +1159,8 @@ if __name__ == "__main__":
     
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        'qqq_market_hours.csv',  # 使用过滤后的TQQQ数据
-        ticker='QQQ',                     # 指定ticker
+        'tqqq_market_hours.csv',  # 使用过滤后的TQQQ数据
+        ticker='TQQQ',                     # 指定ticker
         initial_capital=100000, 
         lookback_days=10,
         start_date=date(2024, 4, 1), 
@@ -1347,10 +1172,5 @@ if __name__ == "__main__":
         trading_start_time=trading_start_time,  # 交易开始时间
         trading_end_time=trading_end_time,      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        random_plots=5,
-        plots_dir='trading_plots',  # 图表保存目录
-        # use_volatility_sizing=False,
-        # volatility_target=0.02,
-        # use_vix_filter=False,  # 设置为True启用VIX过滤器
-        # strict_stop_loss=True  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
+        strict_stop_loss=True  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
     )
