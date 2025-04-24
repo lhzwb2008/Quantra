@@ -347,14 +347,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, debug=False, 
 def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
                 debug_days=None, plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
-                volatility_target=0.02, check_interval_minutes=30, use_qqq=False,
+                volatility_target=0.02, check_interval_minutes=30, use_qqq=False, use_tqqq=False,
                 use_vix_filter=False, transaction_fee_per_share=0.01, strict_stop_loss=True,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf')):
     """
-    Run the backtest on SPY or QQQ data
+    Run the backtest on SPY, QQQ, or TQQQ data
     
     Parameters:
-        data_path: Path to the SPY or QQQ minute data CSV file
+        data_path: Path to the SPY, QQQ, or TQQQ minute data CSV file
         initial_capital: Initial capital for the backtest
         lookback_days: Number of days to use for calculating the Noise Area
         start_date: Start date for the backtest (datetime.date)
@@ -369,6 +369,7 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         volatility_target: Target daily volatility for position sizing
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
         use_qqq: Whether to use QQQ data instead of SPY (default: False)
+        use_tqqq: Whether to use TQQQ data instead of SPY (default: False)
         use_vix_filter: Whether to use VIX-based trading restrictions (only short when VIX>30, only long when VIX<15)
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
@@ -381,7 +382,12 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         Dictionary with performance metrics
     """
     # Determine which ticker to use
-    ticker = "QQQ" if use_qqq else "SPY"
+    if use_tqqq:
+        ticker = "TQQQ"
+    elif use_qqq:
+        ticker = "QQQ"
+    else:
+        ticker = "SPY"
     
     # Load and process data
     print(f"Loading {ticker} data from {data_path}...")
@@ -447,21 +453,21 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             vix_daily['Date'] = pd.to_datetime(vix_daily['Date'])
             
             # Create a rule-based position sizing with 5 levels based on VIX thresholds
-            # VIX > 30: 25% position (extreme volatility)
-            # VIX between 25 and 30: 50% position (very high volatility)
-            # VIX between 20 and 25: 100% position (high volatility)
-            # VIX between 15 and 20: 200% position (moderate volatility)
-            # VIX < 15: 400% position (low volatility)
+            # VIX > 30: 12.5% position (extreme volatility)
+            # VIX between 25 and 30: 25% position (very high volatility)
+            # VIX between 20 and 25: 50% position (high volatility)
+            # VIX between 15 and 20: 100% position (moderate volatility)
+            # VIX < 15: 200% position (low volatility)
             
-            # First set all to default 100% (between 20 and 25 threshold)
-            vix_daily['position_factor'] = 1.0
+            # First set all to default 50% (between 20 and 25 threshold)
+            vix_daily['position_factor'] = 0.5
             
             # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.25  # 25% when VIX is extreme
-            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.5  # 50% when VIX is very high
-            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is high
-            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 2.0  # 200% when VIX is moderate
-            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 4.0  # 400% when VIX is low
+            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.125  # 12.5% when VIX is extreme
+            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 25), 'position_factor'] = 0.25  # 25% when VIX is very high
+            vix_daily.loc[(vix_daily['Open'] <= 25) & (vix_daily['Open'] > 20), 'position_factor'] = 0.5  # 50% when VIX is high
+            vix_daily.loc[(vix_daily['Open'] <= 20) & (vix_daily['Open'] > 15), 'position_factor'] = 1.0  # 100% when VIX is moderate
+            vix_daily.loc[vix_daily['Open'] <= 15, 'position_factor'] = 2.0  # 200% when VIX is low
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
             position_factors = vix_daily.set_index('Date')['position_factor']
@@ -495,9 +501,9 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
         daily_prices['rolling_std'] = daily_prices['daily_return'].rolling(window=14).std()
         
         # Calculate position factor based on target volatility / actual volatility
-        # Formula: min(4, σtarget/σ_ticker,t)
+        # Formula: min(2, σtarget/σ_ticker,t)
         daily_prices['position_factor'] = volatility_target / (daily_prices['rolling_std'] * np.sqrt(252))
-        daily_prices['position_factor'] = daily_prices['position_factor'].clip(upper=4.0)  # Cap at 4x leverage
+        daily_prices['position_factor'] = daily_prices['position_factor'].clip(upper=2.0)  # Cap at 2x leverage
         
         # Fill NaN values with 1.0 (default position size)
         daily_prices['position_factor'] = daily_prices['position_factor'].fillna(1.0)
@@ -740,9 +746,9 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             
             # Calculate position size with position factor
             if use_volatility_sizing:
-                # For volatility-based sizing, allow up to 4x leverage
-                position_size = floor(capital * position_factor * 4 / open_price)
-                actual_leverage = position_factor * 4
+                # For volatility-based sizing, allow up to 2x leverage
+                position_size = floor(capital * position_factor * 2 / open_price)
+                actual_leverage = position_factor * 2
             else:
                 # For VIX-based sizing, use the position factor directly (already includes desired leverage)
                 position_size = floor(capital * position_factor / open_price)
@@ -772,15 +778,15 @@ def run_backtest(data_path, initial_capital=100000, lookback_days=90, start_date
             if use_dynamic_leverage:
                 # We already have the position factor, now get the corresponding VIX value
                 # Find the VIX threshold that corresponds to this position factor
-                if position_factor == 0.25:  # VIX > 30
+                if position_factor == 0.125:  # VIX > 30
                     current_vix = 35  # Use a representative value
-                elif position_factor == 0.5:  # VIX between 25-30
+                elif position_factor == 0.25:  # VIX between 25-30
                     current_vix = 27.5  # Use a representative value
-                elif position_factor == 1.0:  # VIX between 20-25
+                elif position_factor == 0.5:  # VIX between 20-25
                     current_vix = 22.5  # Use a representative value
-                elif position_factor == 2.0:  # VIX between 15-20
+                elif position_factor == 1.0:  # VIX between 15-20
                     current_vix = 17.5  # Use a representative value
-                elif position_factor == 4.0:  # VIX < 15
+                elif position_factor == 2.0:  # VIX < 15
                     current_vix = 12.5  # Use a representative value
                 
                 if debug and current_vix is not None:
@@ -1322,7 +1328,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         print(f"- {d}")
     print(f"图表保存在 '{plots_dir}' 目录中")
 
-# 示例用法
+    # 示例用法
 if __name__ == "__main__":
     # 交易时间配置
     trading_start_time = (9, 40)
@@ -1333,9 +1339,11 @@ if __name__ == "__main__":
         # 'spy_market_hours.csv', 
         'qqq_market_hours.csv',  # 使用过滤后的QQQ数据
         use_qqq=True,  # 使用QQQ数据替代SPY
+        # 'tqqq_market_hours.csv',  # 使用过滤后的TQQQ数据
+        # use_tqqq=True,  # 使用TQQQ数据替代SPY
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2024, 4, 1), 
+        start_date=date(2022, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1345,7 +1353,7 @@ if __name__ == "__main__":
         trading_end_time=trading_end_time,      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
         # random_plots=5,
-        # plots_dir='trading_plots_qqq',  # QQQ图表保存目录
+        # plots_dir='trading_plots_tqqq',  # TQQQ图表保存目录
         # use_volatility_sizing=False,
         # volatility_target=0.02,
         # use_vix_filter=False,  # 设置为True启用VIX过滤器
