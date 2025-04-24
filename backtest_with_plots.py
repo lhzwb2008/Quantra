@@ -383,7 +383,6 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     # Determine ticker from file name if not provided
     if ticker is None:
         # Extract ticker from file name
-        import os
         file_name = os.path.basename(data_path)
         # Remove _market_hours.csv if present
         ticker = file_name.replace('_market_hours.csv', '')
@@ -1339,7 +1338,7 @@ if __name__ == "__main__":
         ticker='QQQ',                     # 指定ticker
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2023, 4, 1), 
+        start_date=date(2024, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1348,8 +1347,8 @@ if __name__ == "__main__":
         trading_start_time=trading_start_time,  # 交易开始时间
         trading_end_time=trading_end_time,      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        # random_plots=5,
-        # plots_dir='trading_plots',  # 图表保存目录
+        random_plots=5,
+        plots_dir='trading_plots',  # 图表保存目录
         # use_volatility_sizing=False,
         # volatility_target=0.02,
         # use_vix_filter=False,  # 设置为True启用VIX过滤器
