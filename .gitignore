@@ -2,3 +2,4 @@
 *.pdf
 trading_plots*
 .DS_Store
+__pycache__
