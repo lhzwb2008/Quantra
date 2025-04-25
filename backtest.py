@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta, date
 import random
 import os
 from plot_trading_day import plot_trading_day
+from calculate_indicators import calculate_macd
 
 def calculate_vwap_incrementally(prices, volumes):
     """
@@ -28,7 +29,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf')):
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf'), use_macd=True):
     """
     Simulate trading for a single day using curr.band + VWAP strategy
     
@@ -41,6 +42,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
                           or relaxed stop-loss (AND relationship between VWAP and boundary)
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
+        use_macd: Whether to use MACD histogram as an additional condition for entry (default: True)
     """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
@@ -71,8 +73,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         
         # Entry signals at allowed times
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+            # Get MACD histogram value if available
+            macd_histogram = row.get('MACD_histogram', 0)
+            
             # Check for potential long entry
-            if price > upper and price > vwap:  # Only open long if price > upper AND price > vwap
+            long_macd_condition = macd_histogram > 0 if use_macd else True
+            if price > upper and price > vwap and long_macd_condition:
                 # Long entry allowed
                 position = 1
                 entry_price = price
@@ -82,7 +88,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 trailing_stop = max(upper, vwap)
                     
             # Check for potential short entry
-            elif price < lower and price < vwap:  # Only open short if price < lower AND price < vwap
+            short_macd_condition = macd_histogram < 0 if use_macd else True
+            if price < lower and price < vwap and short_macd_condition:
                 # Short entry allowed
                 position = -1
                 entry_price = price
@@ -258,7 +265,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, 
                 transaction_fee_per_share=0.01, strict_stop_loss=True,
-                trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf')):
+                trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
+                use_macd=True):
     """
     Run the backtest on any 1-minute k-line data
     
@@ -303,6 +311,23 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     # Extract date and time components
     price_df['Date'] = price_df['DateTime'].dt.date
     price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
+    
+    # Check if MACD indicators are present, calculate them if not
+    if 'MACD_histogram' not in price_df.columns:
+        print("MACD indicators not found in data. Calculating MACD...")
+        
+        # Calculate MACD for each day separately
+        grouped = price_df.groupby(price_df['Date'])
+        result_dfs = []
+        
+        for date, group in grouped:
+            # Calculate MACD for this day
+            group_with_macd = calculate_macd(group)
+            result_dfs.append(group_with_macd)
+        
+        # Combine all days back together
+        price_df = pd.concat(result_dfs)
+        print("MACD calculation completed.")
     
     # Load and process VIX data for position sizing
     if use_dynamic_leverage:
@@ -671,7 +696,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         # Simulate trading for the day
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
                            transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
-                           trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day)
+                           trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day,
+                           use_macd=use_macd)
         
         # Extract trades from the result
         trades = simulation_result
@@ -767,8 +793,12 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     
     # 打印简化的性能指标
     print(f"\n{ticker}策略性能指标:")
+    strategy_name = f"{ticker} Momentum Curr.Band + VWAP"
+    if use_macd:
+        strategy_name += " + MACD"
+    
     if use_dynamic_leverage:
-        print(f"Strategy: {ticker} Momentum Curr.Band + VWAP with VIX-based Position Sizing")
+        print(f"Strategy: {strategy_name} with VIX-based Position Sizing")
         # Calculate average position factor
         if 'position_factors' in locals():
             avg_position = position_factors.mean()
@@ -776,7 +806,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             min_position = position_factors.min()
             print(f"Average Position: {avg_position:.2f}x, Max Position: {max_position:.2f}x, Min Position: {min_position:.2f}x")
     else:
-        print(f"Strategy: {ticker} Momentum Curr.Band + VWAP")
+        print(f"Strategy: {strategy_name}")
         print(f"Size: 100%")
     
     # 创建一个表格格式来对比策略和买入持有的指标
@@ -1153,11 +1183,11 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        'tqqq_market_hours.csv',  # 使用过滤后的TQQQ数据
+        'tqqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2010, 4, 1), 
+        start_date=date(2024, 4, 1), 
         end_date=date(2025, 4, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1167,6 +1197,8 @@ if __name__ == "__main__":
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
         strict_stop_loss=True,  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
+        use_macd=True,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=5,  # 随机选择5天生成图表
         # plots_dir='trading_plots'  # 图表保存目录
     )
+
