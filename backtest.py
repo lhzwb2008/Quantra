@@ -29,7 +29,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, strict_stop_loss=True, trading_end_time=(15, 50), max_positions_per_day=float('inf'), use_macd=True):
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), use_macd=True):
     """
     Simulate trading for a single day using curr.band + VWAP strategy
     
@@ -39,8 +39,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         allowed_times: List of times when trading is allowed
         position_size: Position size for trades
         transaction_fee_per_share: Fee per share for each transaction
-        strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
-                          or relaxed stop-loss (AND relationship between VWAP and boundary)
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
         use_macd: Whether to use MACD histogram as an additional condition for entry (default: True)
     """
@@ -102,20 +100,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         if position != 0:
             if position == 1:  # Long position
                 # Calculate stop levels
-                if strict_stop_loss:
-                    # OR relationship (original behavior): exit if price < max(upper, vwap)
-                    new_stop = max(upper, vwap)
-                    # Only update in favorable direction (raise the stop)
-                    trailing_stop = max(trailing_stop, new_stop)
-                    
-                    # Exit if price crosses below the trailing stop
-                    exit_condition = price < trailing_stop
-                else:
-                    # AND relationship: exit only if price < upper AND price < vwap
-                    # Track upper and vwap separately
-                    
-                    # Exit if price crosses below both upper bound and VWAP
-                    exit_condition = price < upper and price < vwap
+                # OR relationship: exit if price < max(upper, vwap)
+                new_stop = max(upper, vwap)
+                # Only update in favorable direction (raise the stop)
+                trailing_stop = max(trailing_stop, new_stop)
+                
+                # Exit if price crosses below the trailing stop
+                exit_condition = price < trailing_stop
                 
                 # Check for exit
                 if exit_condition and current_time in allowed_times:
@@ -125,7 +116,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                     transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
                     pnl = position_size * (price - entry_price) - transaction_fees
                     
-                    exit_reason = 'Stop Loss (Strict)' if strict_stop_loss else 'Stop Loss (Relaxed)'
+                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -141,20 +132,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                     
             elif position == -1:  # Short position
                 # Calculate stop levels
-                if strict_stop_loss:
-                    # OR relationship (original behavior): exit if price > min(lower, vwap)
-                    new_stop = min(lower, vwap)
-                    # Only update in favorable direction (lower the stop)
-                    trailing_stop = min(trailing_stop, new_stop)
-                    
-                    # Exit if price crosses above the trailing stop
-                    exit_condition = price > trailing_stop
-                else:
-                    # AND relationship: exit only if price > lower AND price > vwap
-                    # Track lower and vwap separately
-                    
-                    # Exit if price crosses above both lower bound and VWAP
-                    exit_condition = price > lower and price > vwap
+                # OR relationship: exit if price > min(lower, vwap)
+                new_stop = min(lower, vwap)
+                # Only update in favorable direction (lower the stop)
+                trailing_stop = min(trailing_stop, new_stop)
+                
+                # Exit if price crosses above the trailing stop
+                exit_condition = price > trailing_stop
                 
                 # Check for exit
                 if exit_condition and current_time in allowed_times:
@@ -164,7 +148,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                     transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
                     pnl = position_size * (entry_price - price) - transaction_fees
                     
-                    exit_reason = 'Stop Loss (Strict)' if strict_stop_loss else 'Stop Loss (Relaxed)'
+                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -264,7 +248,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 plot_days=None, random_plots=0, plots_dir='trading_plots',
                 vix_path='vix_all.csv', use_dynamic_leverage=True, use_volatility_sizing=False,
                 volatility_target=0.02, check_interval_minutes=30, 
-                transaction_fee_per_share=0.01, strict_stop_loss=True,
+                transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
                 use_macd=True):
     """
@@ -286,8 +270,6 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         volatility_target: Target daily volatility for position sizing
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
         transaction_fee_per_share: Fee per share for each transaction
-        strict_stop_loss: Whether to use strict stop-loss (OR relationship between VWAP and boundary)
-                          or relaxed stop-loss (AND relationship between VWAP and boundary)
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
         
     Returns:
@@ -605,7 +587,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 
             # 模拟当天交易
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
-                                           transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss)
+                                           transaction_fee_per_share=transaction_fee_per_share)
             
             # Extract trades from the result
             trades = simulation_result
@@ -695,7 +677,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 
         # Simulate trading for the day
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
-                           transaction_fee_per_share=transaction_fee_per_share, strict_stop_loss=strict_stop_loss,
+                           transaction_fee_per_share=transaction_fee_per_share,
                            trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day,
                            use_macd=use_macd)
         
@@ -1141,7 +1123,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital,
 
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       use_dynamic_leverage=True, use_volatility_sizing=False, volatility_target=0.02,
-                      check_interval_minutes=30, transaction_fee_per_share=0.01, strict_stop_loss=True,
+                      check_interval_minutes=30, transaction_fee_per_share=0.01,
                       trading_start_time=(9, 40), trading_end_time=(15, 50), max_positions_per_day=float('inf')):
     """
     为指定的日期生成交易图表
@@ -1155,7 +1137,6 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         use_volatility_sizing: 是否使用波动率动态杠杆
         volatility_target: 目标日波动率
         check_interval_minutes: 交易检查间隔（分钟）
-        strict_stop_loss: 是否使用严格止损（VWAP和边界的OR关系）或宽松止损（VWAP和边界的AND关系）
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -1168,7 +1149,6 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         volatility_target=volatility_target,
         check_interval_minutes=check_interval_minutes,
         transaction_fee_per_share=transaction_fee_per_share,
-        strict_stop_loss=strict_stop_loss,
         trading_start_time=trading_start_time,
         trading_end_time=trading_end_time,
         max_positions_per_day=max_positions_per_day
@@ -1185,7 +1165,7 @@ if __name__ == "__main__":
     daily_results, monthly_results, trades, metrics = run_backtest(
         'tqqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
-        initial_capital=10000, 
+        initial_capital=100000, 
         lookback_days=10,
         start_date=date(2024, 4, 1), 
         end_date=date(2025, 4, 1),
@@ -1196,9 +1176,7 @@ if __name__ == "__main__":
         trading_start_time=(9, 40),  # 交易开始时间
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        strict_stop_loss=True,  # 使用严格止损（OR关系），设为False使用宽松止损（AND关系）
         use_macd=True,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=5,  # 随机选择5天生成图表
         # plots_dir='trading_plots'  # 图表保存目录
     )
-
