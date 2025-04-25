@@ -1167,8 +1167,8 @@ if __name__ == "__main__":
         ticker='TQQQ',                     # 指定ticker
         initial_capital=100000, 
         lookback_days=10,
-        start_date=date(2024, 4, 1), 
-        end_date=date(2025, 4, 1),
+        start_date=date(2024, 1, 1), 
+        end_date=date(2025, 1, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
