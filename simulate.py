@@ -115,26 +115,24 @@ def get_current_positions():
             return {}
             
         # 获取股票持仓
-        stock_positions_response = TRADE_CTX.stock_positions()
+        stock_positions = TRADE_CTX.stock_positions()
         
         # 打印原始响应对象，帮助调试
-        print(f"股票持仓响应对象类型: {type(stock_positions_response)}")
-        print(f"股票持仓响应对象内容: {stock_positions_response}")
+        print(f"股票持仓响应对象类型: {type(stock_positions)}")
+        print(f"股票持仓响应对象内容: {stock_positions}")
         
         # 提取持仓信息
         positions = {}
         
-        # 根据API文档，StockPositionsResponse有一个channels属性
-        if hasattr(stock_positions_response, 'channels'):
-            for channel in stock_positions_response.channels:
-                for position in channel.positions:
-                    symbol = position.symbol
-                    quantity = int(position.quantity)
-                    cost_price = float(position.cost_price)
-                    positions[symbol] = {
-                        "quantity": quantity,
-                        "cost_price": cost_price
-                    }
+        # 直接遍历持仓列表
+        for position in stock_positions:
+            symbol = position.symbol
+            quantity = int(position.quantity)
+            cost_price = float(position.cost_price)
+            positions[symbol] = {
+                "quantity": quantity,
+                "cost_price": cost_price
+            }
         
         return positions
     except Exception as e:
@@ -187,12 +185,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 使用history_candlesticks_by_offset获取更多历史数据
         print(f"获取从 {past_date.strftime('%Y-%m-%d')} 到现在的历史数据...")
+        # 修正参数顺序：symbol, period, adjust_type, count, end_time
         candles = QUOTE_CTX.history_candlesticks_by_offset(
             symbol, 
             sdk_period, 
             adjust_type, 
-            True,  # 向前查询
-            count, 
+            count,
             past_date
         )
         
@@ -877,6 +875,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     
                     # Submit order
                     side = "Buy" if signal == 1 else "Sell"
+                    # position_size已经确保是整数类型
                     order_id = submit_order(symbol, side, position_size)
                     
                     if order_id:
