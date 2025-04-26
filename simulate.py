@@ -141,16 +141,17 @@ def get_current_positions():
         traceback.print_exc()  # 打印详细的错误堆栈
         return {}
 
-def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal", days_back=30):
+def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal", days_back=None):
     """
     Get historical candlestick data from Longport API
     
     Parameters:
         symbol: Stock symbol
         period: Candlestick period (e.g., "1m", "5m", "day")
-        count: Number of candlesticks to retrieve
+        count: Number of candlesticks to retrieve per request (max 1000)
         trade_sessions: Trading sessions to include
-        days_back: Number of days to look back for historical data
+        days_back: Number of days to look back for historical data. 
+                  If None, defaults to LOOKBACK_DAYS + 3 for safety margin
         
     Returns:
         DataFrame: Historical data
@@ -160,7 +161,11 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             print("Quote context is not initialized")
             return pd.DataFrame()
         
-        print(f"正在获取 {symbol} 的历史数据 (周期: {period}, 数量: {count})...")
+        # 如果days_back为None，则使用LOOKBACK_DAYS + 3作为默认值
+        if days_back is None:
+            days_back = LOOKBACK_DAYS + 3  # 额外的3天作为安全边际
+        
+        print(f"正在获取 {symbol} 的历史数据 (周期: {period}, 回溯天数: {days_back}, 目标天数: {LOOKBACK_DAYS})...")
             
         # 转换period字符串为SDK的Period枚举
         period_map = {
@@ -179,24 +184,104 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         # 设置调整类型
         adjust_type = AdjustType.ForwardAdjust  # forward_adjust
         
-        # 获取当前日期和过去的日期
-        now = get_us_eastern_time()
-        past_date = now - timedelta(days=days_back)
+        # 确定需要获取的数据
+        target_days = max(days_back, LOOKBACK_DAYS + 2)  # 至少需要LOOKBACK_DAYS天数据+额外余量
+        all_candles = []
         
-        # 使用history_candlesticks_by_offset获取更多历史数据
-        print(f"获取从 {past_date.strftime('%Y-%m-%d')} 到现在的历史数据...")
-        # 修正参数顺序：symbol, period, adjust_type, count, end_time
-        candles = QUOTE_CTX.history_candlesticks_by_offset(
-            symbol, 
-            sdk_period, 
-            adjust_type, 
-            count,
-            past_date
-        )
+        if period == "1m":
+            print(f"将获取约 {target_days} 个交易日的分钟级数据...")
+            
+            # 获取最近一次数据以确定最新交易日
+            recent_candles = QUOTE_CTX.history_candlesticks_by_offset(
+                symbol=symbol,
+                period=sdk_period,
+                adjust_type=adjust_type,
+                direction=False,  # 向历史数据方向查找
+                count=1  # 只获取1条记录确定最新日期
+            )
+            
+            if not recent_candles:
+                print(f"警告: 无法获取 {symbol} 的最新数据")
+                return pd.DataFrame()
+                
+            latest_time = recent_candles[0].timestamp
+            latest_date = datetime.fromtimestamp(latest_time).date()
+            print(f"最新交易日期: {latest_date}")
+            
+            # 计算交易日起始日期（近似值）
+            # 由于不确定具体的交易日历，我们假设每7天有5个交易日
+            calendar_days_needed = int(target_days * 7 / 5) + 5  # 添加额外天数作为缓冲
+            start_date = latest_date - timedelta(days=calendar_days_needed)
+            
+            # 对每个可能的交易日进行数据获取
+            current_date = latest_date
+            trading_days_fetched = 0
+            
+            # 设置进度显示
+            print(f"开始获取历史数据，预计需要处理 {calendar_days_needed} 个日历日...")
+            
+            while current_date >= start_date and trading_days_fetched < target_days:
+                try:
+                    date_str = current_date.strftime("%Y%m%d")
+                    minute_str = "09:30"  # 美股/港股交易开始时间
+                    
+                    print(f"获取 {date_str} 的分钟K线数据...")
+                    
+                    # 获取该日的分钟K线
+                    day_candles = QUOTE_CTX.history_candlesticks_by_offset(
+                        symbol=symbol,
+                        period=sdk_period,
+                        adjust_type=adjust_type,
+                        direction=True,  # 向最新数据方向查找
+                        count=390,  # 约一个交易日的分钟数
+                        date=date_str,
+                        minute=minute_str
+                    )
+                    
+                    if day_candles:
+                        all_candles.extend(day_candles)
+                        trading_days_fetched += 1
+                        print(f"成功获取 {date_str} 的数据: {len(day_candles)} 条记录")
+                    else:
+                        print(f"{date_str} 可能不是交易日，无数据")
+                    
+                    # 检查是否达到目标
+                    if trading_days_fetched >= target_days:
+                        print(f"已获取 {trading_days_fetched} 个交易日的数据，达到目标")
+                        break
+                        
+                    # 避免API请求过于频繁
+                    time_module.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"获取 {date_str} 数据时出错: {e}")
+                
+                # 移至前一天
+                current_date -= timedelta(days=1)
+            
+            print(f"数据获取完成，共获取 {trading_days_fetched} 个交易日，{len(all_candles)} 条记录")
+            
+        else:
+            # 对于非分钟级数据，采用一次性获取策略
+            print(f"获取{period}周期的历史数据...")
+            max_request_count = 1000  # API单次请求上限
+            
+            # 获取当前日期和过去的日期
+            now = get_us_eastern_time()
+            past_date = now - timedelta(days=days_back)
+            
+            all_candles = QUOTE_CTX.history_candlesticks_by_offset(
+                symbol=symbol,
+                period=sdk_period,
+                adjust_type=adjust_type,
+                direction=False,  # 向历史数据方向查找
+                count=max_request_count,
+                datetime_obj=past_date
+            )
         
         # 转换为DataFrame
         data = []
-        for candle in candles:
+        for candle in all_candles:
             data.append({
                 "Close": float(candle.close),
                 "Open": float(candle.open),
@@ -204,7 +289,7 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 "Low": float(candle.low),
                 "Volume": float(candle.volume),
                 "Turnover": float(candle.turnover),
-                "DateTime": candle.timestamp
+                "DateTime": datetime.fromtimestamp(candle.timestamp)
             })
         
         df = pd.DataFrame(data)
@@ -215,16 +300,26 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         print(f"成功获取 {symbol} 的历史数据: {len(df)} 条记录")
         
-        # 确保DateTime是datetime类型
-        df["DateTime"] = pd.to_datetime(df["DateTime"])
-        
         # 提取日期和时间组件
         df["Date"] = df["DateTime"].dt.date
         df["Time"] = df["DateTime"].dt.strftime('%H:%M')
         
+        # 打印获取的日期范围
+        if not df.empty:
+            earliest_date = df["Date"].min()
+            latest_date = df["Date"].max()
+            unique_dates = df["Date"].nunique()
+            print(f"获取的数据日期范围: {earliest_date} 至 {latest_date}, 共 {unique_dates} 个交易日")
+            
+            # 检查是否获取了足够的历史数据用于噪声区域计算
+            if unique_dates < LOOKBACK_DAYS:
+                print(f"警告: 获取的历史数据不足 {LOOKBACK_DAYS} 个交易日(只有 {unique_dates} 天)，可能会影响噪声区域计算")
+        
         return df
     except Exception as e:
         print(f"Error getting historical data: {e}")
+        import traceback
+        traceback.print_exc()  # 打印详细错误堆栈
         return pd.DataFrame()
 
 def get_quote(symbol):
@@ -401,7 +496,7 @@ def calculate_noise_area(df, lookback_days=10):
     
     return df_copy
 
-def submit_order(symbol, side, quantity, order_type="MO", price=None):
+def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth="RTH_ONLY"):
     """
     Submit an order using Longport API
     
@@ -411,6 +506,7 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None):
         quantity: Order quantity
         order_type: Order type (MO for Market Order, LO for Limit Order)
         price: Limit price (required for LO)
+        outside_rth: Whether to allow trading outside regular trading hours (RTH_ONLY, ANY_TIME, OVERNIGHT)
         
     Returns:
         str: Order ID if successful, None otherwise
@@ -445,7 +541,8 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None):
                 side=sdk_side,
                 submitted_price=price,
                 submitted_quantity=quantity,
-                time_in_force=time_in_force
+                time_in_force=time_in_force,
+                outside_rth=outside_rth
             )
         else:
             # 市价单不需要价格
@@ -454,7 +551,8 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None):
                 order_type=sdk_order_type,
                 side=sdk_side,
                 submitted_quantity=quantity,
-                time_in_force=time_in_force
+                time_in_force=time_in_force,
+                outside_rth=outside_rth
             )
         
         return order_id
@@ -710,6 +808,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     positions_opened_today = 0
     last_date = None
     
+    # 判断是否是美股交易
+    is_us_market = symbol.endswith(".US")
+    outside_rth_setting = "ANY_TIME" if is_us_market else "RTH_ONLY"
+    
     # Main trading loop
     while True:
         try:
@@ -751,7 +853,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         quantity = positions[symbol]["quantity"]
                         
                         # Submit market order to close position
-                        close_order_id = submit_order(symbol, side, quantity)
+                        close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
                         if close_order_id:
                             print(f"交易日结束，平仓: {side} {quantity} {symbol}")
                         
@@ -768,7 +870,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 continue
             
             # Get historical data for the day
-            df = get_historical_data(symbol, period="1m", count=390)
+            df = get_historical_data(symbol, period="1m")
             if df.empty:
                 print("Error: Could not get historical data")
                 time_module.sleep(60)
@@ -830,7 +932,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     quantity = positions[symbol]["quantity"]
                     
                     # Submit market order to close position
-                    close_order_id = submit_order(symbol, side, quantity)
+                    close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
                     if close_order_id:
                         exit_time = now
                         exit_price = df.iloc[-1]["Close"]
@@ -876,7 +978,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # Submit order
                     side = "Buy" if signal == 1 else "Sell"
                     # position_size已经确保是整数类型
-                    order_id = submit_order(symbol, side, position_size)
+                    order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                     
                     if order_id:
                         # Update position variables
