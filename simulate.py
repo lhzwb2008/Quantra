@@ -116,24 +116,25 @@ def get_current_positions():
             return {}
             
         # 获取股票持仓
-        stock_positions = TRADE_CTX.stock_positions()
+        stock_positions_response = TRADE_CTX.stock_positions()
         
         # 打印原始响应对象，帮助调试
-        print(f"股票持仓响应对象类型: {type(stock_positions)}")
-        print(f"股票持仓响应对象内容: {stock_positions}")
+        # print(f"股票持仓响应对象类型: {type(stock_positions_response)}")
+        # print(f"股票持仓响应对象内容: {stock_positions_response}")
         
         # 提取持仓信息
         positions = {}
         
-        # 直接遍历持仓列表
-        for position in stock_positions:
-            symbol = position.symbol
-            quantity = int(position.quantity)
-            cost_price = float(position.cost_price)
-            positions[symbol] = {
-                "quantity": quantity,
-                "cost_price": cost_price
-            }
+        # 正确处理StockPositionsResponse对象
+        for channel in stock_positions_response.channels:
+            for position in channel.positions:
+                symbol = position.symbol
+                quantity = int(position.quantity)
+                cost_price = float(position.cost_price)
+                positions[symbol] = {
+                    "quantity": quantity,
+                    "cost_price": cost_price
+                }
         
         return positions
     except Exception as e:
@@ -194,11 +195,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             
             # 获取最近一次数据以确定最新交易日
             recent_candles = QUOTE_CTX.history_candlesticks_by_offset(
-                symbol=symbol,
-                period=sdk_period,
-                adjust_type=adjust_type,
-                direction=False,  # 向历史数据方向查找
-                count=1  # 只获取1条记录确定最新日期
+                symbol,                # 股票代码
+                sdk_period,            # K线周期
+                adjust_type,           # 复权类型
+                False,                 # forward=False，向历史方向查找
+                1,                     # count参数：只获取1条记录 
+                datetime.now()         # time参数：基准时间，当前时间
             )
             
             if not recent_candles:
@@ -206,7 +208,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 return pd.DataFrame()
                 
             latest_time = recent_candles[0].timestamp
-            latest_date = datetime.fromtimestamp(latest_time).date()
+            # 修正：如果timestamp已经是datetime对象，直接获取date
+            if isinstance(latest_time, datetime):
+                latest_date = latest_time.date()
+            else:
+                # 如果是时间戳数字，则转换
+                latest_date = datetime.fromtimestamp(latest_time).date()
             print(f"最新交易日期: {latest_date}")
             
             # 计算交易日起始日期（近似值）
@@ -230,13 +237,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                     
                     # 获取该日的分钟K线
                     day_candles = QUOTE_CTX.history_candlesticks_by_offset(
-                        symbol=symbol,
-                        period=sdk_period,
-                        adjust_type=adjust_type,
-                        direction=True,  # 向最新数据方向查找
-                        count=390,  # 约一个交易日的分钟数
-                        date=date_str,
-                        minute=minute_str
+                        symbol,                                      # 股票代码
+                        sdk_period,                                  # K线周期
+                        adjust_type,                                 # 复权类型
+                        True,                                        # forward=True，向最新方向查找
+                        390,                                         # count参数：一天的分钟数
+                        datetime.combine(current_date, time(9, 30))  # time参数：该天09:30的datetime对象
                     )
                     
                     if day_candles:
@@ -272,17 +278,25 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             past_date = now - timedelta(days=days_back)
             
             all_candles = QUOTE_CTX.history_candlesticks_by_offset(
-                symbol=symbol,
-                period=sdk_period,
-                adjust_type=adjust_type,
-                direction=False,  # 向历史数据方向查找
-                count=max_request_count,
-                datetime_obj=past_date
+                symbol,                # 股票代码
+                sdk_period,            # K线周期
+                adjust_type,           # 复权类型
+                False,                 # forward=False，向历史方向查找
+                max_request_count,     # count参数：请求数量
+                past_date              # time参数：基准时间，过去的日期
             )
         
         # 转换为DataFrame
         data = []
         for candle in all_candles:
+            # 修正：如果timestamp已经是datetime对象，直接使用
+            timestamp = candle.timestamp
+            if isinstance(timestamp, datetime):
+                dt = timestamp
+            else:
+                # 如果是时间戳数字，则转换
+                dt = datetime.fromtimestamp(timestamp)
+                
             data.append({
                 "Close": float(candle.close),
                 "Open": float(candle.open),
@@ -290,7 +304,7 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 "Low": float(candle.low),
                 "Volume": float(candle.volume),
                 "Turnover": float(candle.turnover),
-                "DateTime": datetime.fromtimestamp(candle.timestamp)
+                "DateTime": dt
             })
         
         df = pd.DataFrame(data)
@@ -448,6 +462,15 @@ def calculate_noise_area(df, lookback_days=10):
     
     # Calculate return from open for each minute
     df_copy["ret"] = df_copy["Close"] / df_copy["day_open"] - 1
+    
+    # 检查是否有重复的日期和时间组合
+    date_time_counts = df_copy.groupby(['Date', 'Time']).size()
+    duplicate_combinations = date_time_counts[date_time_counts > 1].reset_index()[['Date', 'Time']]
+    
+    if not duplicate_combinations.empty:
+        print(f"警告: 发现{len(duplicate_combinations)}个重复的日期和时间组合，将保留每个组合的最后一条记录")
+        # 为每个日期和时间组合保留最后一条记录
+        df_copy = df_copy.drop_duplicates(subset=['Date', 'Time'], keep='last')
     
     # Calculate the Noise Area boundaries
     # Pivot to get time-of-day in columns
