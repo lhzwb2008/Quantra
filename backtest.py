@@ -250,7 +250,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 volatility_target=0.02, check_interval_minutes=30, 
                 transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                use_macd=True):
+                use_macd=True, print_daily_trades=True):
     """
     Run the backtest on any 1-minute k-line data
     
@@ -271,6 +271,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         check_interval_minutes: Interval in minutes between trading checks (default: 30)
         transaction_fee_per_share: Fee per share for each transaction
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
+        use_macd: Whether to use MACD as an entry condition (default: True)
+        print_daily_trades: Whether to print details of each day's trades (default: True)
         
     Returns:
         DataFrame with daily results
@@ -683,6 +685,28 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         
         # Extract trades from the result
         trades = simulation_result
+        
+        # 打印每天的交易信息
+        if trades and print_daily_trades:
+            print(f"\n===== {date_str} 交易详情 =====")
+            for i, trade in enumerate(trades):
+                # 格式化时间为可读格式
+                entry_time = trade['entry_time'].strftime('%H:%M:%S')
+                exit_time = trade['exit_time'].strftime('%H:%M:%S')
+                
+                # 根据交易方向设置标记
+                direction = "多" if trade['side'] == 'Long' else "空"
+                
+                # 打印交易详情
+                print(f"交易 #{i+1}: {direction}单")
+                print(f"  入场时间: {entry_time}, 入场价格: {trade['entry_price']:.2f}")
+                print(f"  出场时间: {exit_time}, 出场价格: {trade['exit_price']:.2f}")
+                print(f"  P&L: ${trade['pnl']:.2f}")
+                print(f"  出场原因: {trade['exit_reason']}")
+            
+            # 计算当天总盈亏
+            day_total_pnl = sum(trade['pnl'] for trade in trades)
+            print(f"当日总盈亏: ${day_total_pnl:.2f}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -1163,12 +1187,12 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        'tqqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        'tqqq_longport_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
-        initial_capital=100000, 
+        initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 1), 
-        end_date=date(2025, 1, 1),
+        start_date=date(2025, 4, 1), 
+        end_date=date(2025, 5, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -1177,6 +1201,7 @@ if __name__ == "__main__":
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
         use_macd=True,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
-        # random_plots=5,  # 随机选择5天生成图表
-        # plots_dir='trading_plots'  # 图表保存目录
+        # random_plots=3,  # 随机选择3天生成图表
+        # plots_dir='trading_plots',  # 图表保存目录
+        print_daily_trades=False  # 是否打印每日交易详情
     )
