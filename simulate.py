@@ -28,7 +28,7 @@ MAX_POSITIONS_PER_DAY = 3  # Maximum number of positions to open per day
 USE_MACD = True  # Whether to use MACD as an additional signal
 LOOKBACK_DAYS = 10  # Days to look back for calculating noise area
 
-print(os.environ)
+# print(os.environ)
 
 # Symbol to trade
 SYMBOL = "TQQQ.US"  # Default symbol, can be changed
