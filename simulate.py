@@ -76,29 +76,28 @@ QUOTE_CTX, TRADE_CTX = create_contexts()
 
 def get_account_balance():
     """
-    Get the account balance from Longport API
+    Get the account balance from Longport API (USD only)
     
     Returns:
-        float: Available cash balance
+        float: Available cash balance in USD
     """
     try:
         if TRADE_CTX is None:
             print("Trade context is not initialized")
             return 0
             
-        print("正在获取账户余额...")
-        # 获取账户余额
-        balance_list = TRADE_CTX.account_balance()
+        print("正在获取美元账户余额...")
+        # 直接获取美元账户余额
+        balance_list = TRADE_CTX.account_balance(currency="USD")
         
-        # 账户余额返回的是列表，取第一个账户
+        # 处理返回结果
         if balance_list and len(balance_list) > 0:
             balance = balance_list[0]
-            # 提取可用资金
             available_cash = float(balance.net_assets)
-            print(f"账户余额: ${available_cash:.2f}")
+            print(f"美元账户余额: ${available_cash:.2f}")
             return available_cash
         else:
-            print("No account balance data returned")
+            print("未找到美元账户，请检查您的账户设置")
             return 0
     except Exception as e:
         print(f"Error getting account balance: {e}")
