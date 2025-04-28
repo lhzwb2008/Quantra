@@ -688,25 +688,22 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
-            print(f"\n===== {date_str} 交易详情 =====")
-            for i, trade in enumerate(trades):
-                # 格式化时间为可读格式
-                entry_time = trade['entry_time'].strftime('%H:%M:%S')
-                exit_time = trade['exit_time'].strftime('%H:%M:%S')
-                
-                # 根据交易方向设置标记
-                direction = "多" if trade['side'] == 'Long' else "空"
-                
-                # 打印交易详情
-                print(f"交易 #{i+1}: {direction}单")
-                print(f"  入场时间: {entry_time}, 入场价格: {trade['entry_price']:.2f}")
-                print(f"  出场时间: {exit_time}, 出场价格: {trade['exit_price']:.2f}")
-                print(f"  P&L: ${trade['pnl']:.2f}")
-                print(f"  出场原因: {trade['exit_reason']}")
-            
             # 计算当天总盈亏
             day_total_pnl = sum(trade['pnl'] for trade in trades)
-            print(f"当日总盈亏: ${day_total_pnl:.2f}")
+            
+            # 创建交易方向与时间的简要信息
+            trade_summary = []
+            for trade in trades:
+                direction = "多" if trade['side'] == 'Long' else "空"
+                entry_time = trade['entry_time'].strftime('%H:%M')
+                exit_time = trade['exit_time'].strftime('%H:%M')
+                pnl = trade['pnl']
+                # 添加简要信息: 方向(入场时间->出场时间) 盈亏
+                trade_summary.append(f"{direction}({entry_time}->{exit_time}) ${pnl:.2f}")
+            
+            # 打印单行交易日志
+            trade_info = ", ".join(trade_summary)
+            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f} | {trade_info}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -1191,7 +1188,7 @@ if __name__ == "__main__":
         ticker='TQQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2025, 4, 1), 
+        start_date=date(2025, 1, 1), 
         end_date=date(2025, 5, 1),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1203,5 +1200,5 @@ if __name__ == "__main__":
         use_macd=True,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=False  # 是否打印每日交易详情
+        print_daily_trades=True  # 是否打印每日交易详情
     )
