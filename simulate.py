@@ -7,12 +7,13 @@ import os
 import sys
 import pytz
 from math import floor
+from decimal import Decimal  # 添加Decimal支持
 
 # Import calculation functions from existing files
 from calculate_indicators import calculate_macd
 
 # Import Longport SDK
-from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType
+from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH, OrderStatus  # 添加OutsideRTH和OrderStatus
 
 # Longport API credentials will be loaded from environment variables
 # 需要设置以下环境变量:
@@ -520,7 +521,7 @@ def calculate_noise_area(df, lookback_days=10):
     
     return df_copy
 
-def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth="RTH_ONLY"):
+def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth=None):
     """
     Submit an order using Longport API
     
@@ -530,7 +531,8 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rt
         quantity: Order quantity
         order_type: Order type (MO for Market Order, LO for Limit Order)
         price: Limit price (required for LO)
-        outside_rth: Whether to allow trading outside regular trading hours (RTH_ONLY, ANY_TIME, OVERNIGHT)
+        outside_rth: Whether to allow trading outside regular trading hours (OutsideRTH.RTHOnly, OutsideRTH.AnyTime, OutsideRTH.Overnight),
+                     If None, defaults to OutsideRTH.AnyTime
         
     Returns:
         str: Order ID if successful, None otherwise
@@ -539,49 +541,78 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rt
         if TRADE_CTX is None:
             print("Trade context is not initialized")
             return None
+        
+        # 打印参数类型以便调试    
+        print(f"订单参数: symbol={symbol}, side={side}, quantity={quantity}, order_type={order_type}, price={price}, outside_rth={outside_rth}")
             
         # 转换side为SDK的OrderSide枚举
         sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell
         
         # 转换order_type为SDK的OrderType枚举
-        order_type_map = {
-            "MO": OrderType.Market,
-            "LO": OrderType.Limit,
-            "ELO": OrderType.EnhancedLimit,
-            "AO": OrderType.AtAuction,
-            "ALO": OrderType.AtAuctionLimit
-        }
-        sdk_order_type = order_type_map.get(order_type, OrderType.Market)
+        if isinstance(order_type, str):
+            order_type_map = {
+                "MO": OrderType.MO,  # 市价单
+                "LO": OrderType.LO,  # 限价单
+                "ELO": OrderType.ELO,  # 增强限价单
+                "AO": OrderType.AO,  # 竞价单
+                "ALO": OrderType.ALO  # 竞价限价单
+            }
+            sdk_order_type = order_type_map.get(order_type, OrderType.MO)
+        else:
+            sdk_order_type = order_type
         
         # 设置time_in_force
         time_in_force = TimeInForceType.Day
         
+        # 处理outside_rth参数
+        if outside_rth is None:
+            outside_rth = OutsideRTH.AnyTime
+        elif isinstance(outside_rth, str):
+            outside_rth_map = {
+                "RTH_ONLY": OutsideRTH.RTHOnly,
+                "ANY_TIME": OutsideRTH.AnyTime,
+                "OVERNIGHT": OutsideRTH.Overnight
+            }
+            outside_rth = outside_rth_map.get(outside_rth, OutsideRTH.AnyTime)
+            
+        # 将数量和价格转换为Decimal类型
+        dec_quantity = Decimal(str(quantity))
+        
+        print(f"提交订单: {symbol}, {side}, 数量: {quantity}, 订单类型: {sdk_order_type}, outside_rth: {outside_rth}")
+        
         # 提交订单
-        if sdk_order_type == OrderType.Limit and price is not None:
-            # 限价单需要价格
-            order_id = TRADE_CTX.submit_order(
+        if sdk_order_type == OrderType.LO and price is not None:
+            # 限价单需要价格 - 转换为Decimal类型
+            dec_price = Decimal(str(price))
+            print(f"提交限价单，价格: {dec_price}")
+            response = TRADE_CTX.submit_order(
                 symbol=symbol,
                 order_type=sdk_order_type,
                 side=sdk_side,
-                submitted_price=price,
-                submitted_quantity=quantity,
+                submitted_price=dec_price,
+                submitted_quantity=dec_quantity,
                 time_in_force=time_in_force,
                 outside_rth=outside_rth
             )
         else:
             # 市价单不需要价格
-            order_id = TRADE_CTX.submit_order(
+            print(f"提交市价单")
+            response = TRADE_CTX.submit_order(
                 symbol=symbol,
-                order_type=sdk_order_type,
+                order_type=OrderType.MO,  # 确保使用市价单
                 side=sdk_side,
-                submitted_quantity=quantity,
+                submitted_quantity=dec_quantity,
                 time_in_force=time_in_force,
                 outside_rth=outside_rth
             )
         
-        return order_id
+        # 从SubmitOrderResponse对象中提取order_id
+        print(f"订单提交成功: {response}")
+        return response.order_id
     except Exception as e:
-        print(f"Error submitting order: {e}")
+        print(f"提交订单时出错: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def get_order_status(order_id):
@@ -598,26 +629,38 @@ def get_order_status(order_id):
         if TRADE_CTX is None:
             print("Trade context is not initialized")
             return {}
+        
+        # 确保order_id是字符串类型
+        if not isinstance(order_id, str):
+            order_id = str(order_id)
+            
+        print(f"正在获取订单 {order_id} 的状态...")
             
         # 获取订单详情
         order_detail = TRADE_CTX.order_detail(order_id)
         
+        # 转换OrderStatus为字符串
+        status_str = str(order_detail.status)
+        
         # 转换为字典格式
         order_info = {
             "order_id": order_detail.order_id,
-            "status": order_detail.status.value,
+            "status": status_str,
             "stock_name": order_detail.stock_name,
             "quantity": order_detail.quantity,
             "executed_quantity": order_detail.executed_quantity,
             "price": str(order_detail.price),
             "executed_price": str(order_detail.executed_price),
             "submitted_at": order_detail.submitted_at.isoformat(),
-            "side": order_detail.side.value
+            "side": str(order_detail.side)  # 同样转换OrderSide为字符串
         }
         
+        print(f"订单状态获取成功: {status_str}")
         return order_info
     except Exception as e:
-        print(f"Error getting order status: {e}")
+        print(f"获取订单状态时出错: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def cancel_order(order_id):
@@ -625,7 +668,7 @@ def cancel_order(order_id):
     Cancel an order using Longport API
     
     Parameters:
-        order_id: Order ID
+        order_id: Order ID to cancel
         
     Returns:
         bool: True if successful, False otherwise
@@ -635,12 +678,20 @@ def cancel_order(order_id):
             print("Trade context is not initialized")
             return False
             
-        # 取消订单
+        # 确保order_id是字符串类型
+        if not isinstance(order_id, str):
+            order_id = str(order_id)
+            
+        print(f"取消订单 {order_id}")
+            
+        # Cancel the order
         TRADE_CTX.cancel_order(order_id)
         
         return True
     except Exception as e:
-        print(f"Error canceling order: {e}")
+        print(f"取消订单时出错: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def check_trading_conditions(df, current_time, allowed_times, positions_opened_today, max_positions_per_day):
@@ -866,27 +917,26 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if not is_trading_hours:
                 print(f"当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
                 
-                # Close any open positions at the end of trading hours
-                if position != 0 and current_hour == end_hour and current_minute > end_minute:
-                    # Get current positions
-                    positions = get_current_positions()
-                    
-                    # Close position if still open
-                    if symbol in positions and positions[symbol]["quantity"] > 0:
-                        side = "Sell" if position == 1 else "Buy"
-                        quantity = positions[symbol]["quantity"]
+                # 交易日结束，强制平仓
+                try:
+                    if position != 0:
+                        print("交易日结束，执行平仓")
+                        side = "Sell" if position > 0 else "Buy"
+                        quantity = abs(position)
                         
-                        # Submit market order to close position
+                        # 平仓时使用AnyTime设置
+                        outside_rth_setting = OutsideRTH.AnyTime
+                        
                         close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
                         if close_order_id:
                             print(f"交易日结束，平仓: {side} {quantity} {symbol}")
                         
                         # Reset position variables
                         position = 0
-                        entry_price = None
-                        trailing_stop = None
+                        entry_price = 0
                         entry_time = None
-                        order_id = None
+                except Exception as e:
+                    print(f"平仓出错: {e}")
                 
                 # Sleep until next check
                 print(f"等待 60 秒后再次检查...")
@@ -938,7 +988,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     entry_price = None
                     trailing_stop = None
                     entry_time = None
-                    order_id = None
             
             # Check for exit if we have a position
             if position != 0:
@@ -955,23 +1004,26 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     side = "Sell" if position == 1 else "Buy"
                     quantity = positions[symbol]["quantity"]
                     
-                    # Submit market order to close position
-                    close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
-                    if close_order_id:
-                        exit_time = now
-                        exit_price = df.iloc[-1]["Close"]
-                        
-                        print(f"平仓: {side} {quantity} {symbol} 价格: {exit_price}")
-                        print(f"入场时间: {entry_time}, 出场时间: {exit_time}")
-                        print(f"入场价格: {entry_price}, 出场价格: {exit_price}")
-                        print(f"盈亏: {(exit_price - entry_price) * quantity if position == 1 else (entry_price - exit_price) * quantity}")
-                        
-                        # Reset position variables
-                        position = 0
-                        entry_price = None
-                        trailing_stop = None
-                        entry_time = None
-                        order_id = None
+                    # 执行平仓
+                    try:
+                        close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
+                        if close_order_id:
+                            exit_time = now
+                            exit_price = df.iloc[-1]["Close"]
+                            
+                            print(f"平仓: {side} {quantity} {symbol} 价格: {exit_price}")
+                            
+                            # Calculate PnL
+                            pnl = (exit_price - entry_price) * position
+                            pnl_pct = pnl / (entry_price * abs(position)) * 100
+                            print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                            
+                            # Reset position variables
+                            position = 0
+                            entry_price = 0
+                            entry_time = None
+                    except Exception as e:
+                        print(f"平仓出错: {e}")
             
             # Check for entry if we don't have a position
             elif position == 0:
@@ -999,21 +1051,23 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         time_module.sleep(60)
                         continue
                     
-                    # Submit order
-                    side = "Buy" if signal == 1 else "Sell"
-                    # position_size已经确保是整数类型
+                    # 开仓时使用AnyTime设置
+                    outside_rth_setting = OutsideRTH.AnyTime
+                    
                     order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                     
                     if order_id:
                         # Update position variables
                         position = signal
                         entry_price = latest_price
-                        trailing_stop = stop
                         entry_time = now
-                        positions_opened_today += 1
                         
-                        print(f"开仓: {side} {position_size} {symbol} 价格: {latest_price}")
-                        print(f"初始止损: {stop}")
+                        # Set stop loss and take profit levels
+                        stop_loss = entry_price * (1 - stop_loss_pct) if signal > 0 else entry_price * (1 + stop_loss_pct)
+                        take_profit = entry_price * (1 + take_profit_pct) if signal > 0 else entry_price * (1 - take_profit_pct)
+                        
+                        print(f"开仓: {side} {position_size} {symbol} 价格: {entry_price}")
+                        print(f"止损: {stop_loss}, 止盈: {take_profit}")
             
             # Sleep until next check
             next_check_time = now + timedelta(minutes=check_interval_minutes)
