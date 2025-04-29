@@ -289,15 +289,64 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 转换为DataFrame
         data = []
+        eastern = pytz.timezone('US/Eastern')
+        
+        # 调试信息：检查第一条数据的时间戳类型
+        if all_candles:
+            first_timestamp = all_candles[0].timestamp
+            print(f"调试信息 - 首条数据时间戳类型: {type(first_timestamp)}")
+            print(f"调试信息 - 首条数据时间戳值: {first_timestamp}")
+            if isinstance(first_timestamp, datetime):
+                print(f"调试信息 - 时区信息: {first_timestamp.tzinfo}")
+        
         for candle in all_candles:
-            # 修正：如果timestamp已经是datetime对象，直接使用
             timestamp = candle.timestamp
+            
+            # 首先确定原始时间戳的时区
+            original_dt = None
+            
             if isinstance(timestamp, datetime):
-                dt = timestamp
+                original_dt = timestamp
+                print(f"原始时间戳: {timestamp}, 时区: {timestamp.tzinfo}")
             else:
-                # 如果是时间戳数字，则转换
-                dt = datetime.fromtimestamp(timestamp)
-                
+                # 假设时间戳是UTC的Unix时间戳
+                original_dt = datetime.fromtimestamp(timestamp, pytz.utc)
+                print(f"Unix时间戳 {timestamp} 转换为UTC时间: {original_dt}")
+            
+            # 确保交易时间在美股交易时段 (9:30-16:00 ET)
+            # 先转换为美东时间
+            if original_dt.tzinfo is None:
+                # 无时区信息，根据数值判断
+                if original_dt.hour >= 9 and original_dt.hour < 17:
+                    # 合理的交易时间，假设是美东时间
+                    dt = eastern.localize(original_dt)
+                else:
+                    # 不合理的交易时间，假设是UTC时间
+                    dt = pytz.utc.localize(original_dt).astimezone(eastern)
+            else:
+                # 已有时区信息，直接转换
+                dt = original_dt.astimezone(eastern)
+            
+            # 根据证券类型调整时间
+            # 美股的交易时间是9:30-16:00 ET
+            if symbol.endswith(".US"):
+                # 验证时间是否在合理范围内
+                hour = dt.hour
+                if not (9 <= hour < 17):
+                    # 不在美股交易时间内，需要重新猜测时区
+                    print(f"警告: 时间 {dt} 不在美股交易时间内，尝试调整...")
+                    
+                    # 尝试当作UTC+8(北京时间)转换为美东时间
+                    if isinstance(timestamp, datetime):
+                        if timestamp.tzinfo is None:
+                            dt_china = pytz.timezone('Asia/Shanghai').localize(timestamp)
+                            dt = dt_china.astimezone(eastern)
+                    else:
+                        # 对于Unix时间戳，假设是UTC+0，转为美东
+                        dt = datetime.fromtimestamp(timestamp, pytz.utc).astimezone(eastern)
+                    
+                    print(f"调整后的时间: {dt}")
+            
             data.append({
                 "Close": float(candle.close),
                 "Open": float(candle.open),
@@ -316,6 +365,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         print(f"成功获取 {symbol} 的历史数据: {len(df)} 条记录")
         
+        # 显示一些样本数据，帮助调试时区问题
+        sample_times = df["DateTime"].head(5).tolist()
+        print(f"样本时间数据 (前5条):")
+        for sample_time in sample_times:
+            print(f"  - {sample_time} ({sample_time.tzinfo})")
+        
         # 提取日期和时间组件
         df["Date"] = df["DateTime"].dt.date
         df["Time"] = df["DateTime"].dt.strftime('%H:%M')
@@ -330,6 +385,29 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             # 检查是否获取了足够的历史数据用于噪声区域计算
             if unique_dates < LOOKBACK_DAYS:
                 print(f"警告: 获取的历史数据不足 {LOOKBACK_DAYS} 个交易日(只有 {unique_dates} 天)，可能会影响噪声区域计算")
+        
+        # 检查时间范围是否合理
+        time_range = df["Time"].unique()
+        time_min = min(time_range) if len(time_range) > 0 else "N/A"
+        time_max = max(time_range) if len(time_range) > 0 else "N/A"
+        print(f"时间范围: {time_min} 到 {time_max}")
+        
+        # 检查是否有在美股交易时间(9:30-16:00)之外的数据
+        if symbol.endswith(".US"):
+            outside_hours = df[~df["Time"].between("09:30", "16:00")]
+            if not outside_hours.empty:
+                outside_count = len(outside_hours)
+                outside_percent = outside_count / len(df) * 100
+                print(f"警告: 发现 {outside_count} 条数据 ({outside_percent:.1f}%) 在美股交易时间之外")
+                
+                # 显示部分非交易时间的数据作为示例
+                print("非交易时间数据示例:")
+                for _, row in outside_hours.head(3).iterrows():
+                    print(f"  - 日期: {row['Date']}, 时间: {row['Time']}, 价格: {row['Close']}")
+                
+                # 过滤掉非交易时间的数据
+                df = df[df["Time"].between("09:30", "16:00")]
+                print(f"已过滤非交易时间数据，剩余 {len(df)} 条记录")
         
         return df
     except Exception as e:
