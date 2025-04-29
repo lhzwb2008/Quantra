@@ -305,64 +305,44 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 转换为DataFrame
         data = []
-        eastern = pytz.timezone('US/Eastern')
-        
-        # 调试信息：检查第一条数据的时间戳类型
-        if all_candles:
-            first_timestamp = all_candles[0].timestamp
-            print(f"调试信息 - 首条数据时间戳类型: {type(first_timestamp)}")
-            print(f"调试信息 - 首条数据时间戳值: {first_timestamp}")
-            if isinstance(first_timestamp, datetime):
-                print(f"调试信息 - 时区信息: {first_timestamp.tzinfo}")
+        eastern = pytz.timezone('US/Eastern')  # 美东时区
+
+        # 调试: 输出时区和第一条数据信息
+        print("开始处理时间戳数据...")
         
         for candle in all_candles:
             timestamp = candle.timestamp
             
-            # 首先确定原始时间戳的时区
-            original_dt = None
-            
+            # 简化时区处理逻辑
             if isinstance(timestamp, datetime):
-                original_dt = timestamp
-                print(f"原始时间戳: {timestamp}, 时区: {timestamp.tzinfo}")
-            else:
-                # 假设时间戳是UTC的Unix时间戳
-                original_dt = datetime.fromtimestamp(timestamp, pytz.utc)
-                print(f"Unix时间戳 {timestamp} 转换为UTC时间: {original_dt}")
-            
-            # 确保交易时间在美股交易时段 (9:30-16:00 ET)
-            # 先转换为美东时间
-            if original_dt.tzinfo is None:
-                # 无时区信息，根据数值判断
-                if original_dt.hour >= 9 and original_dt.hour < 17:
-                    # 合理的交易时间，假设是美东时间
-                    dt = eastern.localize(original_dt)
-                else:
-                    # 不合理的交易时间，假设是UTC时间
-                    dt = pytz.utc.localize(original_dt).astimezone(eastern)
-            else:
-                # 已有时区信息，直接转换
-                dt = original_dt.astimezone(eastern)
-            
-            # 根据证券类型调整时间
-            # 美股的交易时间是9:30-16:00 ET
-            if symbol.endswith(".US"):
-                # 验证时间是否在合理范围内
-                hour = dt.hour
-                if not (9 <= hour < 17):
-                    # 不在美股交易时间内，需要重新猜测时区
-                    print(f"警告: 时间 {dt} 不在美股交易时间内，尝试调整...")
+                # 如果是datetime对象
+                if timestamp.tzinfo is None:
+                    # 无时区信息，根据数值判断时间是否合理
+                    hour = timestamp.hour
                     
-                    # 尝试当作UTC+8(北京时间)转换为美东时间
-                    if isinstance(timestamp, datetime):
-                        if timestamp.tzinfo is None:
-                            dt_china = pytz.timezone('Asia/Shanghai').localize(timestamp)
-                            dt = dt_china.astimezone(eastern)
+                    # 美股交易时间为9:30-16:00，如果时间在这个范围，可能已经是美东时间
+                    if symbol.endswith(".US") and 9 <= hour < 17:
+                        # 直接作为美东时间处理
+                        dt = eastern.localize(timestamp)
                     else:
-                        # 对于Unix时间戳，假设是UTC+0，转为美东
-                        dt = datetime.fromtimestamp(timestamp, pytz.utc).astimezone(eastern)
-                    
-                    print(f"调整后的时间: {dt}")
-            
+                        # 尝试判断是否是标准时间+8小时(亚洲时区)
+                        if symbol.endswith(".US") and (hour >= 21 or hour < 5):
+                            # 可能是北京时间晚上9点-凌晨5点 (对应美东时间上午9点-下午5点)
+                            # 转换为美东时间
+                            beijing = pytz.timezone('Asia/Shanghai')
+                            dt = beijing.localize(timestamp).astimezone(eastern)
+                        else:
+                            # 其他情况当作UTC处理
+                            utc = pytz.utc
+                            dt = utc.localize(timestamp).astimezone(eastern)
+                else:
+                    # 已有时区信息，直接转换到美东时间
+                    dt = timestamp.astimezone(eastern)
+            else:
+                # 如果是时间戳数字，先转为UTC，再转为美东时间
+                dt = datetime.fromtimestamp(timestamp, pytz.utc).astimezone(eastern)
+
+            # 只有在时间在合理范围内才添加数据
             data.append({
                 "Close": float(candle.close),
                 "Open": float(candle.open),
