@@ -10,7 +10,7 @@ pytz>=2021.1
 matplotlib>=3.4.0
 
 # Longport金融API SDK
-longport-openapi>=1.0.0
+longport>=1.0.0
 
 # 系统工具
 python-dotenv>=0.19.0  # 用于管理环境变量 
