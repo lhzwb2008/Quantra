@@ -8,6 +8,10 @@ import sys
 import pytz
 from math import floor
 from decimal import Decimal  # 添加Decimal支持
+from dotenv import load_dotenv  # 添加dotenv支持
+
+# 加载.env文件中的环境变量
+load_dotenv()
 
 # Import calculation functions from existing files
 from calculate_indicators import calculate_macd
@@ -16,23 +20,29 @@ from calculate_indicators import calculate_macd
 from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH, OrderStatus  # 添加OutsideRTH和OrderStatus
 
 # Longport API credentials will be loaded from environment variables
-# 需要设置以下环境变量:
+# 需要设置以下环境变量 (可通过.env文件配置):
 # LONGPORT_APP_KEY
 # LONGPORT_APP_SECRET
 # LONGPORT_ACCESS_TOKEN
 
-# Trading parameters
-CHECK_INTERVAL_MINUTES = 10  # Time between trading checks
-TRADING_START_TIME = (9, 40)  # Trading start time (hour, minute) in US Eastern Time
-TRADING_END_TIME = (15, 40)  # Trading end time (hour, minute) in US Eastern Time
-MAX_POSITIONS_PER_DAY = 3  # Maximum number of positions to open per day
-USE_MACD = True  # Whether to use MACD as an additional signal
-LOOKBACK_DAYS = 10  # Days to look back for calculating noise area
+# Trading parameters - 可以从环境变量加载或使用默认值
+CHECK_INTERVAL_MINUTES = int(os.environ.get('CHECK_INTERVAL_MINUTES', 10))  # 时间间隔，默认10分钟
+TRADING_START_HOUR = int(os.environ.get('TRADING_START_HOUR', 9))  # 交易开始小时，默认9点
+TRADING_START_MINUTE = int(os.environ.get('TRADING_START_MINUTE', 40))  # 交易开始分钟，默认40分
+TRADING_END_HOUR = int(os.environ.get('TRADING_END_HOUR', 15))  # 交易结束小时，默认15点
+TRADING_END_MINUTE = int(os.environ.get('TRADING_END_MINUTE', 40))  # 交易结束分钟，默认40分
+MAX_POSITIONS_PER_DAY = int(os.environ.get('MAX_POSITIONS_PER_DAY', 3))  # 每日最大持仓数，默认3
+USE_MACD = os.environ.get('USE_MACD', 'true').lower() == 'true'  # 是否使用MACD，默认True
+LOOKBACK_DAYS = int(os.environ.get('LOOKBACK_DAYS', 10))  # 回溯天数，默认10天
+
+# 交易开始和结束时间元组
+TRADING_START_TIME = (TRADING_START_HOUR, TRADING_START_MINUTE)
+TRADING_END_TIME = (TRADING_END_HOUR, TRADING_END_MINUTE)
+
+# 其他参数
+SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')  # 默认交易品种，可从环境变量配置
 
 # print(os.environ)
-
-# Symbol to trade
-SYMBOL = "TQQQ.US"  # Default symbol, can be changed
 
 # 获取美东时间
 def get_us_eastern_time():
@@ -55,9 +65,15 @@ def create_contexts():
     """
     try:
         print("正在初始化长桥API连接...")
-        # 从环境变量加载配置
+        # 注意: 通过python-dotenv已经将.env文件中的配置加载到环境变量中
+        # 所以这里使用Config.from_env()会读取到.env中设置的值
         config = Config.from_env()
-        print("成功从环境变量加载API配置")
+        print("成功从环境变量加载API配置 (已通过.env文件设置)")
+        
+        # 检查是否成功加载API凭证
+        app_key = os.environ.get("LONGPORT_APP_KEY", "")
+        if app_key == "" or app_key == "your_app_key_here":
+            print("警告: API凭证可能未正确设置。请检查.env文件中的配置。")
         
         # 创建行情上下文
         quote_ctx = QuoteContext(config)
@@ -960,6 +976,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     order_id = None
     positions_opened_today = 0
     last_date = None
+    
+    # 止损止盈比例设置
+    stop_loss_pct = 0.005  # 0.5%的止损比例
+    take_profit_pct = 0.01  # 1.0%的止盈比例
     
     # 判断是否是美股交易
     is_us_market = symbol.endswith(".US")

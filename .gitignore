@@ -3,3 +3,4 @@
 trading_plots*
 .DS_Store
 __pycache__
+.env
