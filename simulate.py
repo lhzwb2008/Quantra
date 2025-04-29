@@ -965,8 +965,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     is_us_market = symbol.endswith(".US")
     outside_rth_setting = "ANY_TIME" if is_us_market else "RTH_ONLY"
     
+    # 跟踪循环次数
+    loop_count = 0
+    
     # Main trading loop
     while True:
+        loop_count += 1
+        print(f"\n----- 交易检查循环 #{loop_count} -----")
+        
         try:
             # 获取当前美东时间
             now = get_us_eastern_time()
@@ -1018,30 +1024,54 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 
                 # Sleep until next check
                 print(f"等待 60 秒后再次检查...")
-                time_module.sleep(60)
+                try:
+                    # 将sleep拆分成多段，每段后打印一个状态消息
+                    for i in range(6):
+                        time_module.sleep(10)
+                        print(f"等待中...已过 {(i+1)*10} 秒")
+                    print("等待结束，准备下一次检查")
+                except Exception as e:
+                    print(f"等待过程中出错: {e}")
                 continue
             
+            print("正在获取历史数据...")
             # Get historical data for the day
-            df = get_historical_data(symbol, period="1m")
-            if df.empty:
-                print("Error: Could not get historical data")
+            try:
+                df = get_historical_data(symbol, period="1m")
+                if df.empty:
+                    print("Error: Could not get historical data")
+                    time_module.sleep(60)
+                    continue
+            except Exception as e:
+                print(f"获取历史数据时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                print("跳过本次检查")
                 time_module.sleep(60)
                 continue
             
-            # Calculate VWAP
-            print("计算VWAP指标...")
-            prices = df["Close"].values
-            volumes = df["Volume"].values
-            df["VWAP"] = calculate_vwap_incrementally(prices, volumes)
-            
-            # Calculate MACD if needed
-            if USE_MACD and "MACD_histogram" not in df.columns:
-                print("计算MACD指标...")
-                df = calculate_macd(df)
-            
-            # Calculate noise area boundaries
-            print("计算噪声区域边界...")
-            df = calculate_noise_area(df, lookback_days)
+            try:
+                # Calculate VWAP
+                print("计算VWAP指标...")
+                prices = df["Close"].values
+                volumes = df["Volume"].values
+                df["VWAP"] = calculate_vwap_incrementally(prices, volumes)
+                
+                # Calculate MACD if needed
+                if USE_MACD and "MACD_histogram" not in df.columns:
+                    print("计算MACD指标...")
+                    df = calculate_macd(df)
+                
+                # Calculate noise area boundaries
+                print("计算噪声区域边界...")
+                df = calculate_noise_area(df, lookback_days)
+            except Exception as e:
+                print(f"计算指标时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                print("跳过本次检查")
+                time_module.sleep(60)
+                continue
             
             # Check for missing data
             if df["UpperBound"].isna().any() or df["LowerBound"].isna().any():
@@ -1051,11 +1081,18 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             
             # Get current positions
             print("获取当前持仓...")
-            positions = get_current_positions()
-            if positions:
-                print(f"当前持仓: {positions}")
-            else:
-                print("当前无持仓")
+            try:
+                positions = get_current_positions()
+                if positions:
+                    print(f"当前持仓: {positions}")
+                else:
+                    print("当前无持仓")
+            except Exception as e:
+                print(f"获取持仓时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                print("使用上次记录的持仓信息继续")
+                positions = {}
             
             # Update position status based on actual positions
             if position != 0:
@@ -1132,6 +1169,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # 开仓时使用AnyTime设置
                     outside_rth_setting = OutsideRTH.AnyTime
                     
+                    side = "Buy" if signal > 0 else "Sell"  # 修复: 确保side变量被定义
+                    
                     order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                     
                     if order_id:
@@ -1152,11 +1191,30 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             sleep_seconds = (next_check_time - now).total_seconds()
             if sleep_seconds > 0:
                 print(f"等待 {sleep_seconds:.0f} 秒后进行下一次检查...")
-                time_module.sleep(sleep_seconds)
+                
+                # 分段sleep，每分钟输出一条状态消息
+                segments = int(sleep_seconds / 60) + 1
+                for i in range(segments):
+                    segment_length = min(60, sleep_seconds - i*60)
+                    if segment_length <= 0:
+                        break
+                        
+                    time_module.sleep(segment_length)
+                    minutes_passed = int((i*60 + segment_length) / 60)
+                    print(f"等待中...已过 {minutes_passed} 分钟，还剩 {int(sleep_seconds - (i*60 + segment_length)) / 60:.1f} 分钟")
+                
+                print(f"等待结束，开始下一次检查 - {get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}")
             
         except Exception as e:
             print(f"交易循环中出现错误: {e}")
-            time_module.sleep(60)
+            import traceback
+            traceback.print_exc()  # 打印详细错误堆栈
+            print("尝试在60秒后恢复...")
+            try:
+                time_module.sleep(60)
+                print("错误恢复，重新开始检查...")
+            except Exception as e2:
+                print(f"恢复过程中出现新错误: {e2}")
 
 if __name__ == "__main__":
     import argparse
