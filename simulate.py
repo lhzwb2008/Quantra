@@ -768,14 +768,12 @@ def cancel_order(order_id):
         traceback.print_exc()
         return False
 
-def check_trading_conditions(df, current_time, allowed_times, positions_opened_today, max_positions_per_day):
+def check_trading_conditions(df, positions_opened_today, max_positions_per_day):
     """
     Check if trading conditions are met for entry
     
     Parameters:
         df: DataFrame with price data and indicators
-        current_time: Current time string (HH:MM)
-        allowed_times: List of allowed trading times
         positions_opened_today: Number of positions opened today
         max_positions_per_day: Maximum number of positions allowed per day
         
@@ -787,10 +785,7 @@ def check_trading_conditions(df, current_time, allowed_times, positions_opened_t
     """
     # Check if we've reached the maximum positions for the day
     if positions_opened_today >= max_positions_per_day:
-        return 0, None, None
-    
-    # Check if current time is in allowed times
-    if current_time not in allowed_times:
+        print(f"已达到每日最大持仓数: {positions_opened_today}/{max_positions_per_day}")
         return 0, None, None
     
     # Get the latest data point
@@ -805,9 +800,25 @@ def check_trading_conditions(df, current_time, allowed_times, positions_opened_t
     # Get MACD histogram value if available and enabled
     macd_histogram = latest.get("MACD_histogram", 0)
     
+    print("\n开仓条件判断:")
+    print(f"当前价格: {price:.2f}")
+    print(f"VWAP: {vwap:.2f}")
+    print(f"上边界: {upper:.2f}")
+    print(f"下边界: {lower:.2f}")
+    print(f"MACD柱状图值: {macd_histogram:.6f}")
+    
     # Check for long entry
     long_macd_condition = macd_histogram > 0 if USE_MACD else True
-    if price > upper and price > vwap and long_macd_condition:
+    long_price_above_upper = price > upper
+    long_price_above_vwap = price > vwap
+    
+    print("\n多头入场条件:")
+    print(f"价格 > 上边界: {long_price_above_upper} ({price:.2f} > {upper:.2f})")
+    print(f"价格 > VWAP: {long_price_above_vwap} ({price:.2f} > {vwap:.2f})")
+    print(f"MACD柱状图 > 0: {long_macd_condition} ({macd_histogram:.6f} > 0)")
+    
+    if long_price_above_upper and long_price_above_vwap and long_macd_condition:
+        print("满足多头入场条件!")
         # Long entry allowed
         # Initial stop: max(UpperBound, VWAP)
         stop_price = max(upper, vwap)
@@ -815,12 +826,22 @@ def check_trading_conditions(df, current_time, allowed_times, positions_opened_t
     
     # Check for short entry
     short_macd_condition = macd_histogram < 0 if USE_MACD else True
-    if price < lower and price < vwap and short_macd_condition:
+    short_price_below_lower = price < lower
+    short_price_below_vwap = price < vwap
+    
+    print("\n空头入场条件:")
+    print(f"价格 < 下边界: {short_price_below_lower} ({price:.2f} < {lower:.2f})")
+    print(f"价格 < VWAP: {short_price_below_vwap} ({price:.2f} < {vwap:.2f})")
+    print(f"MACD柱状图 < 0: {short_macd_condition} ({macd_histogram:.6f} < 0)")
+    
+    if short_price_below_lower and short_price_below_vwap and short_macd_condition:
+        print("满足空头入场条件!")
         # Short entry allowed
         # Initial stop: min(LowerBound, VWAP)
         stop_price = min(lower, vwap)
         return -1, price, stop_price
     
+    print("不满足任何入场条件")
     # No entry signal
     return 0, None, None
 
@@ -876,40 +897,8 @@ def check_exit_conditions(df, position, trailing_stop):
     # No position
     return False, None
 
-def generate_allowed_times(start_time, end_time, check_interval_minutes):
-    """
-    Generate allowed trading times based on the check interval
-    
-    Parameters:
-        start_time: Trading start time (hour, minute)
-        end_time: Trading end time (hour, minute)
-        check_interval_minutes: Time between checks in minutes
-        
-    Returns:
-        list: List of allowed trading times in HH:MM format
-    """
-    allowed_times = []
-    start_hour, start_minute = start_time
-    end_hour, end_minute = end_time
-    
-    current_hour, current_minute = start_hour, start_minute
-    while current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute):
-        # Add current time to allowed_times
-        allowed_times.append(f"{current_hour:02d}:{current_minute:02d}")
-        
-        # Increment by check_interval_minutes
-        current_minute += check_interval_minutes
-        if current_minute >= 60:
-            current_hour += current_minute // 60
-            current_minute = current_minute % 60
-    
-    # Always ensure trading_end_time is included for position closing
-    end_time_str = f"{end_time[0]:02d}:{end_time[1]:02d}"
-    if end_time_str not in allowed_times:
-        allowed_times.append(end_time_str)
-        allowed_times.sort()
-    
-    return allowed_times
+# 此函数在模拟交易中不再需要，因为我们直接使用 CHECK_INTERVAL_MINUTES 进行定时检查
+# 而不是预先生成允许交易的时间点列表
 
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
@@ -944,9 +933,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         print("Error: Could not get account balance or balance is zero")
         return
     
-    # Generate allowed trading times
-    allowed_times = generate_allowed_times(trading_start_time, trading_end_time, check_interval_minutes)
-    print(f"允许交易的时间点 (美东时间): {allowed_times}")
+    # 不再需要生成允许交易的时间点，直接使用 CHECK_INTERVAL_MINUTES 进行定时检查
+    print(f"使用 {check_interval_minutes} 分钟间隔进行定时检查")
     
     # Initialize trading variables
     position = 0  # 0: no position, 1: long, -1: short
@@ -1087,14 +1075,20 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 volumes = df["Volume"].values
                 df["VWAP"] = calculate_vwap_incrementally(prices, volumes)
                 
+                # 创建一个副本用于计算指标，避免修改原始数据
+                df_indicators = df.copy()
+                
                 # Calculate MACD if needed
-                if USE_MACD and "MACD_histogram" not in df.columns:
+                if USE_MACD and "MACD_histogram" not in df_indicators.columns:
                     print("计算MACD指标...")
-                    df = calculate_macd(df)
+                    df_indicators = calculate_macd(df_indicators)
                 
                 # Calculate noise area boundaries
                 print("计算噪声区域边界...")
-                df = calculate_noise_area(df, lookback_days)
+                df_indicators = calculate_noise_area(df_indicators, lookback_days)
+                
+                # 确保保留原始的上下边界值
+                df = df_indicators.copy()
             except Exception as e:
                 print(f"计算指标时出错: {e}")
                 import traceback
@@ -1112,11 +1106,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             # Get current positions
             print("获取当前持仓...")
             try:
-                positions = get_current_positions()
+                all_positions = get_current_positions()
+                # 只关注指定标的的持仓
+                positions = {symbol: all_positions[symbol]} if symbol in all_positions else {}
                 if positions:
-                    print(f"当前持仓: {positions}")
+                    print(f"当前持仓 ({symbol}): {positions[symbol]}")
                 else:
-                    print("当前无持仓")
+                    print(f"当前无 {symbol} 持仓")
             except Exception as e:
                 print(f"获取持仓时出错: {e}")
                 import traceback
@@ -1129,6 +1125,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 # Check if we still have the position
                 if symbol not in positions or positions[symbol]["quantity"] == 0:
                     # Position was closed externally
+                    print(f"{symbol} 持仓已被外部平仓")
                     position = 0
                     entry_price = None
                     trailing_stop = None
@@ -1143,7 +1140,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 trailing_stop = new_stop
                 print(f"更新追踪止损价格: {trailing_stop}")
                 
-                if exit_signal and current_time in allowed_times:
+                if exit_signal:
                     print("触发退出信号!")
                     # Exit position
                     side = "Sell" if position == 1 else "Buy"
@@ -1170,22 +1167,86 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     except Exception as e:
                         print(f"平仓出错: {e}")
             
-            # Check for entry if we don't have a position
+                # Check for entry if we don't have a position
             elif position == 0:
                 print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
-                signal, price, stop = check_trading_conditions(df, current_time, allowed_times, positions_opened_today, max_positions_per_day)
+                
+                # 获取最新实时价格
+                quote = get_quote(symbol)
+                if not quote:
+                    print("Error: Could not get quote")
+                    time_module.sleep(60)
+                    continue
+                
+                # 更新最新价格到DataFrame
+                latest_price = float(quote.get("last_done", df.iloc[-1]["Close"]))
+                print(f"获取实时价格: {latest_price}")
+                
+                # 获取最新的VWAP和上下边界值
+                # 注意：这里我们需要确保使用的是计算噪声区域边界后的正确数据
+                # 获取最新日期的数据
+                latest_date = df["Date"].max()
+                latest_data = df[df["Date"] == latest_date].copy()
+                
+                if not latest_data.empty:
+                    # 获取最新时间点的数据
+                    latest_row = latest_data.iloc[-1].copy()
+                    latest_row["Close"] = latest_price
+                else:
+                    print("错误：无法获取最新日期的数据")
+                    time_module.sleep(60)
+                    continue
+                
+                # 使用最新的数据进行判断
+                # 注意：这里我们直接使用之前计算好的VWAP和上下边界值
+                print("\n开仓条件判断:")
+                print(f"当前价格: {latest_price:.2f}")
+                print(f"VWAP: {latest_row['VWAP']:.2f}")
+                print(f"上边界: {latest_row['UpperBound']:.2f}")
+                print(f"下边界: {latest_row['LowerBound']:.2f}")
+                
+                # 获取MACD柱状图值
+                macd_histogram = latest_row.get("MACD_histogram", 0)
+                print(f"MACD柱状图值: {macd_histogram:.6f}")
+                
+                # 检查多头入场条件
+                long_macd_condition = macd_histogram > 0 if USE_MACD else True
+                long_price_above_upper = latest_price > latest_row["UpperBound"]
+                long_price_above_vwap = latest_price > latest_row["VWAP"]
+                
+                print("\n多头入场条件:")
+                print(f"价格 > 上边界: {long_price_above_upper} ({latest_price:.2f} > {latest_row['UpperBound']:.2f})")
+                print(f"价格 > VWAP: {long_price_above_vwap} ({latest_price:.2f} > {latest_row['VWAP']:.2f})")
+                print(f"MACD柱状图 > 0: {long_macd_condition} ({macd_histogram:.6f} > 0)")
+                
+                signal = 0
+                price = latest_price
+                stop = None
+                
+                if long_price_above_upper and long_price_above_vwap and long_macd_condition:
+                    print("满足多头入场条件!")
+                    signal = 1
+                    stop = max(latest_row["UpperBound"], latest_row["VWAP"])
+                else:
+                    # 检查空头入场条件
+                    short_macd_condition = macd_histogram < 0 if USE_MACD else True
+                    short_price_below_lower = latest_price < latest_row["LowerBound"]
+                    short_price_below_vwap = latest_price < latest_row["VWAP"]
+                    
+                    print("\n空头入场条件:")
+                    print(f"价格 < 下边界: {short_price_below_lower} ({latest_price:.2f} < {latest_row['LowerBound']:.2f})")
+                    print(f"价格 < VWAP: {short_price_below_vwap} ({latest_price:.2f} < {latest_row['VWAP']:.2f})")
+                    print(f"MACD柱状图 < 0: {short_macd_condition} ({macd_histogram:.6f} < 0)")
+                    
+                    if short_price_below_lower and short_price_below_vwap and short_macd_condition:
+                        print("满足空头入场条件!")
+                        signal = -1
+                        stop = min(latest_row["LowerBound"], latest_row["VWAP"])
+                    else:
+                        print("不满足任何入场条件")
                 
                 if signal != 0:
                     print(f"触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
-                    # Calculate position size
-                    quote = get_quote(symbol)
-                    if not quote:
-                        print("Error: Could not get quote")
-                        time_module.sleep(60)
-                        continue
-                    
-                    # Get latest price
-                    latest_price = float(quote.get("last_done", price))
                     
                     # Calculate position size (use 90% of available capital)
                     available_capital = get_account_balance() * 0.9
