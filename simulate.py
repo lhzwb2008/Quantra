@@ -1022,13 +1022,43 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 except Exception as e:
                     print(f"平仓出错: {e}")
                 
-                # Sleep until next check
-                print(f"等待 60 秒后再次检查...")
+                # 非交易时间，计算到下一个交易时间的等待时间
+                now = get_us_eastern_time()
+                next_check_time = None
+                
+                # 计算今天的交易开始时间
+                today = now.date()
+                today_start = datetime.combine(today, time(trading_start_time[0], trading_start_time[1]), tzinfo=now.tzinfo)
+                
+                # 如果当前时间在今天交易开始时间之前，等到交易开始
+                if now < today_start:
+                    next_check_time = today_start
+                    wait_minutes = int((next_check_time - now).total_seconds() / 60)
+                    print(f"等待今天交易时段开始，还有约 {wait_minutes} 分钟")
+                else:
+                    # 已经过了今天的交易时间，等到明天交易开始
+                    tomorrow = today + timedelta(days=1)
+                    tomorrow_start = datetime.combine(tomorrow, time(trading_start_time[0], trading_start_time[1]), tzinfo=now.tzinfo)
+                    next_check_time = tomorrow_start
+                    wait_minutes = int((next_check_time - now).total_seconds() / 60)
+                    print(f"等待明天交易时段开始，还有约 {wait_minutes} 分钟")
+                
+                # 设置最长等待时间为30分钟，然后再次检查
+                # 这样可以确保系统能定期更新，但不会太频繁
+                wait_seconds = min(1800, (next_check_time - now).total_seconds())
+                print(f"设置下次检查时间为 {wait_seconds/60:.1f} 分钟后 ({now + timedelta(seconds=wait_seconds)})")
+                
                 try:
-                    # 将sleep拆分成多段，每段后打印一个状态消息
-                    for i in range(6):
-                        time_module.sleep(10)
-                        print(f"等待中...已过 {(i+1)*10} 秒")
+                    # 对于较长时间等待，每30分钟输出一条状态消息
+                    segments = max(1, int(wait_seconds / 1800))
+                    segment_length = wait_seconds / segments
+                    
+                    for i in range(segments):
+                        time_module.sleep(segment_length)
+                        minutes_passed = int((i+1) * segment_length / 60)
+                        minutes_total = int(wait_seconds / 60)
+                        print(f"非交易时间等待中...已过 {minutes_passed} 分钟，共需 {minutes_total} 分钟")
+                    
                     print("等待结束，准备下一次检查")
                 except Exception as e:
                     print(f"等待过程中出错: {e}")
