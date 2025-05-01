@@ -160,6 +160,10 @@ def get_current_positions():
         traceback.print_exc()  # 打印详细的错误堆栈
         return {}
 
+# 全局变量，用于跟踪最后一次获取历史数据的日期
+LAST_HISTORICAL_DATA_DATE = None
+HISTORICAL_DATA_CACHE = None
+
 def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal", days_back=None):
     """
     Get historical candlestick data from Longport API
@@ -175,16 +179,38 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
     Returns:
         DataFrame: Historical data
     """
+    global LAST_HISTORICAL_DATA_DATE, HISTORICAL_DATA_CACHE
+    
     try:
         if QUOTE_CTX is None:
             print("Quote context is not initialized")
             return pd.DataFrame()
         
-        # 如果days_back为None，则使用LOOKBACK_DAYS + 3作为默认值
-        if days_back is None:
-            days_back = LOOKBACK_DAYS + 3  # 额外的3天作为安全边际
+        # 获取当前美东时间
+        now_et = get_us_eastern_time()
+        current_date = now_et.date()
         
-        print(f"正在获取 {symbol} 的历史数据 (周期: {period}, 回溯天数: {days_back}, 目标天数: {LOOKBACK_DAYS})...")
+        # 检查是否已经获取了今天的数据
+        if LAST_HISTORICAL_DATA_DATE is not None and HISTORICAL_DATA_CACHE is not None:
+            if LAST_HISTORICAL_DATA_DATE == current_date:
+                print(f"使用缓存的历史数据，最后更新日期: {LAST_HISTORICAL_DATA_DATE}")
+                return HISTORICAL_DATA_CACHE
+        
+        # 设置目标天数
+        # 如果当前是交易时间前，今天的数据可能不完整，所以目标天数+1
+        now_hour = now_et.hour
+        now_minute = now_et.minute
+        is_before_market_open = (now_hour < 9 or (now_hour == 9 and now_minute < 30))
+        
+        # 如果当前时间是交易日但还未开盘，目标天数+1
+        target_days = LOOKBACK_DAYS + 1 if is_before_market_open else LOOKBACK_DAYS
+        print(f"当前时间是否在开盘前: {is_before_market_open}, 目标天数: {target_days}")
+        
+        # 如果days_back为None，则使用目标天数+15作为安全边际
+        if days_back is None:
+            days_back = target_days + 15  # 额外的15天作为安全边际，确保能获取到足够的数据
+        
+        print(f"正在获取 {symbol} 的历史数据 (周期: {period}, 回溯天数: {days_back}, 目标天数: {target_days})...")
             
         # 转换period字符串为SDK的Period枚举
         period_map = {
@@ -202,9 +228,6 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 设置调整类型
         adjust_type = AdjustType.ForwardAdjust  # forward_adjust
-        
-        # 确定需要获取的数据
-        target_days = max(days_back, LOOKBACK_DAYS + 2)  # 至少需要LOOKBACK_DAYS天数据+额外余量
         all_candles = []
         
         if period == "1m":
@@ -235,8 +258,11 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             
             # 计算交易日起始日期（近似值）
             # 由于不确定具体的交易日历，我们假设每7天有5个交易日
-            calendar_days_needed = int(target_days * 7 / 5) + 5  # 添加额外天数作为缓冲
+            # 使用days_back参数来确定需要处理的日历日数
+            calendar_days_needed = days_back  # 直接使用days_back作为日历日数
             start_date = latest_date - timedelta(days=calendar_days_needed)
+            
+            print(f"将处理 {calendar_days_needed} 个日历日，从 {start_date} 到 {latest_date}")
             
             # 对每个可能的交易日进行数据获取
             current_date = latest_date
@@ -245,9 +271,19 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             # 设置进度显示
             print(f"开始获取历史数据，预计需要处理 {calendar_days_needed} 个日历日...")
             
+            # 创建一个集合来跟踪已经获取过的日期，避免重复获取
+            fetched_dates = set()
+            
             while current_date >= start_date and trading_days_fetched < target_days:
                 try:
                     date_str = current_date.strftime("%Y%m%d")
+                    
+                    # 检查是否已经获取过这个日期的数据
+                    if date_str in fetched_dates:
+                        print(f"日期 {date_str} 的数据已经获取过，跳过")
+                        current_date -= timedelta(days=1)
+                        continue
+                    
                     minute_str = "09:30"  # 美股/港股交易开始时间
                     
                     print(f"获取 {date_str} 的分钟K线数据...")
@@ -262,17 +298,43 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                         datetime.combine(current_date, time(9, 30))  # time参数：该天09:30的datetime对象
                     )
                     
+                    # 打印每个K线的日期，用于调试
+                    if day_candles and len(day_candles) > 0:
+                        sample_candle = day_candles[0]
+                        sample_time = sample_candle.timestamp
+                        if isinstance(sample_time, datetime):
+                            sample_date = sample_time.date()
+                        else:
+                            sample_date = datetime.fromtimestamp(sample_time).date()
+                        print(f"样本K线日期: {sample_date}, 请求日期: {current_date}")
+                        
+                        # 如果样本K线日期与请求日期不匹配，则跳过
+                        if sample_date != current_date:
+                            print(f"警告: K线日期 {sample_date} 与请求日期 {current_date} 不匹配，跳过")
+                            current_date -= timedelta(days=1)
+                            continue
+                    
                     if day_candles:
                         all_candles.extend(day_candles)
-                        trading_days_fetched += 1
-                        print(f"成功获取 {date_str} 的数据: {len(day_candles)} 条记录")
+                        # 只有当数据点数量足够多时才计入交易日计数
+                        # 美股一天通常有390个分钟K线
+                        if len(day_candles) >= 300:  # 至少需要300个数据点才算完整交易日
+                            trading_days_fetched += 1
+                            print(f"成功获取 {date_str} 的数据: {len(day_candles)} 条记录 (计入交易日计数)")
+                        else:
+                            print(f"成功获取 {date_str} 的数据: {len(day_candles)} 条记录 (数据不完整，不计入交易日计数)")
+                        
+                        # 记录已获取的日期，无论是否计入交易日计数
+                        fetched_dates.add(date_str)
                     else:
                         print(f"{date_str} 可能不是交易日，无数据")
                     
                     # 检查是否达到目标
                     if trading_days_fetched >= target_days:
-                        print(f"已获取 {trading_days_fetched} 个交易日的数据，达到目标")
-                        break
+                        print(f"已获取 {trading_days_fetched} 个完整交易日的数据，达到目标")
+                        # 不要立即退出循环，继续获取更多数据，直到处理完所有日历日
+                        # 这样可以确保获取到足够的历史数据，即使有些日期不是交易日
+                        # break
                         
                     # 避免API请求过于频繁
                     time_module.sleep(0.5)
@@ -404,6 +466,84 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 # 过滤掉非交易时间的数据
                 df = df[df["Time"].between("09:30", "16:00")]
                 print(f"已过滤非交易时间数据，剩余 {len(df)} 条记录")
+        
+        # 检查历史数据的完整性
+        print("\n检查历史数据的完整性...")
+        
+        # 1. 检查数据是否为空
+        if df.empty:
+            print("警告: 历史数据为空!")
+            return df
+        
+        # 2. 检查数据的日期范围
+        date_range = df["Date"].nunique()
+        earliest_date = df["Date"].min()
+        latest_date = df["Date"].max()
+        print(f"数据日期范围: {earliest_date} 至 {latest_date}, 共 {date_range} 个交易日")
+        
+        if date_range < LOOKBACK_DAYS:
+            print(f"警告: 数据日期范围不足 {LOOKBACK_DAYS} 天 (只有 {date_range} 天)")
+        
+        # 3. 检查每个交易日的数据点数量，并处理可能的重复数据
+        print("\n各交易日数据点数量:")
+        # 首先确保每个日期和时间组合只有一条记录
+        df = df.drop_duplicates(subset=['Date', 'Time'])
+        
+        daily_counts = df.groupby("Date").size()
+        for date, count in daily_counts.items():
+            expected_count = 390 if symbol.endswith(".US") else 330  # 美股一天390分钟，港股一天330分钟
+            completeness = count / expected_count * 100
+            status = "完整" if completeness > 95 else "部分缺失" if completeness > 70 else "严重缺失"
+            print(f"  - {date}: {count} 条记录 ({completeness:.1f}%, {status})")
+        
+        # 4. 检查是否有异常的价格跳跃
+        df_sorted = df.sort_values(["Date", "Time"])
+        df_sorted["price_change_pct"] = df_sorted["Close"].pct_change() * 100
+        large_jumps = df_sorted[abs(df_sorted["price_change_pct"]) > 5]  # 超过5%的价格变化
+        
+        if not large_jumps.empty:
+            print("\n检测到异常价格跳跃:")
+            for _, row in large_jumps.head(5).iterrows():  # 只显示前5个异常
+                print(f"  - {row['Date']} {row['Time']}: 价格变化 {row['price_change_pct']:.2f}% ({row['Close']:.2f})")
+            
+            if len(large_jumps) > 5:
+                print(f"  ... 还有 {len(large_jumps) - 5} 个异常价格跳跃")
+        else:
+            print("\n未检测到异常价格跳跃")
+        
+        # 5. 检查VWAP和价格的合理性
+        if "VWAP" in df.columns:
+            vwap_price_diff = ((df["VWAP"] - df["Close"]) / df["Close"] * 100).abs()
+            large_vwap_diff = df[vwap_price_diff > 10]  # VWAP和价格相差超过10%
+            
+            if not large_vwap_diff.empty:
+                print("\n检测到VWAP和价格的异常差异:")
+                for _, row in large_vwap_diff.head(5).iterrows():
+                    diff_pct = ((row["VWAP"] - row["Close"]) / row["Close"] * 100)
+                    print(f"  - {row['Date']} {row['Time']}: VWAP {row['VWAP']:.2f} vs 价格 {row['Close']:.2f} (差异: {diff_pct:.2f}%)")
+                
+                if len(large_vwap_diff) > 5:
+                    print(f"  ... 还有 {len(large_vwap_diff) - 5} 个VWAP异常")
+            else:
+                print("\nVWAP和价格差异在正常范围内")
+        
+        # 数据完整性总结
+        print("\n历史数据完整性总结:")
+        total_expected = date_range * (390 if symbol.endswith(".US") else 330)
+        total_actual = len(df)
+        overall_completeness = total_actual / total_expected * 100 if total_expected > 0 else 0
+        
+        if overall_completeness > 95:
+            print(f"数据完整性良好: {overall_completeness:.1f}% ({total_actual}/{total_expected})")
+        elif overall_completeness > 80:
+            print(f"数据完整性一般: {overall_completeness:.1f}% ({total_actual}/{total_expected})")
+        else:
+            print(f"数据完整性较差: {overall_completeness:.1f}% ({total_actual}/{total_expected})")
+        
+        # 更新全局缓存和日期
+        HISTORICAL_DATA_CACHE = df.copy()
+        LAST_HISTORICAL_DATA_DATE = now_et.date()  # 使用当前日期而不是current_date
+        print(f"更新历史数据缓存，日期: {LAST_HISTORICAL_DATA_DATE}")
         
         return df
     except Exception as e:
@@ -973,6 +1113,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if last_date is not None and current_date != last_date:
                 print(f"新的交易日开始，重置今日开仓计数")
                 positions_opened_today = 0
+                
+                # 新的交易日，重置历史数据缓存
+                global LAST_HISTORICAL_DATA_DATE, HISTORICAL_DATA_CACHE
+                LAST_HISTORICAL_DATA_DATE = None
+                HISTORICAL_DATA_CACHE = None
+                print("新的交易日，重置历史数据缓存")
             
             last_date = current_date
             
@@ -986,8 +1132,26 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 (current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute))
             )
             
+            # 无论是否在交易时间内，都获取历史数据
+            print("正在获取历史数据...")
+            try:
+                df = get_historical_data(symbol, period="1m")
+                if df.empty:
+                    print("Error: Could not get historical data")
+                    time_module.sleep(60)
+                    continue
+            except Exception as e:
+                print(f"获取历史数据时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                print("跳过本次检查")
+                time_module.sleep(60)
+                continue
+                
+            # 如果不在交易时间内，则只获取数据但不进行交易
             if not is_trading_hours:
                 print(f"当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
+                print("已获取历史数据，但不在交易时间内，暂不进行交易")
                 
                 # 交易日结束，强制平仓
                 try:
@@ -1052,21 +1216,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     print(f"等待过程中出错: {e}")
                 continue
             
-            print("正在获取历史数据...")
-            # Get historical data for the day
-            try:
-                df = get_historical_data(symbol, period="1m")
-                if df.empty:
-                    print("Error: Could not get historical data")
-                    time_module.sleep(60)
-                    continue
-            except Exception as e:
-                print(f"获取历史数据时出错: {e}")
-                import traceback
-                traceback.print_exc()
-                print("跳过本次检查")
-                time_module.sleep(60)
-                continue
+            # 在交易时间内，继续处理数据和交易逻辑
+            print("在交易时间内，继续处理数据和交易逻辑...")
             
             try:
                 # Calculate VWAP
