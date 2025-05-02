@@ -264,6 +264,9 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             
             print(f"将处理 {calendar_days_needed} 个日历日，从 {start_date} 到 {latest_date}")
             
+            # 重置all_candles，确保每次调用函数时都是空的
+            all_candles = []
+            
             # 对每个可能的交易日进行数据获取
             current_date = latest_date
             trading_days_fetched = 0
@@ -334,6 +337,7 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                         print(f"已获取 {trading_days_fetched} 个完整交易日的数据，达到目标")
                         # 不要立即退出循环，继续获取更多数据，直到处理完所有日历日
                         # 这样可以确保获取到足够的历史数据，即使有些日期不是交易日
+                        # 注释掉break语句，确保继续获取更多数据
                         # break
                         
                     # 避免API请求过于频繁
@@ -371,6 +375,31 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
 
         # 调试: 输出时区和第一条数据信息
         print("开始处理时间戳数据...")
+        
+        # 打印一些调试信息，帮助理解数据结构
+        print(f"获取到的K线数据总数: {len(all_candles)}")
+        
+        # 检查是否有重复的时间戳
+        timestamp_counts = {}
+        for candle in all_candles:
+            timestamp = candle.timestamp
+            if isinstance(timestamp, datetime):
+                ts_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                ts_str = str(timestamp)
+            
+            timestamp_counts[ts_str] = timestamp_counts.get(ts_str, 0) + 1
+        
+        # 打印重复的时间戳
+        duplicates = {ts: count for ts, count in timestamp_counts.items() if count > 1}
+        if duplicates:
+            print(f"发现 {len(duplicates)} 个重复的时间戳:")
+            for ts, count in list(duplicates.items())[:5]:  # 只显示前5个
+                print(f"  - {ts}: 出现 {count} 次")
+            if len(duplicates) > 5:
+                print(f"  ... 还有 {len(duplicates) - 5} 个重复时间戳")
+        else:
+            print("未发现重复的时间戳")
         
         for candle in all_candles:
             timestamp = candle.timestamp
@@ -435,14 +464,53 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 打印获取的日期范围
         if not df.empty:
+            # 检查每个日期的数据点数量
+            daily_counts = df.groupby("Date").size()
+            
+            # 打印每个日期的数据点数量，用于调试
+            print("\n各日期数据点数量:")
+            for date, count in daily_counts.items():
+                print(f"  - {date}: {count} 条记录")
+            
+            # 筛选出完整的交易日（数据点数量 >= 300）
+            complete_dates = daily_counts[daily_counts >= 300].index.tolist()
+            complete_trading_days = len(complete_dates)
+            
+            # 按日期排序
+            complete_dates.sort()
+            
+            if complete_dates:
+                earliest_complete_date = complete_dates[0]
+                latest_complete_date = complete_dates[-1]
+                print(f"完整交易日日期范围: {earliest_complete_date} 至 {latest_complete_date}, 共 {complete_trading_days} 个完整交易日")
+            
             earliest_date = df["Date"].min()
             latest_date = df["Date"].max()
             unique_dates = df["Date"].nunique()
             print(f"获取的数据日期范围: {earliest_date} 至 {latest_date}, 共 {unique_dates} 个交易日")
             
             # 检查是否获取了足够的历史数据用于噪声区域计算
-            if unique_dates < LOOKBACK_DAYS:
-                print(f"警告: 获取的历史数据不足 {LOOKBACK_DAYS} 个交易日(只有 {unique_dates} 天)，可能会影响噪声区域计算")
+            if complete_trading_days < LOOKBACK_DAYS:
+                print(f"警告: 获取的完整历史数据不足 {LOOKBACK_DAYS} 个交易日(只有 {complete_trading_days} 天)，可能会影响噪声区域计算")
+                
+            # 检查是否有日期被跳过
+            all_dates = pd.date_range(start=earliest_date, end=latest_date)
+            missing_dates = [d.date() for d in all_dates if d.date() not in df["Date"].unique()]
+            if missing_dates:
+                print(f"\n警告: 数据中有 {len(missing_dates)} 个日期被跳过:")
+                for date in missing_dates[:5]:  # 只显示前5个
+                    print(f"  - {date}")
+                if len(missing_dates) > 5:
+                    print(f"  ... 还有 {len(missing_dates) - 5} 个日期被跳过")
+                    
+            # 检查是否有周末日期被包含在数据中
+            weekend_dates = [d for d in df["Date"].unique() if pd.Timestamp(d).dayofweek >= 5]
+            if weekend_dates:
+                print(f"\n警告: 数据中包含 {len(weekend_dates)} 个周末日期:")
+                for date in weekend_dates[:5]:  # 只显示前5个
+                    print(f"  - {date} ({pd.Timestamp(date).day_name()})")
+                if len(weekend_dates) > 5:
+                    print(f"  ... 还有 {len(weekend_dates) - 5} 个周末日期")
         
         # 检查时间范围是否合理
         time_range = df["Time"].unique()
@@ -481,8 +549,13 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         latest_date = df["Date"].max()
         print(f"数据日期范围: {earliest_date} 至 {latest_date}, 共 {date_range} 个交易日")
         
-        if date_range < LOOKBACK_DAYS:
-            print(f"警告: 数据日期范围不足 {LOOKBACK_DAYS} 天 (只有 {date_range} 天)")
+        # 筛选出完整的交易日（数据点数量 >= 300）
+        daily_counts_for_check = df.groupby("Date").size()
+        complete_dates_for_check = daily_counts_for_check[daily_counts_for_check >= 300].index.tolist()
+        complete_trading_days_for_check = len(complete_dates_for_check)
+        
+        if complete_trading_days_for_check < LOOKBACK_DAYS:
+            print(f"警告: 完整交易日数据不足 {LOOKBACK_DAYS} 天 (只有 {complete_trading_days_for_check} 天)")
         
         # 3. 检查每个交易日的数据点数量，并处理可能的重复数据
         print("\n各交易日数据点数量:")
@@ -541,7 +614,23 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             print(f"数据完整性较差: {overall_completeness:.1f}% ({total_actual}/{total_expected})")
         
         # 更新全局缓存和日期
-        HISTORICAL_DATA_CACHE = df.copy()
+        # 只保留完整的交易日数据（数据点数量 >= 300）
+        daily_counts_for_cache = df.groupby("Date").size()
+        complete_dates_for_cache = daily_counts_for_cache[daily_counts_for_cache >= 300].index.tolist()
+        
+        # 如果有完整的交易日数据，则只保留这些数据
+        if complete_dates_for_cache:
+            df_complete = df[df["Date"].isin(complete_dates_for_cache)].copy()
+            if not df_complete.empty:
+                print(f"更新历史数据缓存，只保留完整交易日数据 ({len(complete_dates_for_cache)} 天)")
+                HISTORICAL_DATA_CACHE = df_complete.copy()
+            else:
+                print("警告: 过滤后没有完整的交易日数据，使用原始数据")
+                HISTORICAL_DATA_CACHE = df.copy()
+        else:
+            print("警告: 没有找到完整的交易日数据，使用原始数据")
+            HISTORICAL_DATA_CACHE = df.copy()
+            
         LAST_HISTORICAL_DATA_DATE = now_et.date()  # 使用当前日期而不是current_date
         print(f"更新历史数据缓存，日期: {LAST_HISTORICAL_DATA_DATE}")
         
@@ -684,6 +773,17 @@ def calculate_noise_area(df, lookback_days=10):
     
     if not duplicate_combinations.empty:
         print(f"警告: 发现{len(duplicate_combinations)}个重复的日期和时间组合，将保留每个组合的最后一条记录")
+        
+        # 打印一些重复组合的示例，帮助调试
+        print("重复组合示例:")
+        for _, row in duplicate_combinations.head(5).iterrows():
+            date = row['Date']
+            time = row['Time']
+            duplicates = df_copy[(df_copy['Date'] == date) & (df_copy['Time'] == time)]
+            print(f"  - {date} {time}: 出现 {len(duplicates)} 次")
+            for i, dup in duplicates.iterrows():
+                print(f"    价格: {dup['Close']:.2f}, 成交量: {dup['Volume']}")
+        
         # 为每个日期和时间组合保留最后一条记录
         df_copy = df_copy.drop_duplicates(subset=['Date', 'Time'], keep='last')
     
