@@ -1443,6 +1443,17 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # 获取最新时间点的数据
                     latest_row = latest_data.iloc[-1].copy()
                     latest_row["Close"] = latest_price
+                    
+                    # 重新计算该行的MACD值
+                    if USE_MACD:
+                        # 创建一个临时DataFrame来计算MACD
+                        temp_df = pd.DataFrame([latest_row])
+                        temp_df = calculate_macd(temp_df)
+                        # 更新latest_row中的MACD值
+                        latest_row["MACD"] = temp_df["MACD"].iloc[0]
+                        latest_row["MACD_signal"] = temp_df["MACD_signal"].iloc[0]
+                        latest_row["MACD_histogram"] = temp_df["MACD_histogram"].iloc[0]
+                        print(f"重新计算MACD值: MACD={latest_row['MACD']:.6f}, Signal={latest_row['MACD_signal']:.6f}, Histogram={latest_row['MACD_histogram']:.6f}")
                 else:
                     print("错误：无法获取最新日期的数据")
                     time_module.sleep(60)
