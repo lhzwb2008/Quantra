@@ -9,6 +9,7 @@ import pytz
 from math import floor
 from decimal import Decimal  # 添加Decimal支持
 from dotenv import load_dotenv  # 添加dotenv支持
+import argparse
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -1137,9 +1138,104 @@ def check_exit_conditions(df, position, trailing_stop):
     # No position
     return False, None
 
-# 此函数在模拟交易中不再需要，因为我们直接使用 CHECK_INTERVAL_MINUTES 进行定时检查
-# 而不是预先生成允许交易的时间点列表
-
+def is_trading_day(symbol=None):
+    """
+    检查当前日期是否是交易日
+    
+    Parameters:
+        symbol: 证券代码，用于确定市场
+    
+    Returns:
+        bool: 当前日期是否是交易日
+    """
+    try:
+        if QUOTE_CTX is None:
+            print("Quote context is not initialized")
+            return False
+            
+        # 确定市场
+        market = None
+        if symbol:
+            if symbol.endswith(".US"):
+                market = "US"
+            elif symbol.endswith(".HK"):
+                market = "HK"
+            elif symbol.endswith(".SH") or symbol.endswith(".SZ"):
+                market = "CN"
+            elif symbol.endswith(".SG"):
+                market = "SG"
+        
+        if not market:
+            # 如果无法从symbol确定市场，默认为美股
+            market = "US"
+        
+        # 获取当前美东时间
+        now_et = get_us_eastern_time()
+        current_date = now_et.date()
+        
+        # 只查询当天日期
+        # 将当前日期转换为字符串格式 YYYYMMDD
+        today_str = current_date.strftime("%Y%m%d")
+        
+        print(f"正在查询当天 {today_str} 是否是交易日 ({market} 市场)")
+        
+        # 从API获取交易日历
+        from longport.openapi import Market
+        market_mapping = {
+            "US": Market.US,
+            "HK": Market.HK,
+            "CN": Market.CN,
+            "SG": Market.SG
+        }
+        
+        sdk_market = market_mapping.get(market, Market.US)
+        
+        # 查询交易日历 - 只查询当天的日期
+        calendar_resp = QUOTE_CTX.trading_days(
+            sdk_market, 
+            current_date,  # 开始日期就是当天
+            current_date   # 结束日期也是当天
+        )
+        
+        # 输出交易日信息，帮助调试
+        if calendar_resp:
+            # API返回的trading_days和half_trading_days已经是date类型对象列表
+            trading_dates = calendar_resp.trading_days
+            half_trading_dates = calendar_resp.half_trading_days
+            
+            is_trade_day = current_date in trading_dates
+            is_half_trade_day = current_date in half_trading_dates
+            
+            print(f"当前日期: {current_date}")
+            print(f"是否是交易日: {is_trade_day}")
+            print(f"是否是半日交易: {is_half_trade_day}")
+            
+            return is_trade_day or is_half_trade_day
+        else:
+            print("无法获取交易日历数据")
+            return False
+    except Exception as e:
+        print(f"检查交易日时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # 如果无法确定，使用传统方式检查
+        try:
+            # 获取当前美东时间
+            now_et = get_us_eastern_time()
+            current_weekday = now_et.weekday()
+            
+            # 0-4对应周一至周五，5-6对应周六日
+            is_weekday = current_weekday < 5
+            
+            print(f"无法通过API确定交易日，使用传统检查: 当前是星期{current_weekday+1}, 是否是工作日: {is_weekday}")
+            
+            # 简单判断是否是工作日
+            return is_weekday
+        except:
+            # 最后的后备方案，返回True以确保交易逻辑继续
+            return True
+        
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
                         max_positions_per_day=MAX_POSITIONS_PER_DAY, lookback_days=LOOKBACK_DAYS):
@@ -1209,6 +1305,53 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             
             print(f"\n当前美东时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
             
+            # 首先检查当天是否是交易日
+            print(f"准备检查今天 {current_date} 是否是交易日...")
+            is_today_trading_day = is_trading_day(symbol)
+            print(f"交易日检查结果: {'是交易日' if is_today_trading_day else '不是交易日'}")
+            
+            if not is_today_trading_day:
+                print(f"今天不是交易日，跳过交易")
+                
+                # 如果有持仓且不是交易日，应该平仓
+                if position != 0:
+                    try:
+                        print("非交易日，执行平仓")
+                        side = "Sell" if position > 0 else "Buy"
+                        quantity = abs(position)
+                        
+                        # 平仓时使用AnyTime设置
+                        outside_rth_setting = OutsideRTH.AnyTime
+                        
+                        close_order_id = submit_order(symbol, side, quantity, outside_rth=outside_rth_setting)
+                        if close_order_id:
+                            print(f"平仓: {side} {quantity} {symbol}")
+                        
+                        # Reset position variables
+                        position = 0
+                        entry_price = 0
+                        entry_time = None
+                    except Exception as e:
+                        print(f"平仓出错: {e}")
+                
+                # 计算到下一个检查时间的等待时间（12小时后再检查）
+                next_check_time = now + timedelta(hours=12)
+                wait_seconds = (next_check_time - now).total_seconds()
+                
+                print(f"等待 {wait_seconds/3600:.1f} 小时后再次检查")
+                
+                # 对于较长时间等待，每小时输出一条状态消息
+                segments = max(1, int(wait_seconds / 3600))
+                segment_length = wait_seconds / segments
+                
+                for i in range(segments):
+                    time_module.sleep(segment_length)
+                    hours_passed = (i+1)
+                    total_hours = int(wait_seconds / 3600)
+                    print(f"非交易日等待中...已过 {hours_passed} 小时，共需 {total_hours} 小时")
+                
+                continue
+            
             # Reset positions_opened_today if it's a new day
             if last_date is not None and current_date != last_date:
                 print(f"新的交易日开始，重置今日开仓计数")
@@ -1231,6 +1374,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 (current_hour > start_hour or (current_hour == start_hour and current_minute >= start_minute)) and
                 (current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute))
             )
+            
+            print(f"检查是否在交易时间内...")
+            print(f"当前时间: {current_hour:02d}:{current_minute:02d}")
+            print(f"交易时间: {start_hour:02d}:{start_minute:02d} - {end_hour:02d}:{end_minute:02d}")
+            print(f"是否在交易时间内: {'是' if is_trading_hours else '否'}")
             
             # 无论是否在交易时间内，都获取历史数据
             print("正在获取历史数据...")
@@ -1332,7 +1480,19 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 # Calculate MACD if needed
                 if USE_MACD and "MACD_histogram" not in df_indicators.columns:
                     print("计算MACD指标...")
+                    print(f"MACD计算前的数据行数: {len(df_indicators)}")
+                    print(f"MACD计算前的列: {df_indicators.columns.tolist()}")
+                    # 注意：这里使用的calculate_macd现在会确保按天计算MACD指标
                     df_indicators = calculate_macd(df_indicators)
+                    print(f"MACD计算后的数据行数: {len(df_indicators)}")
+                    print(f"MACD计算后的列: {df_indicators.columns.tolist()}")
+                    
+                    # 检查计算结果中的MACD值
+                    if "MACD_histogram" in df_indicators.columns:
+                        latest_macd = df_indicators.iloc[-1]["MACD_histogram"]
+                        print(f"最新的MACD_histogram值: {latest_macd}")
+                    else:
+                        print("警告: MACD计算后仍然没有MACD_histogram列")
                 
                 # Calculate noise area boundaries
                 print("计算噪声区域边界...")
@@ -1348,13 +1508,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 time_module.sleep(60)
                 continue
             
-            # Check for missing data
+            # 检查缺失的值
             if df["UpperBound"].isna().any() or df["LowerBound"].isna().any():
                 print("警告: 边界数据缺失，跳过本次检查")
                 time_module.sleep(60)
                 continue
             
-            # Get current positions
+            # 获取当前持仓
             print("获取当前持仓...")
             try:
                 all_positions = get_current_positions()
@@ -1418,7 +1578,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     except Exception as e:
                         print(f"平仓出错: {e}")
             
-                # Check for entry if we don't have a position
+            # Check for entry if we don't have a position
             elif position == 0:
                 print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
                 
@@ -1447,12 +1607,25 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # 重新计算该行的MACD值
                     if USE_MACD:
                         # 创建一个临时DataFrame来计算MACD
-                        temp_df = pd.DataFrame([latest_row])
-                        temp_df = calculate_macd(temp_df)
+                        print("为最新数据重新计算MACD值...")
+                        
+                        # 获取当天的所有K线数据，包括最新的价格
+                        today_data = df[df["Date"] == latest_date].copy()
+                        
+                        # 使用最新价格更新最后一行
+                        today_data.iloc[-1, today_data.columns.get_loc("Close")] = latest_price
+                        
+                        # 重新计算整个当天的MACD
+                        today_data_with_macd = calculate_macd(today_data)
+                        
+                        # 提取最后一行的MACD值
+                        latest_macd = today_data_with_macd.iloc[-1]
+                        
                         # 更新latest_row中的MACD值
-                        latest_row["MACD"] = temp_df["MACD"].iloc[0]
-                        latest_row["MACD_signal"] = temp_df["MACD_signal"].iloc[0]
-                        latest_row["MACD_histogram"] = temp_df["MACD_histogram"].iloc[0]
+                        latest_row["MACD"] = latest_macd["MACD"]
+                        latest_row["MACD_signal"] = latest_macd["MACD_signal"]
+                        latest_row["MACD_histogram"] = latest_macd["MACD_histogram"]
+                        
                         print(f"重新计算MACD值: MACD={latest_row['MACD']:.6f}, Signal={latest_row['MACD_signal']:.6f}, Histogram={latest_row['MACD_histogram']:.6f}")
                 else:
                     print("错误：无法获取最新日期的数据")
@@ -1538,6 +1711,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         
                         print(f"开仓: {side} {position_size} {symbol} 价格: {entry_price}")
                         print(f"止损: {stop_loss}, 止盈: {take_profit}")
+            
+            # 交易逻辑代码结束
             
             # Sleep until next check
             next_check_time = now + timedelta(minutes=check_interval_minutes)
@@ -1626,3 +1801,4 @@ if __name__ == "__main__":
                 TRADE_CTX.close()
         except Exception as e:
             print(f"Error closing trade context: {e}")
+    

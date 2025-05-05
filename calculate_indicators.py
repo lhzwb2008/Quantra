@@ -4,7 +4,7 @@ import os
 
 def calculate_macd(df, fast_period=12, slow_period=26, signal_period=9):
     """
-    计算MACD指标
+    计算MACD指标，确保只对当天的数据进行计算
     
     参数:
         df: 包含价格数据的DataFrame
@@ -18,20 +18,59 @@ def calculate_macd(df, fast_period=12, slow_period=26, signal_period=9):
     # 复制DataFrame以避免修改原始数据
     df_copy = df.copy()
     
-    # 计算快速和慢速EMA
-    df_copy['EMA_fast'] = df_copy['Close'].ewm(span=fast_period, adjust=False).mean()
-    df_copy['EMA_slow'] = df_copy['Close'].ewm(span=slow_period, adjust=False).mean()
+    # 确保按日期和时间排序
+    if "DateTime" in df_copy.columns:
+        df_copy = df_copy.sort_values("DateTime")
+        # 提取日期以便按天分组
+        if "Date" not in df_copy.columns:
+            df_copy["Date"] = df_copy["DateTime"].dt.date
+    elif "Date" in df_copy.columns and "Time" in df_copy.columns:
+        df_copy = df_copy.sort_values(["Date", "Time"])
     
-    # 计算MACD线
-    df_copy['MACD'] = df_copy['EMA_fast'] - df_copy['EMA_slow']
+    # 按日期分组计算MACD
+    result_dfs = []
+    grouped = df_copy.groupby("Date")
     
-    # 计算信号线
-    df_copy['MACD_signal'] = df_copy['MACD'].ewm(span=signal_period, adjust=False).mean()
+    for date, group in grouped:
+        # 对每天的数据单独计算MACD
+        group = group.copy()
+        
+        # 计算快速和慢速EMA
+        group["EMA_fast"] = group["Close"].ewm(span=fast_period, adjust=False).mean()
+        group["EMA_slow"] = group["Close"].ewm(span=slow_period, adjust=False).mean()
+        
+        # 计算MACD线
+        group["MACD"] = group["EMA_fast"] - group["EMA_slow"]
+        
+        # 计算信号线
+        group["MACD_signal"] = group["MACD"].ewm(span=signal_period, adjust=False).mean()
+        
+        # 计算柱状图
+        group["MACD_histogram"] = group["MACD"] - group["MACD_signal"]
+        
+        result_dfs.append(group)
     
-    # 计算柱状图
-    df_copy['MACD_histogram'] = df_copy['MACD'] - df_copy['MACD_signal']
-    
-    return df_copy
+    # 合并所有日期的结果
+    if result_dfs:
+        return pd.concat(result_dfs).sort_values("DateTime" if "DateTime" in df_copy.columns else ["Date", "Time"])
+    else:
+        # 如果没有足够的数据分组（例如只有一天的数据），就直接对整个DataFrame计算
+        print("警告：没有足够的数据分组，直接对整个数据集计算MACD")
+        
+        # 计算快速和慢速EMA
+        df_copy["EMA_fast"] = df_copy["Close"].ewm(span=fast_period, adjust=False).mean()
+        df_copy["EMA_slow"] = df_copy["Close"].ewm(span=slow_period, adjust=False).mean()
+        
+        # 计算MACD线
+        df_copy["MACD"] = df_copy["EMA_fast"] - df_copy["EMA_slow"]
+        
+        # 计算信号线
+        df_copy["MACD_signal"] = df_copy["MACD"].ewm(span=signal_period, adjust=False).mean()
+        
+        # 计算柱状图
+        df_copy["MACD_histogram"] = df_copy["MACD"] - df_copy["MACD_signal"]
+        
+        return df_copy
 
 def process_file_with_indicators(input_file, output_file=None, fast_period=12, slow_period=26, signal_period=9):
     """
