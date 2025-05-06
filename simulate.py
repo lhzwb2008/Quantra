@@ -150,6 +150,9 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         adjust_type = AdjustType.ForwardAdjust
         all_candles = []
         
+        # 为避免时区问题，统一使用Eastern时区
+        eastern = pytz.timezone('US/Eastern')
+        
         if period == "1m":
             recent_candles = QUOTE_CTX.history_candlesticks_by_offset(
                 symbol, sdk_period, adjust_type, False, 1, now_et
@@ -161,29 +164,44 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 
             latest_time = recent_candles[0].timestamp
             if isinstance(latest_time, datetime):
-                latest_date = latest_time.date()
+                if latest_time.tzinfo is None:
+                    # 无时区信息，假设为UTC时间，转换为东部时间
+                    utc = pytz.utc
+                    latest_time_utc = utc.localize(latest_time)
+                    latest_time_et = latest_time_utc.astimezone(eastern)
+                else:
+                    # 有时区信息，直接转换为东部时间
+                    latest_time_et = latest_time.astimezone(eastern)
+                latest_date = latest_time_et.date()
             else:
-                latest_date = datetime.fromtimestamp(latest_time).date()
+                # 时间戳转换为东部时间
+                latest_time_et = datetime.fromtimestamp(latest_time, eastern)
+                latest_date = latest_time_et.date()
+            
+            # 安全检查：确保最新日期不超过当前日期
+            if latest_date > current_date:
+                print(f"警告: API返回的最新日期 {latest_date} 超过当前日期 {current_date}，将使用当前日期")
+                latest_date = current_date
             
             calendar_days_needed = days_back
             start_date = latest_date - timedelta(days=calendar_days_needed)
             
             all_candles = []
-            current_date = latest_date
+            current_date_check = latest_date
             trading_days_fetched = 0
             
             fetched_dates = set()
             
-            while current_date >= start_date and trading_days_fetched < target_days:
+            while current_date_check >= start_date and trading_days_fetched < target_days:
                 try:
-                    date_str = current_date.strftime("%Y%m%d")
+                    date_str = current_date_check.strftime("%Y%m%d")
                     
                     if date_str in fetched_dates:
-                        current_date -= timedelta(days=1)
+                        current_date_check -= timedelta(days=1)
                         continue
                     
                     eastern = pytz.timezone('US/Eastern')
-                    day_start_time = datetime.combine(current_date, time(9, 30))
+                    day_start_time = datetime.combine(current_date_check, time(9, 30))
                     day_start_time_et = eastern.localize(day_start_time)
                     
                     day_candles = QUOTE_CTX.history_candlesticks_by_offset(
@@ -194,13 +212,26 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                     if day_candles and len(day_candles) > 0:
                         sample_candle = day_candles[0]
                         sample_time = sample_candle.timestamp
-                        if isinstance(sample_time, datetime):
-                            sample_date = sample_time.date()
-                        else:
-                            sample_date = datetime.fromtimestamp(sample_time).date()
                         
-                        if sample_date != current_date:
-                            current_date -= timedelta(days=1)
+                        # 统一时区处理
+                        if isinstance(sample_time, datetime):
+                            if sample_time.tzinfo is None:
+                                # 无时区信息，假设为UTC时间，转换为东部时间
+                                utc = pytz.utc
+                                sample_time_utc = utc.localize(sample_time)
+                                sample_time_et = sample_time_utc.astimezone(eastern)
+                            else:
+                                # 有时区信息，直接转换为东部时间
+                                sample_time_et = sample_time.astimezone(eastern)
+                            sample_date = sample_time_et.date()
+                        else:
+                            # 时间戳转换为东部时间
+                            sample_time_et = datetime.fromtimestamp(sample_time, eastern)
+                            sample_date = sample_time_et.date()
+                        
+                        if sample_date != current_date_check:
+                            print(f"日期不匹配: 请求 {current_date_check}, 获取到 {sample_date}")
+                            current_date_check -= timedelta(days=1)
                             continue
                     
                     if day_candles:
@@ -218,7 +249,7 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 except Exception as e:
                     print(f"获取 {date_str} 数据时出错: {e}")
                 
-                current_date -= timedelta(days=1)
+                current_date_check -= timedelta(days=1)
             
             print(f"数据获取完成，共获取 {trading_days_fetched} 个交易日，{len(all_candles)} 条记录")
             
@@ -232,9 +263,8 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             )
         
         data = []
-        eastern = pytz.timezone('US/Eastern')
-
         timestamp_counts = {}
+        
         for candle in all_candles:
             timestamp = candle.timestamp
             if isinstance(timestamp, datetime):
@@ -251,6 +281,8 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 记录处理过的时间戳，用于跳过重复项
         processed_timestamps = set()
+        now_et = get_us_eastern_time()
+        current_date = now_et.date()
         
         for candle in all_candles:
             timestamp = candle.timestamp
@@ -266,23 +298,31 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
                 
             processed_timestamps.add(ts_str)
             
+            # 统一时区处理
             if isinstance(timestamp, datetime):
                 if timestamp.tzinfo is None:
+                    # 没有时区信息的datetime
                     hour = timestamp.hour
                     
                     if symbol.endswith(".US") and 9 <= hour < 17:
                         dt = eastern.localize(timestamp)
+                    elif symbol.endswith(".US") and (hour >= 21 or hour < 5):
+                        beijing = pytz.timezone('Asia/Shanghai')
+                        dt = beijing.localize(timestamp).astimezone(eastern)
                     else:
-                        if symbol.endswith(".US") and (hour >= 21 or hour < 5):
-                            beijing = pytz.timezone('Asia/Shanghai')
-                            dt = beijing.localize(timestamp).astimezone(eastern)
-                        else:
-                            utc = pytz.utc
-                            dt = utc.localize(timestamp).astimezone(eastern)
+                        utc = pytz.utc
+                        dt = utc.localize(timestamp).astimezone(eastern)
                 else:
+                    # 有时区信息的datetime
                     dt = timestamp.astimezone(eastern)
             else:
-                dt = datetime.fromtimestamp(timestamp, pytz.utc).astimezone(eastern)
+                # 时间戳转换为datetime
+                dt = datetime.fromtimestamp(timestamp, eastern)
+                
+            # 跳过未来日期数据
+            if dt.date() > current_date:
+                print(f"警告: 跳过未来日期数据: {dt.date()}")
+                continue
 
             data.append({
                 "Close": float(candle.close),
@@ -312,6 +352,12 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         
         # 去除重复数据
         df = df.drop_duplicates(subset=['Date', 'Time'])
+        
+        # 检查是否有未来日期
+        future_dates = df[df["Date"] > current_date]
+        if not future_dates.empty:
+            print(f"警告: 发现 {len(future_dates)} 条未来日期数据，将被过滤掉")
+            df = df[df["Date"] <= current_date]
         
         # 更新全局缓存
         HISTORICAL_DATA_CACHE = df.copy()
@@ -388,42 +434,110 @@ def calculate_noise_area(df, lookback_days=10):
     df_copy["day_open"] = df_copy.groupby("Date")["Open"].transform("first")
     
     unique_dates = sorted(df_copy["Date"].unique())
+    
+    # 检查日期有效性
+    now_et = get_us_eastern_time()
+    current_date = now_et.date()
+    
+    # 过滤掉未来日期
+    if unique_dates and isinstance(unique_dates[0], date):
+        future_dates = [d for d in unique_dates if d > current_date]
+        if future_dates:
+            print(f"警告: 发现{len(future_dates)}个未来日期, 这些日期将被过滤掉")
+            unique_dates = [d for d in unique_dates if d <= current_date]
+            df_copy = df_copy[df_copy["Date"].isin(unique_dates)]
+    
+    if not unique_dates:
+        print("错误: 没有有效的日期数据")
+        # 创建基础的空数据框并返回
+        df_copy["UpperBound"] = df_copy["Close"] * 1.01
+        df_copy["LowerBound"] = df_copy["Close"] * 0.99
+        return df_copy
+    
     prev_close_map = {}
     
     for i in range(1, len(unique_dates)):
-        prev_date = unique_dates[i-1]
-        curr_date = unique_dates[i]
-        prev_close = df_copy[df_copy["Date"] == prev_date]["Close"].iloc[-1]
-        prev_close_map[curr_date] = prev_close
+        try:
+            prev_date = unique_dates[i-1]
+            curr_date = unique_dates[i]
+            
+            # 获取前一天的收盘价
+            prev_day_data = df_copy[df_copy["Date"] == prev_date]
+            if prev_day_data.empty:
+                continue
+                
+            prev_close = prev_day_data["Close"].iloc[-1]
+            prev_close_map[curr_date] = prev_close
+        except Exception as e:
+            print(f"处理日期 {prev_date} 到 {curr_date} 的数据时出错: {e}")
+            continue
     
     df_copy["prev_close"] = df_copy["Date"].map(prev_close_map)
     
     date_refs = []
     for d in unique_dates:
-        day_data = df_copy[df_copy["Date"] == d].iloc[0]
-        day_open = day_data["day_open"]
-        prev_close = day_data.get("prev_close")
-        
-        if not pd.isna(prev_close):
-            upper_ref = max(day_open, prev_close)
-            lower_ref = min(day_open, prev_close)
-        else:
-            upper_ref = day_open
-            lower_ref = day_open
+        try:
+            day_data = df_copy[df_copy["Date"] == d]
+            if day_data.empty:
+                print(f"警告: 日期{d}没有数据")
+                continue
+                
+            first_row = day_data.iloc[0]
+            day_open = first_row["day_open"]
+            prev_close = first_row.get("prev_close")
             
-        date_refs.append({
-            "Date": d,
-            "upper_ref": upper_ref,
-            "lower_ref": lower_ref
-        })
+            if not pd.isna(prev_close):
+                upper_ref = max(day_open, prev_close)
+                lower_ref = min(day_open, prev_close)
+            else:
+                upper_ref = day_open
+                lower_ref = day_open
+                
+            date_refs.append({
+                "Date": d,
+                "upper_ref": upper_ref,
+                "lower_ref": lower_ref
+            })
+        except Exception as e:
+            print(f"处理日期{d}时出错: {e}")
+            
+            try:
+                # 使用备用方法
+                day_data = df_copy[df_copy["Date"] == d]
+                if not day_data.empty:
+                    day_open = day_data["Open"].mean()
+                    date_refs.append({
+                        "Date": d,
+                        "upper_ref": day_open,
+                        "lower_ref": day_open
+                    })
+            except:
+                print(f"无法为日期{d}创建默认边界参考值")
     
     date_refs_df = pd.DataFrame(date_refs)
+    
+    if date_refs_df.empty:
+        print("警告: 无法计算边界参考值，使用默认值")
+        df_copy["UpperBound"] = df_copy["Close"] * 1.01
+        df_copy["LowerBound"] = df_copy["Close"] * 0.99
+        return df_copy
     
     df_copy = df_copy.drop(columns=["upper_ref", "lower_ref"], errors="ignore")
     df_copy = pd.merge(df_copy, date_refs_df, on="Date", how="left")
     
+    # 确保合并后没有丢失数据
+    if df_copy["upper_ref"].isna().any():
+        print("警告: 合并后存在缺失的上边界参考值，使用开盘价填充")
+        df_copy.loc[df_copy["upper_ref"].isna(), "upper_ref"] = df_copy.loc[df_copy["upper_ref"].isna(), "Open"]
+        
+    if df_copy["lower_ref"].isna().any():
+        print("警告: 合并后存在缺失的下边界参考值，使用开盘价填充")
+        df_copy.loc[df_copy["lower_ref"].isna(), "lower_ref"] = df_copy.loc[df_copy["lower_ref"].isna(), "Open"]
+    
+    # 计算收益率
     df_copy["ret"] = df_copy["Close"] / df_copy["day_open"] - 1
     
+    # 处理重复数据
     date_time_counts = df_copy.groupby(['Date', 'Time']).size()
     duplicate_combinations = date_time_counts[date_time_counts > 1].reset_index()[['Date', 'Time']]
     
@@ -431,51 +545,88 @@ def calculate_noise_area(df, lookback_days=10):
         print(f"警告: 发现{len(duplicate_combinations)}个重复的日期和时间组合，将保留每个组合的最后一条记录")
         df_copy = df_copy.drop_duplicates(subset=['Date', 'Time'], keep='last')
     
-    pivot = df_copy.pivot(index="Date", columns="Time", values="ret").abs()
+    # 创建pivot前先确保ret列无缺失值
+    if df_copy["ret"].isna().any():
+        print("警告: ret列存在缺失值，使用0填充")
+        df_copy["ret"] = df_copy["ret"].fillna(0)
     
-    latest_date = max(unique_dates)
-    lookback_start_idx = max(0, len(unique_dates) - lookback_days)
-    lookback_dates = unique_dates[lookback_start_idx:]
-    
-    pivot = pivot.loc[pivot.index.isin(lookback_dates)]
-    
-    sigma = pivot.rolling(window=lookback_days, min_periods=1).mean()
-    
-    if sigma.isna().all().all():
-        print("警告: 没有足够的历史数据来计算噪声区域边界，使用所有可用数据的平均值")
-        mean_ret = df_copy["ret"].abs().mean()
-        sigma = pd.DataFrame(mean_ret, index=pivot.index, columns=pivot.columns)
-    
-    sigma = sigma.stack().reset_index(name="sigma")
-    
-    df_copy = pd.merge(df_copy, sigma, on=["Date", "Time"], how="left")
-    
-    if df_copy["sigma"].isna().any():
-        print("为当天缺失的sigma值填充历史平均值...")
+    try:
+        # 创建pivot表
+        pivot = df_copy.pivot(index="Date", columns="Time", values="ret").abs()
         
-        today_missing = df_copy[(df_copy["Date"] == latest_date) & df_copy["sigma"].isna()]
+        # 获取最近的数据用于计算噪声边界
+        latest_date = max(unique_dates)
+        lookback_start_idx = max(0, len(unique_dates) - lookback_days)
+        lookback_dates = unique_dates[lookback_start_idx:]
         
-        if not today_missing.empty:
-            print(f"当天有 {len(today_missing)} 个时间点缺失sigma值")
+        pivot = pivot.loc[pivot.index.isin(lookback_dates)]
+        
+        # 计算滚动平均值
+        sigma = pivot.rolling(window=lookback_days, min_periods=1).mean()
+        
+        if sigma.isna().all().all():
+            print("警告: 没有足够的历史数据来计算噪声区域边界，使用所有可用数据的平均值")
+            mean_ret = df_copy["ret"].abs().mean()
+            if pd.isna(mean_ret) or mean_ret == 0:
+                mean_ret = 0.01
+            sigma = pd.DataFrame(mean_ret, index=pivot.index, columns=pivot.columns)
+        
+        # 将数据转换回长格式
+        sigma = sigma.stack().reset_index(name="sigma")
+    except Exception as e:
+        print(f"计算sigma时出错: {e}")
+        print("使用备用方法计算sigma")
+        
+        # 为每个日期分配固定的sigma值
+        unique_dates = df_copy["Date"].unique()
+        default_sigma = df_copy["ret"].abs().mean() if not df_copy.empty else 0.01
+        if pd.isna(default_sigma) or default_sigma == 0:
+            default_sigma = 0.01
             
-            for _, row in today_missing.iterrows():
-                time_val = row["Time"]
-                
-                historical_sigmas = df_copy[(df_copy["Date"] < latest_date) & (df_copy["Time"] == time_val) & (~df_copy["sigma"].isna())]["sigma"]
-                
-                if not historical_sigmas.empty:
-                    avg_sigma = historical_sigmas.mean()
-                    df_copy.loc[(df_copy["Date"] == latest_date) & (df_copy["Time"] == time_val), "sigma"] = avg_sigma
-                else:
-                    all_avg_sigma = df_copy[~df_copy["sigma"].isna()]["sigma"].mean()
-                    df_copy.loc[(df_copy["Date"] == latest_date) & (df_copy["Time"] == time_val), "sigma"] = all_avg_sigma
+        # 创建人工sigma数据框
+        sigma_data = []
+        for d in unique_dates:
+            for t in df_copy[df_copy["Date"] == d]["Time"].unique():
+                sigma_data.append({
+                    "Date": d,
+                    "Time": t,
+                    "sigma": default_sigma
+                })
+        
+        sigma = pd.DataFrame(sigma_data)
     
+    # 合并sigma值
+    if isinstance(sigma, pd.DataFrame) and not sigma.empty and "sigma" in sigma.columns:
+        df_copy = pd.merge(df_copy, sigma, on=["Date", "Time"], how="left")
+    else:
+        print("警告: sigma计算失败，使用默认sigma值0.01")
+        df_copy["sigma"] = 0.01
+    
+    # 确保sigma列没有缺失值
+    if df_copy["sigma"].isna().any():
+        print("为缺失的sigma值填充平均值...")
+        average_sigma = df_copy["sigma"].mean()
+        if pd.isna(average_sigma) or average_sigma == 0:
+            average_sigma = 0.01
+        df_copy["sigma"] = df_copy["sigma"].fillna(average_sigma)
+    
+    # 计算边界值
     df_copy["UpperBound"] = df_copy["upper_ref"] * (1 + df_copy["sigma"])
     df_copy["LowerBound"] = df_copy["lower_ref"] * (1 - df_copy["sigma"])
     
+    # 最后检查确保边界值没有缺失
+    if df_copy["UpperBound"].isna().any():
+        print("警告: UpperBound有缺失值，使用Close * 1.01填充")
+        df_copy.loc[df_copy["UpperBound"].isna(), "UpperBound"] = df_copy.loc[df_copy["UpperBound"].isna(), "Close"] * 1.01
+        
+    if df_copy["LowerBound"].isna().any():
+        print("警告: LowerBound有缺失值，使用Close * 0.99填充")
+        df_copy.loc[df_copy["LowerBound"].isna(), "LowerBound"] = df_copy.loc[df_copy["LowerBound"].isna(), "Close"] * 0.99
+    
     print("\n噪声区域边界计算结果:")
     print(f"唯一日期数量: {len(unique_dates)}")
-    print(f"最新日期: {latest_date}")
+    latest_date_str = max(unique_dates) if unique_dates else '无有效日期'
+    print(f"最新日期: {latest_date_str}")
     
     return df_copy
 
