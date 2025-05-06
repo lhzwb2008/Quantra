@@ -615,15 +615,23 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
             print(f"数据完整性较差: {overall_completeness:.1f}% ({total_actual}/{total_expected})")
         
         # 更新全局缓存和日期
-        # 只保留完整的交易日数据（数据点数量 >= 300）
+        # 只保留完整的交易日数据（数据点数量 >= 300）和当天的数据
         daily_counts_for_cache = df.groupby("Date").size()
         complete_dates_for_cache = daily_counts_for_cache[daily_counts_for_cache >= 300].index.tolist()
         
-        # 如果有完整的交易日数据，则只保留这些数据
+        # 当前日期
+        today = now_et.date()
+        
+        # 如果有完整的交易日数据和当天数据，则保留
+        df_complete = None
         if complete_dates_for_cache:
+            # 添加当天日期，即使它不是完整的交易日
+            if today not in complete_dates_for_cache and today in df["Date"].values:
+                complete_dates_for_cache.append(today)
+                
             df_complete = df[df["Date"].isin(complete_dates_for_cache)].copy()
             if not df_complete.empty:
-                print(f"更新历史数据缓存，只保留完整交易日数据 ({len(complete_dates_for_cache)} 天)")
+                print(f"更新历史数据缓存，保留完整交易日数据 ({len(complete_dates_for_cache)} 天，包含当天)")
                 HISTORICAL_DATA_CACHE = df_complete.copy()
             else:
                 print("警告: 过滤后没有完整的交易日数据，使用原始数据")
@@ -792,6 +800,14 @@ def calculate_noise_area(df, lookback_days=10):
     # Pivot to get time-of-day in columns
     pivot = df_copy.pivot(index="Date", columns="Time", values="ret").abs()
     
+    # 获取最新日期和最后10个交易日
+    latest_date = max(unique_dates)
+    lookback_start_idx = max(0, len(unique_dates) - lookback_days)
+    lookback_dates = unique_dates[lookback_start_idx:]
+    
+    # 限制pivot中的日期，只包含最近的lookback_days天
+    pivot = pivot.loc[pivot.index.isin(lookback_dates)]
+    
     # Calculate rolling average of absolute returns for each time-of-day
     # Use min_periods=1 to allow calculation with fewer days of data
     sigma = pivot.rolling(window=lookback_days, min_periods=1).mean()
@@ -810,6 +826,34 @@ def calculate_noise_area(df, lookback_days=10):
     # Merge sigma back to the main dataframe
     df_copy = pd.merge(df_copy, sigma, on=["Date", "Time"], how="left")
     
+    # 对于当天缺失的sigma值，使用相同时间点前几天的平均值填充
+    if df_copy["sigma"].isna().any():
+        print("为当天缺失的sigma值填充历史平均值...")
+        
+        # 找出当天缺失sigma值的时间点
+        today_missing = df_copy[(df_copy["Date"] == latest_date) & df_copy["sigma"].isna()]
+        
+        if not today_missing.empty:
+            print(f"当天有 {len(today_missing)} 个时间点缺失sigma值")
+            
+            # 为每个缺失的时间点寻找历史数据
+            for _, row in today_missing.iterrows():
+                time_val = row["Time"]
+                
+                # 获取同一时间点前几天的sigma值
+                historical_sigmas = df_copy[(df_copy["Date"] < latest_date) & (df_copy["Time"] == time_val) & (~df_copy["sigma"].isna())]["sigma"]
+                
+                if not historical_sigmas.empty:
+                    # 使用历史平均值填充
+                    avg_sigma = historical_sigmas.mean()
+                    df_copy.loc[(df_copy["Date"] == latest_date) & (df_copy["Time"] == time_val), "sigma"] = avg_sigma
+                    print(f"  - 时间 {time_val}: 使用历史平均值 {avg_sigma:.4f} 填充")
+                else:
+                    # 如果找不到历史数据，使用所有sigma的平均值
+                    all_avg_sigma = df_copy[~df_copy["sigma"].isna()]["sigma"].mean()
+                    df_copy.loc[(df_copy["Date"] == latest_date) & (df_copy["Time"] == time_val), "sigma"] = all_avg_sigma
+                    print(f"  - 时间 {time_val}: 无历史数据，使用全局平均值 {all_avg_sigma:.4f} 填充")
+    
     # Calculate upper and lower boundaries of the Noise Area
     df_copy["UpperBound"] = df_copy["upper_ref"] * (1 + df_copy["sigma"])
     df_copy["LowerBound"] = df_copy["lower_ref"] * (1 - df_copy["sigma"])
@@ -817,15 +861,13 @@ def calculate_noise_area(df, lookback_days=10):
     # 打印噪声区域边界计算结果
     print("\n噪声区域边界计算结果:")
     print(f"唯一日期数量: {len(unique_dates)}")
-    print(f"最新日期: {unique_dates[-1] if unique_dates else 'N/A'}")
+    print(f"最新日期: {latest_date}")
     
     # 打印最新的几个时间点的边界值
-    latest_date = unique_dates[-1] if unique_dates else None
-    if latest_date:
-        latest_data = df_copy[df_copy["Date"] == latest_date].tail(5)
-        print("\n最新几个时间点的边界值:")
-        for _, row in latest_data.iterrows():
-            print(f"时间: {row['Time']}, 价格: {row['Close']:.2f}, VWAP: {row['VWAP']:.2f}, 上边界: {row['UpperBound']:.2f}, 下边界: {row['LowerBound']:.2f}")
+    latest_data = df_copy[df_copy["Date"] == latest_date].tail(5)
+    print("\n最新几个时间点的边界值:")
+    for _, row in latest_data.iterrows():
+        print(f"时间: {row['Time']}, 价格: {row['Close']:.2f}, VWAP: {row['VWAP']:.2f}, 上边界: {row['UpperBound']:.2f}, 下边界: {row['LowerBound']:.2f}")
     
     # 打印sigma的统计信息
     print(f"\nSigma统计信息:")
