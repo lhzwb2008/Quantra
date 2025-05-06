@@ -787,17 +787,40 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         
                         outside_rth_setting = OutsideRTH.AnyTime
                         
+                        # 提交平仓订单
                         close_order_id = submit_order(symbol, side, position_quantity, outside_rth=outside_rth_setting)
                         if close_order_id:
-                            print(f"平仓: {side} {position_quantity} {symbol}")
-                        
-                        position_direction = 0
-                        position_quantity = 0
-                        entry_price = 0
-                        entry_time = None
+                            # 等待订单状态更新
+                            print(f"平仓订单已提交，ID: {close_order_id}，等待确认...")
+                            time_module.sleep(2)
+                            
+                            # 检查订单状态
+                            max_retries = 5
+                            for i in range(max_retries):
+                                order_status = get_order_status(close_order_id)
+                                status = order_status.get("status", "")
+                                print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
+                                
+                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                    print(f"平仓成功: {side} {position_quantity} {symbol}")
+                                    break
+                                elif "REJECTED" in status or "CANCELED" in status:
+                                    print(f"订单未成功执行: {status}")
+                                    break
+                                elif i < max_retries - 1:
+                                    print("等待订单状态更新...")
+                                    time_module.sleep(3)
+                            
+                            # 无论订单状态如何，都重置持仓状态
+                            position_direction = 0
+                            position_quantity = 0
+                            entry_price = 0
+                            entry_time = None
+                            print("持仓状态已重置")
                     except Exception as e:
                         print(f"平仓出错: {e}")
                 
+                # 设置下次检查时间
                 next_check_time = now + timedelta(hours=12)
                 wait_seconds = (next_check_time - now).total_seconds()
                 
@@ -865,14 +888,36 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         
                         outside_rth_setting = OutsideRTH.AnyTime
                         
+                        # 提交平仓订单
                         close_order_id = submit_order(symbol, side, position_quantity, outside_rth=outside_rth_setting)
                         if close_order_id:
-                            print(f"交易日结束，平仓: {side} {position_quantity} {symbol}")
-                        
-                        position_direction = 0
-                        position_quantity = 0
-                        entry_price = 0
-                        entry_time = None
+                            # 等待订单状态更新
+                            print(f"平仓订单已提交，ID: {close_order_id}，等待确认...")
+                            time_module.sleep(2)
+                            
+                            # 检查订单状态
+                            max_retries = 5
+                            for i in range(max_retries):
+                                order_status = get_order_status(close_order_id)
+                                status = order_status.get("status", "")
+                                print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
+                                
+                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                    print(f"平仓成功: {side} {position_quantity} {symbol}")
+                                    break
+                                elif "REJECTED" in status or "CANCELED" in status:
+                                    print(f"订单未成功执行: {status}")
+                                    break
+                                elif i < max_retries - 1:
+                                    print("等待订单状态更新...")
+                                    time_module.sleep(3)
+                            
+                            # 无论订单状态如何，都重置持仓状态
+                            position_direction = 0
+                            position_quantity = 0
+                            entry_price = 0
+                            entry_time = None
+                            print("持仓状态已重置")
                 except Exception as e:
                     print(f"平仓出错: {e}")
                 
@@ -946,6 +991,24 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # 如果从API获取到实际持仓，更新持仓数量
                     if symbol in positions and positions[symbol]["quantity"] > 0:
                         position_quantity = positions[symbol]["quantity"]
+                        # 补充：根据持仓成本和当前价格推断持仓方向
+                        current_price = df.iloc[-1]["Close"]
+                        cost_price = positions[symbol]["cost_price"]
+                        
+                        # 如果之前没有设置方向，根据成本价与当前价格关系推断方向
+                        if position_direction == 0:
+                            if cost_price < current_price:
+                                position_direction = 1  # 多头
+                                print(f"根据成本价({cost_price})与当前价格({current_price})推断为多头持仓")
+                            else:
+                                position_direction = -1  # 空头
+                                print(f"根据成本价({cost_price})与当前价格({current_price})推断为空头持仓")
+                            
+                            # 设置入场价格和时间
+                            if entry_price is None:
+                                entry_price = cost_price
+                                entry_time = now - timedelta(minutes=10)  # 估计入场时间
+                                print(f"设置入场价格: {entry_price}")
                 else:
                     print(f"当前无 {symbol} 持仓")
                     if position_direction != 0:
@@ -983,21 +1046,48 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     side = "Sell" if position_direction == 1 else "Buy"
                     
                     try:
+                        # 提交平仓订单
                         close_order_id = submit_order(symbol, side, position_quantity, outside_rth=outside_rth_setting)
                         if close_order_id:
-                            exit_time = now
+                            # 等待订单状态更新
+                            print(f"平仓订单已提交，ID: {close_order_id}，等待确认...")
+                            time_module.sleep(2)
+                            
+                            # 获取当前价格用于计算盈亏
                             exit_price = df.iloc[-1]["Close"]
                             
-                            print(f"平仓: {side} {position_quantity} {symbol} 价格: {exit_price}")
+                            # 检查订单状态
+                            max_retries = 5
+                            for i in range(max_retries):
+                                order_status = get_order_status(close_order_id)
+                                status = order_status.get("status", "")
+                                print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
+                                
+                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                    # 如果有成交价格，使用成交价格
+                                    if order_status.get("executed_price") and float(order_status.get("executed_price")) > 0:
+                                        exit_price = float(order_status.get("executed_price"))
+                                    
+                                    # 计算盈亏
+                                    pnl = (exit_price - entry_price) * position_direction * position_quantity
+                                    pnl_pct = (exit_price / entry_price - 1) * 100 * position_direction
+                                    
+                                    print(f"平仓成功: {side} {position_quantity} {symbol} 价格: {exit_price}")
+                                    print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                                    break
+                                elif "REJECTED" in status or "CANCELED" in status:
+                                    print(f"订单未成功执行: {status}")
+                                    break
+                                elif i < max_retries - 1:
+                                    print("等待订单状态更新...")
+                                    time_module.sleep(3)
                             
-                            pnl = (exit_price - entry_price) * position_direction * position_quantity
-                            pnl_pct = (exit_price / entry_price - 1) * 100 * position_direction
-                            print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
-                            
+                            # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
                             position_quantity = 0
                             entry_price = 0
                             entry_time = None
+                            print("持仓状态已重置")
                     except Exception as e:
                         print(f"平仓出错: {e}")
             
@@ -1074,13 +1164,49 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                         
                         if order_id:
-                            position_direction = signal
-                            position_quantity = position_size
-                            entry_price = latest_price
-                            entry_time = now
-                            positions_opened_today += 1
+                            # 等待订单状态更新
+                            print(f"订单已提交，ID: {order_id}，等待确认订单状态...")
+                            time_module.sleep(2)
                             
-                            print(f"开仓: {side} {position_size} {symbol} 价格: {entry_price}")
+                            max_retries = 5
+                            for retry in range(max_retries):
+                                order_info = get_order_status(order_id)
+                                status = order_info.get("status", "")
+                                
+                                print(f"订单状态: {status} (尝试 {retry+1}/{max_retries})")
+                                
+                                # 成交完成或部分成交
+                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                    executed_quantity = int(float(order_info.get("executed_quantity", 0)))
+                                    if executed_quantity > 0:
+                                        position_direction = signal
+                                        position_quantity = executed_quantity
+                                        # 使用实际成交价格
+                                        if order_info.get("executed_price") and float(order_info.get("executed_price")) > 0:
+                                            entry_price = float(order_info.get("executed_price"))
+                                        else:
+                                            entry_price = latest_price
+                                        entry_time = now
+                                        positions_opened_today += 1
+                                        
+                                        print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
+                                        break
+                                # 已拒绝、已取消或其他最终状态
+                                elif "REJECTED" in status or "CANCELED" in status or "EXPIRED" in status or "FAILED" in status:
+                                    print(f"订单未成功: {status}")
+                                    break
+                                # 仍在处理中，继续等待
+                                else:
+                                    if retry < max_retries - 1:
+                                        print(f"订单仍在处理中，等待更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，尝试取消订单")
+                                        try:
+                                            TRADE_CTX.cancel_order(order_id)
+                                            print(f"已发送取消请求，订单ID: {order_id}")
+                                        except Exception as e:
+                                            print(f"取消订单时出错: {e}")
             
             next_check_time = now + timedelta(minutes=check_interval_minutes)
             sleep_seconds = (next_check_time - now).total_seconds()
