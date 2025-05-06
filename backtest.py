@@ -1184,21 +1184,23 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        'tqqq_longport_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
-        ticker='TQQQ',                     # 指定ticker
+        # 'tqqq_longport_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        # ticker='TQQQ',                     # 指定ticker
+        'qqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        ticker='QQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2025, 1, 1), 
+        start_date=date(2024, 1, 1), 
         end_date=date(2025, 5, 1),
-        use_dynamic_leverage=True,
+        use_dynamic_leverage=False,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
         # 交易时间配置
         trading_start_time=(9, 40),  # 交易开始时间
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        use_macd=True,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
+        use_macd=False,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=True  # 是否打印每日交易详情
+        print_daily_trades=False  # 是否打印每日交易详情
     )
