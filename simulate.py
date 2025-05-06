@@ -801,15 +801,19 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                 status = order_status.get("status", "")
                                 print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
                                 
-                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
-                                    print(f"平仓成功: {side} {position_quantity} {symbol}")
+                                if "FilledStatus" in status or "PartialFilledStatus" in status:
+                                    executed_quantity = int(float(order_status.get("executed_quantity", 0)))
+                                    print(f"平仓成功: {side} {executed_quantity} {symbol}")
                                     break
-                                elif "REJECTED" in status or "CANCELED" in status:
+                                elif "RejectedStatus" in status or "CanceledStatus" in status:
                                     print(f"订单未成功执行: {status}")
                                     break
-                                elif i < max_retries - 1:
-                                    print("等待订单状态更新...")
-                                    time_module.sleep(3)
+                                elif "NewStatus" in status or "PendingNewStatus" in status or "PendingCancelStatus" in status:
+                                    if i < max_retries - 1:
+                                        print("等待订单状态更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，状态: {status}")
                             
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
@@ -902,15 +906,19 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                 status = order_status.get("status", "")
                                 print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
                                 
-                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
-                                    print(f"平仓成功: {side} {position_quantity} {symbol}")
+                                if "FilledStatus" in status or "PartialFilledStatus" in status:
+                                    executed_quantity = int(float(order_status.get("executed_quantity", 0)))
+                                    print(f"平仓成功: {side} {executed_quantity} {symbol}")
                                     break
-                                elif "REJECTED" in status or "CANCELED" in status:
+                                elif "RejectedStatus" in status or "CanceledStatus" in status:
                                     print(f"订单未成功执行: {status}")
                                     break
-                                elif i < max_retries - 1:
-                                    print("等待订单状态更新...")
-                                    time_module.sleep(3)
+                                elif "NewStatus" in status or "PendingNewStatus" in status or "PendingCancelStatus" in status:
+                                    if i < max_retries - 1:
+                                        print("等待订单状态更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，状态: {status}")
                             
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
@@ -1063,8 +1071,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                 status = order_status.get("status", "")
                                 print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
                                 
-                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                if "FilledStatus" in status or "PartialFilledStatus" in status:
                                     # 如果有成交价格，使用成交价格
+                                    executed_quantity = int(float(order_status.get("executed_quantity", 0)))
                                     if order_status.get("executed_price") and float(order_status.get("executed_price")) > 0:
                                         exit_price = float(order_status.get("executed_price"))
                                     
@@ -1072,15 +1081,25 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                     pnl = (exit_price - entry_price) * position_direction * position_quantity
                                     pnl_pct = (exit_price / entry_price - 1) * 100 * position_direction
                                     
-                                    print(f"平仓成功: {side} {position_quantity} {symbol} 价格: {exit_price}")
+                                    print(f"平仓成功: {side} {executed_quantity} {symbol} 价格: {exit_price}")
                                     print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
                                     break
-                                elif "REJECTED" in status or "CANCELED" in status:
+                                elif "RejectedStatus" in status or "CanceledStatus" in status:
                                     print(f"订单未成功执行: {status}")
                                     break
-                                elif i < max_retries - 1:
-                                    print("等待订单状态更新...")
-                                    time_module.sleep(3)
+                                elif "NewStatus" in status or "PendingNewStatus" in status or "PendingCancelStatus" in status:
+                                    if i < max_retries - 1:
+                                        print("等待订单状态更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，状态: {status}")
+                                else:
+                                    # 未知状态，等待
+                                    if i < max_retries - 1:
+                                        print(f"订单状态未知: {status}，等待更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，状态未知: {status}")
                             
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
@@ -1176,7 +1195,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                 print(f"订单状态: {status} (尝试 {retry+1}/{max_retries})")
                                 
                                 # 成交完成或部分成交
-                                if "FILLED" in status or "PARTIALLY_FILLED" in status:
+                                if "FilledStatus" in status or "PartialFilledStatus" in status:
                                     executed_quantity = int(float(order_info.get("executed_quantity", 0)))
                                     if executed_quantity > 0:
                                         position_direction = signal
@@ -1192,11 +1211,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                         print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
                                         break
                                 # 已拒绝、已取消或其他最终状态
-                                elif "REJECTED" in status or "CANCELED" in status or "EXPIRED" in status or "FAILED" in status:
+                                elif "RejectedStatus" in status or "CanceledStatus" in status or "ExpiredStatus" in status or "FailedStatus" in status:
                                     print(f"订单未成功: {status}")
                                     break
                                 # 仍在处理中，继续等待
-                                else:
+                                elif "NewStatus" in status or "PendingNewStatus" in status or "PendingCancelStatus" in status:
                                     if retry < max_retries - 1:
                                         print(f"订单仍在处理中，等待更新...")
                                         time_module.sleep(3)
@@ -1207,6 +1226,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                             print(f"已发送取消请求，订单ID: {order_id}")
                                         except Exception as e:
                                             print(f"取消订单时出错: {e}")
+                                else:
+                                    # 未知状态，等待
+                                    if retry < max_retries - 1:
+                                        print(f"订单状态未知: {status}，等待更新...")
+                                        time_module.sleep(3)
+                                    else:
+                                        print(f"订单状态确认超时，状态未知: {status}")
             
             next_check_time = now + timedelta(minutes=check_interval_minutes)
             sleep_seconds = (next_check_time - now).total_seconds()
