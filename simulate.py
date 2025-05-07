@@ -108,13 +108,7 @@ def get_current_positions():
         traceback.print_exc()
         return {}
 
-# 全局变量，用于跟踪最后一次获取历史数据的日期
-LAST_HISTORICAL_DATA_DATE = None
-HISTORICAL_DATA_CACHE = None
-
 def get_historical_data(symbol, period="1m", days_back=None):
-    global LAST_HISTORICAL_DATA_DATE, HISTORICAL_DATA_CACHE
-    
     try:
         if QUOTE_CTX is None:
             print("Quote context is not initialized")
@@ -122,11 +116,6 @@ def get_historical_data(symbol, period="1m", days_back=None):
         
         now_et = get_us_eastern_time()
         current_date = now_et.date()
-        
-        if LAST_HISTORICAL_DATA_DATE is not None and HISTORICAL_DATA_CACHE is not None:
-            if LAST_HISTORICAL_DATA_DATE == current_date:
-                print(f"使用缓存的历史数据，最后更新日期: {LAST_HISTORICAL_DATA_DATE}")
-                return HISTORICAL_DATA_CACHE
         
         now_hour = now_et.hour
         now_minute = now_et.minute
@@ -136,8 +125,6 @@ def get_historical_data(symbol, period="1m", days_back=None):
         
         if days_back is None:
             days_back = target_days + 15
-        
-        print(f"正在获取 {symbol} 的历史数据，目标天数: {target_days}...")
             
         period_map = {
             "1m": Period.Min_1, "5m": Period.Min_5, "15m": Period.Min_15,
@@ -229,7 +216,7 @@ def get_historical_data(symbol, period="1m", days_back=None):
                             sample_date = sample_time_et.date()
                         
                         if sample_date != current_date_check:
-                            print(f"日期不匹配: 请求 {current_date_check}, 获取到 {sample_date}")
+                            # print(f"日期不匹配: 请求 {current_date_check}, 获取到 {sample_date}")
                             current_date_check -= timedelta(days=1)
                             continue
                     
@@ -239,9 +226,6 @@ def get_historical_data(symbol, period="1m", days_back=None):
                             trading_days_fetched += 1
                         
                         fetched_dates.add(date_str)
-                    
-                    if trading_days_fetched >= target_days:
-                        print(f"已获取 {trading_days_fetched} 个交易日的数据")
                         
                     time_module.sleep(0.5)
                     
@@ -339,8 +323,6 @@ def get_historical_data(symbol, period="1m", days_back=None):
             print(f"警告: 未获取到 {symbol} 的历史数据")
             return df
         
-        print(f"成功获取 {symbol} 的历史数据: {len(df)} 条记录")
-        
         # 提取日期和时间组件
         df["Date"] = df["DateTime"].dt.date
         df["Time"] = df["DateTime"].dt.strftime('%H:%M')
@@ -358,25 +340,11 @@ def get_historical_data(symbol, period="1m", days_back=None):
             print(f"警告: 发现 {len(future_dates)} 条未来日期数据，将被过滤掉")
             df = df[df["Date"] <= current_date]
         
-        # 更新全局缓存
-        HISTORICAL_DATA_CACHE = df.copy()
-        LAST_HISTORICAL_DATA_DATE = now_et.date()
-        
-        # 新增：保存历史数据到本地临时文件，便于人工检查
-        try:
-            temp_filename = f"temp_{symbol.replace('.', '_')}_history.csv"
-            df.to_csv(temp_filename, index=False, encoding='utf-8-sig')
-            print(f"历史数据已保存到本地文件: {temp_filename}")
-        except Exception as e:
-            print(f"保存历史数据到本地文件时出错: {e}")
-        
         return df
     except Exception as e:
         print(f"Error getting historical data: {e}")
         import traceback
         traceback.print_exc()
-        # 修复缓存重置问题：出现异常时重置缓存日期，确保下次重新获取数据
-        LAST_HISTORICAL_DATA_DATE = None
         return pd.DataFrame()
 
 def get_quote(symbol):
@@ -953,11 +921,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if last_date is not None and current_date != last_date:
                 print(f"新的交易日开始，重置今日开仓计数")
                 positions_opened_today = 0
-                
-                global LAST_HISTORICAL_DATA_DATE, HISTORICAL_DATA_CACHE
-                LAST_HISTORICAL_DATA_DATE = None
-                HISTORICAL_DATA_CACHE = None
-                print("新的交易日，重置历史数据缓存")
             
             last_date = current_date
             
