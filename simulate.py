@@ -24,7 +24,7 @@ LOOKBACK_DAYS = 10
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = True  # 设置为True开启调试模式
+DEBUG_MODE = False  # 设置为True开启调试模式
 DEBUG_TIME = "2025-05-02 10:20:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
