@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, time, timedelta, date
+from datetime import datetime, time, timedelta, date as date_type
 import time as time_module
 import os
 import sys
@@ -23,7 +23,22 @@ LOOKBACK_DAYS = 10
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
+# 调试模式配置
+DEBUG_MODE = True  # 设置为True开启调试模式
+DEBUG_TIME = "2025-05-02 10:20:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
+DEBUG_ONCE = True  # 是否只运行一次就退出
+
 def get_us_eastern_time():
+    if DEBUG_MODE and DEBUG_TIME:
+        # 如果处于调试模式且指定了时间，返回指定的时间
+        try:
+            dt = datetime.strptime(DEBUG_TIME, "%Y-%m-%d %H:%M:%S")
+            eastern = pytz.timezone('US/Eastern')
+            return eastern.localize(dt)
+        except ValueError:
+            print(f"错误的调试时间格式: {DEBUG_TIME}，应为 'YYYY-MM-DD HH:MM:SS'")
+    
+    # 正常模式或调试时间格式错误时返回当前时间
     eastern = pytz.timezone('US/Eastern')
     return datetime.now(eastern)
 
@@ -184,26 +199,10 @@ def calculate_vwap(df):
     vwap = df.apply(
         lambda x: x['Turnover'] / x['Volume'] if x['Volume'] > 0 else x['Close'], 
         axis=1
-    )
+    )    
     return vwap
 
 def calculate_noise_area(df, lookback_days=14):
-    """计算价格的上下边界噪声区域
-    
-    根据文档算法实现：
-    1. 计算过去lookback_days天中每个时间点相对于当日开盘价的绝对变动率
-    2. 对每个时间点，计算lookback_days天的平均变动率(sigma)
-    3. 计算上下边界：
-       - UpperBound = max(今日开盘价, 昨日收盘价) * (1 + sigma)
-       - LowerBound = min(今日开盘价, 昨日收盘价) * (1 - sigma)
-    
-    Args:
-        df: 包含价格数据的DataFrame，必须有Date, Time, Open, Close列
-        lookback_days: 回溯计算的天数，默认为14天
-        
-    Returns:
-        添加了UpperBound和LowerBound列的DataFrame
-    """
     # 创建数据副本
     df_copy = df.copy()
     
@@ -212,14 +211,26 @@ def calculate_noise_area(df, lookback_days=14):
     now_et = get_us_eastern_time()
     current_date = now_et.date()
     
+    if DEBUG_MODE:
+        print(f"\n调试 - 噪声区域计算:")
+        print(f"当前日期: {current_date}")
+        print(f"唯一日期数量: {len(unique_dates)}")
+        if len(unique_dates) > 0:
+            print(f"日期范围: {unique_dates[0]} 到 {unique_dates[-1]}")
+        print(f"回溯天数: {lookback_days}")
+    
     # 过滤未来日期
-    if unique_dates and isinstance(unique_dates[0], date):
+    if unique_dates and isinstance(unique_dates[0], date_type):
         unique_dates = [d for d in unique_dates if d <= current_date]
         df_copy = df_copy[df_copy["Date"].isin(unique_dates)]
+        if DEBUG_MODE:
+            print(f"过滤后日期数量: {len(unique_dates)}")
     
     # 检查数据是否足够
     if len(unique_dates) <= lookback_days:
-        print(f"错误: 历史数据不足，至少需要{lookback_days+1}个交易日")
+        print(f"错误: 历史数据不足，至少需要{lookback_days+1}个交易日，当前只有{len(unique_dates)}个交易日")
+        if DEBUG_MODE:
+            print(f"可用交易日: {unique_dates}")
         sys.exit(1)
     
     # 为每个日期计算当日开盘价
@@ -272,23 +283,46 @@ def calculate_noise_area(df, lookback_days=14):
             
             # 确保有足够的历史数据计算sigma
             if len(historical_moves) == 0:
+                if DEBUG_MODE and curr_date == current_date:
+                    print(f"时间点 {tm} 没有足够的历史数据")
                 continue
                 
             # 计算平均变动率作为sigma
             sigma = sum(historical_moves) / len(historical_moves)
             time_sigma[(curr_date, tm)] = sigma
     
+    if DEBUG_MODE:
+        print(f"计算的时间点sigma数量: {len(time_sigma)}")
+        if len(time_sigma) == 0:
+            print("警告: 没有计算出任何sigma值!")
+        
+        # 检查当前日期是否有sigma值
+        curr_date_sigmas = [(date, tm) for (date, tm) in time_sigma.keys() if date == current_date]
+        print(f"当前日期 {current_date} 的sigma值数量: {len(curr_date_sigmas)}")
+    
     # 计算上下边界
     df_copy["UpperBound"] = None
     df_copy["LowerBound"] = None
     
+    bounds_count = 0
     for i in range(lookback_days, len(unique_dates)):
         curr_date = unique_dates[i]
         curr_day_data = df_copy[df_copy["Date"] == curr_date]
         day_open = day_opens[curr_date]
         prev_close = prev_closes.get(curr_date)
         
+        if DEBUG_MODE and curr_date == current_date:
+            print(f"\n当前日期 {curr_date} 的边界计算:")
+            print(f"当日开盘价: {day_open}")
+            print(f"前一日收盘价: {prev_close}")
+            times_with_sigma = [tm for (dt, tm) in time_sigma.keys() if dt == curr_date]
+            print(f"有sigma值的时间点数量: {len(times_with_sigma)}")
+            if len(times_with_sigma) > 0:
+                print(f"时间点示例: {times_with_sigma[:5] if len(times_with_sigma) >= 5 else times_with_sigma}")
+        
         if prev_close is None:
+            if DEBUG_MODE:
+                print(f"日期 {curr_date} 没有前一日收盘价")
             continue
         
         # 根据算法计算参考价格
@@ -304,6 +338,35 @@ def calculate_noise_area(df, lookback_days=14):
                 # 使用时间点特定的sigma计算上下边界
                 df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "UpperBound"] = upper_ref * (1 + sigma)
                 df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "LowerBound"] = lower_ref * (1 - sigma)
+                bounds_count += 1
+    
+    # 在调试模式下检查最后一天的边界数据
+    if DEBUG_MODE:
+        print(f"\n边界数据统计:")
+        print(f"总计算的边界点数: {bounds_count}")
+        
+        if unique_dates:
+            latest_date = max(unique_dates)
+            latest_data = df_copy[df_copy["Date"] == latest_date]
+            has_upper = latest_data["UpperBound"].notna().sum()
+            has_lower = latest_data["LowerBound"].notna().sum()
+            total_rows = len(latest_data)
+            
+            print(f"最新日期 {latest_date} 数据行数: {total_rows}")
+            if total_rows > 0:
+                print(f"有上边界值的行数: {has_upper}/{total_rows} ({has_upper/total_rows*100:.2f}%)")
+                print(f"有下边界值的行数: {has_lower}/{total_rows} ({has_lower/total_rows*100:.2f}%)")
+            
+            # 检查当前测试时间点是否有边界值
+            test_time = now_et.strftime('%H:%M')
+            test_data = df_copy[(df_copy["Date"] == current_date) & (df_copy["Time"] == test_time)]
+            if not test_data.empty:
+                has_test_upper = test_data["UpperBound"].notna().all()
+                has_test_lower = test_data["LowerBound"].notna().all()
+                print(f"当前测试时间点 {test_time} 是否有上边界: {has_test_upper}")
+                print(f"当前测试时间点 {test_time} 是否有下边界: {has_test_lower}")
+            else:
+                print(f"当前测试时间点 {test_time} 没有找到数据")
     
     return df_copy
 
@@ -422,6 +485,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     print("\n" + "="*50)
     print(f"启动交易策略 - 交易品种: {symbol}")
     print(f"当前美东时间: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
+    if DEBUG_MODE:
+        print(f"调试模式已开启! 使用时间: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
+        if DEBUG_ONCE:
+            print("单次运行模式已开启，策略将只运行一次")
     print(f"交易时间: {trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d} (美东时间)")
     print(f"检查间隔: {check_interval_minutes} 分钟")
     print(f"每日最大持仓数: {max_positions_per_day}")
@@ -440,15 +507,19 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     is_us_market = symbol.endswith(".US")
     outside_rth_setting = OutsideRTH.AnyTime
     loop_count = 0
+    
     while True:
         loop_count += 1
         print(f"\n----- 交易检查循环 #{loop_count} -----")
         now = get_us_eastern_time()
         current_date = now.date()
         print(f"\n当前美东时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 检查是否是交易日（调试模式下保持原有逻辑）
         print(f"准备检查今天 {current_date} 是否是交易日...")
         is_today_trading_day = is_trading_day(symbol)
         print(f"交易日检查结果: {'是交易日' if is_today_trading_day else '不是交易日'}")
+            
         if not is_today_trading_day:
             print(f"今天不是交易日，跳过交易")
             if position_quantity != 0:
@@ -462,10 +533,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             wait_seconds = (next_check_time - now).total_seconds()
             time_module.sleep(wait_seconds)
             continue
+            
         if last_date is not None and current_date != last_date:
             print(f"新的交易日开始，重置今日开仓计数")
             positions_opened_today = 0
         last_date = current_date
+        
+        # 保持原有交易时间检查逻辑
         current_hour, current_minute = now.hour, now.minute
         start_hour, start_minute = trading_start_time
         end_hour, end_minute = trading_end_time
@@ -477,11 +551,18 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         print(f"当前时间: {current_hour:02d}:{current_minute:02d}")
         print(f"交易时间: {start_hour:02d}:{start_minute:02d} - {end_hour:02d}:{end_minute:02d}")
         print(f"是否在交易时间内: {'是' if is_trading_hours else '否'}")
+            
         print("正在获取历史数据...")
         df = get_historical_data(symbol)
         if df.empty:
             print("Error: Could not get historical data")
             sys.exit(1)
+            
+        # 调试模式下，根据指定时间截断数据
+        if DEBUG_MODE:
+            # 截断到调试时间之前的数据
+            df = df[df["DateTime"] <= now]
+            print(f"调试模式: 数据已截断至 {now.strftime('%Y-%m-%d %H:%M:%S')}")
             
         # 打印历史数据详细信息
         latest_date = df["Date"].max()
@@ -510,44 +591,36 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             wait_seconds = min(1800, (next_check_time - now).total_seconds())
             time_module.sleep(wait_seconds)
             continue
+            
         print("在交易时间内，继续处理数据和交易逻辑...")
         print("计算VWAP指标...")
         # 使用新的VWAP计算方法
         df["VWAP"] = calculate_vwap(df)
         
+        # 在调试模式下打印当前时间点的数据
+        if DEBUG_MODE:
+            current_time = now.strftime('%H:%M')
+            latest_date = df["Date"].max()
+            debug_data = df[(df["Date"] == latest_date) & (df["Time"] == current_time)]
+            
+            if not debug_data.empty:
+                print("\n调试信息 - 当前时间点1分钟K线数据:")
+                pd.set_option('display.float_format', '{:.6f}'.format)
+                debug_info = debug_data[['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Turnover', 'VWAP']].copy()
+                print(debug_info.to_string(index=False))
+                
+                # 验证VWAP计算
+                if debug_data["Volume"].iloc[0] > 0:
+                    calc_vwap = debug_data["Turnover"].iloc[0] / debug_data["Volume"].iloc[0]
+                    print(f"手动计算VWAP: Turnover({debug_data['Turnover'].iloc[0]}) / Volume({debug_data['Volume'].iloc[0]}) = {calc_vwap:.6f}")
+                    print(f"计算的VWAP值: {debug_data['VWAP'].iloc[0]:.6f}")
+                    print(f"差异: {abs(calc_vwap - debug_data['VWAP'].iloc[0]):.6f}")
+            else:
+                print(f"\n调试信息 - 未找到时间点 {current_time} 的数据")
+        
         # 直接计算噪声区域，不需要中间复制
         print("计算噪声区域边界...")
         df = calculate_noise_area(df, lookback_days)
-        
-        if df["UpperBound"].isna().any() or df["LowerBound"].isna().any():
-            print("警告: 边界数据缺失，跳过本次检查")
-            sys.exit(1)
-            
-        print("获取当前持仓...")
-        all_positions = get_current_positions()
-        positions = {symbol: all_positions[symbol]} if symbol in all_positions else {}
-        if positions:
-            print(f"当前持仓 ({symbol}): {positions[symbol]}")
-            if symbol in positions and positions[symbol]["quantity"] > 0:
-                current_price = df.iloc[-1]["Close"]
-                cost_price = positions[symbol]["cost_price"]
-                if position_quantity == 0:
-                    if cost_price < current_price:
-                        position_quantity = positions[symbol]["quantity"]
-                        print(f"根据成本价({cost_price})与当前价格({current_price})推断为多头持仓")
-                    else:
-                        position_quantity = -positions[symbol]["quantity"]
-                        print(f"根据成本价({cost_price})与当前价格({current_price})推断为空头持仓")
-                    entry_price = cost_price
-        else:
-            print(f"当前无 {symbol} 持仓")
-            if position_quantity != 0:
-                position_quantity = 0
-        
-        # 检查持仓是否已被外部平仓
-        if position_quantity != 0 and (symbol not in positions or positions[symbol]["quantity"] == 0):
-            print(f"{symbol} 持仓已被外部平仓")
-            position_quantity = 0
         
         if position_quantity != 0:
             print(f"检查退出条件 (当前持仓方向: {'多' if position_quantity > 0 else '空'}, 持仓数量: {abs(position_quantity)}, 追踪止损: {trailing_stop})...")
@@ -568,9 +641,26 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 print("持仓状态已重置")
         else:
             print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
-            quote = get_quote(symbol)
-            latest_price = float(quote.get("last_done", df.iloc[-1]["Close"]))
-            print(f"获取实时价格: {latest_price}")
+            
+            # 获取价格
+            if DEBUG_MODE:
+                # 调试模式：直接使用当前时间点的历史价格
+                current_time = now.strftime('%H:%M')
+                latest_date = df["Date"].max()
+                debug_data = df[(df["Date"] == latest_date) & (df["Time"] == current_time)]
+                
+                if not debug_data.empty:
+                    latest_price = float(debug_data["Close"].iloc[0])
+                else:
+                    latest_price = float(df.iloc[-1]["Close"])
+                    
+                print(f"调试模式: 使用历史价格 {latest_price}")
+            else:
+                # 正常模式: 使用API获取实时价格
+                quote = get_quote(symbol)
+                latest_price = float(quote.get("last_done", df.iloc[-1]["Close"]))
+                print(f"获取实时价格: {latest_price}")
+            
             latest_date = df["Date"].max()
             latest_data = df[df["Date"] == latest_date].copy()
             if not latest_data.empty:
@@ -629,6 +719,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                             print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
                     elif "RejectedStatus" in status or "CanceledStatus" in status or "ExpiredStatus" in status or "FailedStatus" in status:
                         print(f"订单未成功: {status}")
+        
+        # 调试模式且单次运行模式，完成一次循环后退出
+        if DEBUG_MODE and DEBUG_ONCE:
+            print("\n调试模式单次运行完成，程序退出")
+            break
+            
         next_check_time = now + timedelta(minutes=check_interval_minutes)
         sleep_seconds = (next_check_time - now).total_seconds()
         if sleep_seconds > 0:
@@ -640,10 +736,18 @@ if __name__ == "__main__":
     print("* 长桥API交易策略启动")
     print("* 版本: 1.0.0")
     print("* 时间:", get_us_eastern_time().strftime("%Y-%m-%d %H:%M:%S"), "(美东时间)")
+    if DEBUG_MODE:
+        print("* 调试模式已开启")
+        if DEBUG_TIME:
+            print(f"* 调试时间: {DEBUG_TIME}")
+        if DEBUG_ONCE:
+            print("* 单次运行模式已开启")
     print("*"*70 + "\n")
+    
     if QUOTE_CTX is None or TRADE_CTX is None:
         print("错误: 无法创建API上下文")
         sys.exit(1)
+        
     run_trading_strategy(
         symbol=SYMBOL,
         check_interval_minutes=CHECK_INTERVAL_MINUTES,
@@ -652,6 +756,4 @@ if __name__ == "__main__":
         max_positions_per_day=MAX_POSITIONS_PER_DAY,
         lookback_days=LOOKBACK_DAYS
     )
-    if TRADE_CTX is not None:
-        TRADE_CTX.close()
     
