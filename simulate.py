@@ -195,12 +195,30 @@ def get_quote(symbol):
     return quote_data
 
 def calculate_vwap(df):
-    # 直接使用成交额除以成交量
-    vwap = df.apply(
-        lambda x: x['Turnover'] / x['Volume'] if x['Volume'] > 0 else x['Close'], 
-        axis=1
-    )    
-    return vwap
+    # 创建一个结果DataFrame的副本
+    result_df = df.copy()
+    
+    # 按照日期分组
+    for date in result_df['Date'].unique():
+        # 获取当日数据
+        day_data = result_df[result_df['Date'] == date]
+        
+        # 按时间排序确保正确累计
+        day_data = day_data.sort_values('Time')
+        
+        # 计算累计成交量和成交额
+        cumulative_volume = day_data['Volume'].cumsum()
+        cumulative_turnover = day_data['Turnover'].cumsum()
+        
+        # 计算VWAP: 累计成交额 / 累计成交量
+        vwap = cumulative_turnover / cumulative_volume
+        # 处理成交量为0的情况
+        vwap = vwap.fillna(day_data['Close'])
+        
+        # 更新结果DataFrame中的对应行
+        result_df.loc[result_df['Date'] == date, 'VWAP'] = vwap.values
+    
+    return result_df['VWAP']
 
 def calculate_noise_area(df, lookback_days=14):
     # 创建数据副本
@@ -608,13 +626,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 pd.set_option('display.float_format', '{:.6f}'.format)
                 debug_info = debug_data[['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Turnover', 'VWAP']].copy()
                 print(debug_info.to_string(index=False))
-                
-                # 验证VWAP计算
-                if debug_data["Volume"].iloc[0] > 0:
-                    calc_vwap = debug_data["Turnover"].iloc[0] / debug_data["Volume"].iloc[0]
-                    print(f"手动计算VWAP: Turnover({debug_data['Turnover'].iloc[0]}) / Volume({debug_data['Volume'].iloc[0]}) = {calc_vwap:.6f}")
-                    print(f"计算的VWAP值: {debug_data['VWAP'].iloc[0]:.6f}")
-                    print(f"差异: {abs(calc_vwap - debug_data['VWAP'].iloc[0]):.6f}")
             else:
                 print(f"\n调试信息 - 未找到时间点 {current_time} 的数据")
         
