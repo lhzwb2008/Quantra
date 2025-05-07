@@ -25,7 +25,7 @@ SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
 DEBUG_MODE = False  # 设置为True开启调试模式
-DEBUG_TIME = "2025-05-02 10:20:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
+DEBUG_TIME = "2025-04-24 09:50:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
 def get_us_eastern_time():
@@ -309,14 +309,6 @@ def calculate_noise_area(df, lookback_days=14):
             sigma = sum(historical_moves) / len(historical_moves)
             time_sigma[(curr_date, tm)] = sigma
     
-    if DEBUG_MODE:
-        print(f"计算的时间点sigma数量: {len(time_sigma)}")
-        if len(time_sigma) == 0:
-            print("警告: 没有计算出任何sigma值!")
-        
-        # 检查当前日期是否有sigma值
-        curr_date_sigmas = [(date, tm) for (date, tm) in time_sigma.keys() if date == current_date]
-        print(f"当前日期 {current_date} 的sigma值数量: {len(curr_date_sigmas)}")
     
     # 计算上下边界
     df_copy["UpperBound"] = None
@@ -347,6 +339,10 @@ def calculate_noise_area(df, lookback_days=14):
         upper_ref = max(day_open, prev_close)
         lower_ref = min(day_open, prev_close)
         
+        if DEBUG_MODE and curr_date == current_date:
+            print(f"上界参考价格选择: max({day_open}, {prev_close}) = {upper_ref}")
+            print(f"下界参考价格选择: min({day_open}, {prev_close}) = {lower_ref}")
+        
         # 对当日每个时间点计算上下边界
         for _, row in curr_day_data.iterrows():
             tm = row["Time"]
@@ -354,9 +350,18 @@ def calculate_noise_area(df, lookback_days=14):
             
             if sigma is not None:
                 # 使用时间点特定的sigma计算上下边界
-                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "UpperBound"] = upper_ref * (1 + sigma)
-                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "LowerBound"] = lower_ref * (1 - sigma)
+                upper_bound = upper_ref * (1 + sigma)
+                lower_bound = lower_ref * (1 - sigma)
+                
+                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "UpperBound"] = upper_bound
+                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "LowerBound"] = lower_bound
                 bounds_count += 1
+                
+                if DEBUG_MODE and curr_date == current_date and tm == now_et.strftime('%H:%M'):
+                    print(f"\n当前时间点 {tm} 的边界计算详情:")
+                    print(f"Sigma值: {sigma:.6f}")
+                    print(f"上界计算: {upper_ref} * (1 + {sigma:.6f}) = {upper_bound:.6f}")
+                    print(f"下界计算: {lower_ref} * (1 - {sigma:.6f}) = {lower_bound:.6f}")
     
     # 在调试模式下检查最后一天的边界数据
     if DEBUG_MODE:
@@ -383,6 +388,9 @@ def calculate_noise_area(df, lookback_days=14):
                 has_test_lower = test_data["LowerBound"].notna().all()
                 print(f"当前测试时间点 {test_time} 是否有上边界: {has_test_upper}")
                 print(f"当前测试时间点 {test_time} 是否有下边界: {has_test_lower}")
+                if has_test_upper and has_test_lower:
+                    print(f"当前测试时间点 {test_time} 的上边界值: {test_data['UpperBound'].iloc[0]:.6f}")
+                    print(f"当前测试时间点 {test_time} 的下边界值: {test_data['LowerBound'].iloc[0]:.6f}")
             else:
                 print(f"当前测试时间点 {test_time} 没有找到数据")
     

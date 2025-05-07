@@ -29,7 +29,7 @@ def calculate_vwap_incrementally(prices, volumes):
         
     return vwaps
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), use_macd=True):
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), use_macd=True, print_details=False):
     """
     Simulate trading for a single day using curr.band + VWAP strategy
     
@@ -41,6 +41,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         transaction_fee_per_share: Fee per share for each transaction
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
         use_macd: Whether to use MACD histogram as an additional condition for entry (default: True)
+        print_details: Whether to print boundary calculation details for trades (default: False)
     """
     position = 0  # 0: no position, 1: long, -1: short
     entry_price = np.nan
@@ -77,6 +78,26 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
             # Check for potential long entry
             long_macd_condition = macd_histogram > 0 if use_macd else True
             if price > upper and price > vwap and long_macd_condition:
+                # Print boundary calculation details if requested
+                if print_details:
+                    date_str = row['DateTime'].strftime('%Y-%m-%d')
+                    sigma = row.get('sigma', 0)
+                    upper_ref = row.get('upper_ref', 0)
+                    lower_ref = row.get('lower_ref', 0)
+                    day_open = row.get('day_open', 0)
+                    
+                    print(f"\n交易点位详情 [{date_str} {current_time}] - 多头入场:")
+                    print(f"  价格: {price:.2f} > 上边界: {upper:.2f} 且 > VWAP: {vwap:.2f}")
+                    print(f"  边界计算详情:")
+                    print(f"    - 日开盘价: {day_open:.2f}, 前日收盘价: {prev_close:.2f}")
+                    print(f"    - 上边界参考价: max({day_open:.2f}, {prev_close:.2f}) = {upper_ref:.2f}")
+                    print(f"    - 下边界参考价: min({day_open:.2f}, {prev_close:.2f}) = {lower_ref:.2f}")
+                    print(f"    - Sigma值: {sigma:.6f}")
+                    print(f"    - 上边界计算: {upper_ref:.2f} * (1 + {sigma:.6f}) = {upper:.2f}")
+                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower:.2f}")
+                    if use_macd:
+                        print(f"    - MACD直方图: {macd_histogram:.6f} (>0)")
+                
                 # Long entry allowed
                 position = 1
                 entry_price = price
@@ -88,6 +109,26 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
             # Check for potential short entry
             short_macd_condition = macd_histogram < 0 if use_macd else True
             if price < lower and price < vwap and short_macd_condition:
+                # Print boundary calculation details if requested
+                if print_details:
+                    date_str = row['DateTime'].strftime('%Y-%m-%d')
+                    sigma = row.get('sigma', 0)
+                    upper_ref = row.get('upper_ref', 0)
+                    lower_ref = row.get('lower_ref', 0)
+                    day_open = row.get('day_open', 0)
+                    
+                    print(f"\n交易点位详情 [{date_str} {current_time}] - 空头入场:")
+                    print(f"  价格: {price:.2f} < 下边界: {lower:.2f} 且 < VWAP: {vwap:.2f}")
+                    print(f"  边界计算详情:")
+                    print(f"    - 日开盘价: {day_open:.2f}, 前日收盘价: {prev_close:.2f}")
+                    print(f"    - 上边界参考价: max({day_open:.2f}, {prev_close:.2f}) = {upper_ref:.2f}")
+                    print(f"    - 下边界参考价: min({day_open:.2f}, {prev_close:.2f}) = {lower_ref:.2f}")
+                    print(f"    - Sigma值: {sigma:.6f}")
+                    print(f"    - 上边界计算: {upper_ref:.2f} * (1 + {sigma:.6f}) = {upper:.2f}")
+                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower:.2f}")
+                    if use_macd:
+                        print(f"    - MACD直方图: {macd_histogram:.6f} (<0)")
+                
                 # Short entry allowed
                 position = -1
                 entry_price = price
@@ -110,6 +151,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 
                 # Check for exit
                 if exit_condition and current_time in allowed_times:
+                    # Print exit details if requested
+                    if print_details:
+                        date_str = row['DateTime'].strftime('%Y-%m-%d')
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
+                        print(f"  价格: {price:.2f} < 追踪止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                    
                     # Exit long position
                     exit_time = row['DateTime']
                     # Calculate transaction fees (entry and exit)
@@ -142,6 +190,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 
                 # Check for exit
                 if exit_condition and current_time in allowed_times:
+                    # Print exit details if requested
+                    if print_details:
+                        date_str = row['DateTime'].strftime('%Y-%m-%d')
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
+                        print(f"  价格: {price:.2f} > 追踪止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                    
                     # Exit short position
                     exit_time = row['DateTime']
                     # Calculate transaction fees (entry and exit)
@@ -175,6 +230,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         close_price = close_row['Close']
         
         if position == 1:  # Long position
+            # Print exit details if requested
+            if print_details:
+                date_str = exit_time.strftime('%Y-%m-%d')
+                print(f"\n交易点位详情 [{date_str} {end_time_str}] - 多头收盘平仓:")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}")
+            
             # Calculate transaction fees (entry and exit)
             transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
             pnl = position_size * (close_price - entry_price) - transaction_fees
@@ -192,6 +253,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
             trailing_stop = np.nan
                 
         else:  # Short position
+            # Print exit details if requested
+            if print_details:
+                date_str = exit_time.strftime('%Y-%m-%d')
+                print(f"\n交易点位详情 [{date_str} {end_time_str}] - 空头收盘平仓:")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}")
+            
             # Calculate transaction fees (entry and exit)
             transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
             pnl = position_size * (entry_price - close_price) - transaction_fees
@@ -215,6 +282,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         last_time = day_df.iloc[-1]['Time']
         
         if position == 1:  # Long position
+            # Print exit details if requested
+            if print_details:
+                date_str = exit_time.strftime('%Y-%m-%d')
+                print(f"\n交易点位详情 [{date_str} {last_time}] - 多头市场收盘平仓:")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}")
+            
             # Calculate transaction fees (entry and exit)
             transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
             pnl = position_size * (last_price - entry_price) - transaction_fees
@@ -229,6 +302,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
             })
                 
         else:  # Short position
+            # Print exit details if requested
+            if print_details:
+                date_str = exit_time.strftime('%Y-%m-%d')
+                print(f"\n交易点位详情 [{date_str} {last_time}] - 空头市场收盘平仓:")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}")
+            
             # Calculate transaction fees (entry and exit)
             transaction_fees = position_size * transaction_fee_per_share * 2  # Buy and sell fees
             pnl = position_size * (entry_price - last_price) - transaction_fees
@@ -250,7 +329,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 volatility_target=0.02, check_interval_minutes=30, 
                 transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                use_macd=True, print_daily_trades=True):
+                use_macd=True, print_daily_trades=True, print_trade_details=False):
     """
     Run the backtest on any 1-minute k-line data
     
@@ -273,6 +352,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         max_positions_per_day: Maximum number of positions allowed to open per day (default: infinity)
         use_macd: Whether to use MACD as an entry condition (default: True)
         print_daily_trades: Whether to print details of each day's trades (default: True)
+        print_trade_details: Whether to print detailed boundary calculation for each trade (default: False)
         
     Returns:
         DataFrame with daily results
@@ -589,7 +669,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 
             # 模拟当天交易
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
-                                           transaction_fee_per_share=transaction_fee_per_share)
+                                           transaction_fee_per_share=transaction_fee_per_share,
+                                           print_details=print_trade_details)
             
             # Extract trades from the result
             trades = simulation_result
@@ -681,7 +762,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
                            transaction_fee_per_share=transaction_fee_per_share,
                            trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day,
-                           use_macd=use_macd)
+                           use_macd=use_macd, print_details=print_trade_details)
         
         # Extract trades from the result
         trades = simulation_result
@@ -1184,14 +1265,15 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        # 'tqqq_longport_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
-        # ticker='TQQQ',                     # 指定ticker
-        'qqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
-        ticker='QQQ',                     # 指定ticker
+        'tqqq_longport_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        # 'tqqq_longport.csv',  # 使用带有MACD指标的TQQQ数据
+        ticker='TQQQ',                     # 指定ticker
+        # 'qqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        # ticker='QQQ',                     # 指定ticker 
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 1), 
-        end_date=date(2025, 5, 1),
+        start_date=date(2025, 3, 25), 
+        end_date=date(2025, 4, 25),
         use_dynamic_leverage=False,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -1202,5 +1284,6 @@ if __name__ == "__main__":
         use_macd=False,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=False  # 是否打印每日交易详情
+        print_daily_trades=False,  # 是否打印每日交易详情
+        print_trade_details=False  # 是否打印交易细节
     )

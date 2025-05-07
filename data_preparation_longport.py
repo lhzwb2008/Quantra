@@ -10,7 +10,7 @@ config = Config.from_env()
 ctx = QuoteContext(config)
 
 # 设置查询的起始点
-start_date = datetime(2025, 5, 1)
+start_date = datetime(2025, 3, 1)
 print(f"查询起始日期: {start_date.strftime('%Y-%m-%d')}")
 
 # 设置单次请求限制
