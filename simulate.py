@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from datetime import datetime, time, timedelta, date
 import time as time_module
 import os
@@ -9,7 +8,7 @@ from math import floor
 from decimal import Decimal
 from dotenv import load_dotenv
 
-from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH, OrderStatus
+from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH
 
 load_dotenv()
 
@@ -113,7 +112,7 @@ def get_current_positions():
 LAST_HISTORICAL_DATA_DATE = None
 HISTORICAL_DATA_CACHE = None
 
-def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal", days_back=None):
+def get_historical_data(symbol, period="1m", days_back=None):
     global LAST_HISTORICAL_DATA_DATE, HISTORICAL_DATA_CACHE
     
     try:
@@ -362,6 +361,14 @@ def get_historical_data(symbol, period="1m", count=390, trade_sessions="normal",
         # 更新全局缓存
         HISTORICAL_DATA_CACHE = df.copy()
         LAST_HISTORICAL_DATA_DATE = now_et.date()
+        
+        # 新增：保存历史数据到本地临时文件，便于人工检查
+        try:
+            temp_filename = f"temp_{symbol.replace('.', '_')}_history.csv"
+            df.to_csv(temp_filename, index=False, encoding='utf-8-sig')
+            print(f"历史数据已保存到本地文件: {temp_filename}")
+        except Exception as e:
+            print(f"保存历史数据到本地文件时出错: {e}")
         
         return df
     except Exception as e:
@@ -733,52 +740,6 @@ def get_order_status(order_id):
         traceback.print_exc()
         return {}
 
-def check_trading_conditions(df, positions_opened_today, max_positions_per_day):
-    # 检查是否已达到每日最大持仓数
-    if positions_opened_today >= max_positions_per_day:
-        print(f"已达到每日最大持仓数: {positions_opened_today}/{max_positions_per_day}")
-        return 0, None, None
-    
-    latest = df.iloc[-1]
-    
-    price = latest["Close"]
-    vwap = latest["VWAP"]
-    upper = latest["UpperBound"]
-    lower = latest["LowerBound"]
-    
-    print("\n开仓条件判断:")
-    print(f"当前价格: {price:.2f}")
-    print(f"VWAP: {vwap:.2f}")
-    print(f"上边界: {upper:.2f}")
-    print(f"下边界: {lower:.2f}")
-    
-    long_price_above_upper = price > upper
-    long_price_above_vwap = price > vwap
-    
-    print("\n多头入场条件:")
-    print(f"价格 > 上边界: {long_price_above_upper} ({price:.2f} > {upper:.2f})")
-    print(f"价格 > VWAP: {long_price_above_vwap} ({price:.2f} > {vwap:.2f})")
-    
-    if long_price_above_upper and long_price_above_vwap:
-        print("满足多头入场条件!")
-        stop_price = max(upper, vwap)
-        return 1, price, stop_price
-    
-    short_price_below_lower = price < lower
-    short_price_below_vwap = price < vwap
-    
-    print("\n空头入场条件:")
-    print(f"价格 < 下边界: {short_price_below_lower} ({price:.2f} < {lower:.2f})")
-    print(f"价格 < VWAP: {short_price_below_vwap} ({price:.2f} < {vwap:.2f})")
-    
-    if short_price_below_lower and short_price_below_vwap:
-        print("满足空头入场条件!")
-        stop_price = min(lower, vwap)
-        return -1, price, stop_price
-    
-    print("不满足任何入场条件")
-    return 0, None, None
-
 def check_exit_conditions(df, position_direction, trailing_stop):
     latest = df.iloc[-1]
     
@@ -903,7 +864,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     position_quantity = 0   # 实际持仓数量
     entry_price = None
     trailing_stop = None
-    entry_time = None
     order_id = None
     positions_opened_today = 0
     last_date = None
@@ -969,8 +929,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
                             position_quantity = 0
-                            entry_price = 0
-                            entry_time = None
                             print("持仓状态已重置")
                     except Exception as e:
                         print(f"平仓出错: {e}")
@@ -1074,8 +1032,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
                             position_quantity = 0
-                            entry_price = 0
-                            entry_time = None
                             print("持仓状态已重置")
                 except Exception as e:
                     print(f"平仓出错: {e}")
@@ -1163,20 +1119,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                 position_direction = -1  # 空头
                                 print(f"根据成本价({cost_price})与当前价格({current_price})推断为空头持仓")
                             
-                            # 设置入场价格和时间
-                            if entry_price is None:
-                                entry_price = cost_price
-                                entry_time = now - timedelta(minutes=10)  # 估计入场时间
-                                print(f"设置入场价格: {entry_price}")
+                            # 设置入场价格
+                            entry_price = cost_price
                 else:
                     print(f"当前无 {symbol} 持仓")
                     if position_direction != 0:
                         # 如果持仓方向不为0但API返回无持仓，则重置持仓状态
                         position_direction = 0
                         position_quantity = 0
-                        entry_price = None
-                        trailing_stop = None
-                        entry_time = None
             except Exception as e:
                 print(f"获取持仓时出错: {e}")
                 import traceback
@@ -1189,9 +1139,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     print(f"{symbol} 持仓已被外部平仓")
                     position_direction = 0
                     position_quantity = 0
-                    entry_price = None
-                    trailing_stop = None
-                    entry_time = None
             
             if position_direction != 0 and position_quantity > 0:
                 print(f"检查退出条件 (当前持仓方向: {'多' if position_direction == 1 else '空'}, 持仓数量: {position_quantity}, 追踪止损: {trailing_stop})...")
@@ -1215,48 +1162,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                             # 获取当前价格用于计算盈亏
                             exit_price = df.iloc[-1]["Close"]
                             
-                            # 检查订单状态
-                            max_retries = 5
-                            for i in range(max_retries):
-                                order_status = get_order_status(close_order_id)
-                                status = order_status.get("status", "")
-                                print(f"订单状态: {status} (检查 {i+1}/{max_retries})")
-                                
-                                if "FilledStatus" in status or "PartialFilledStatus" in status:
-                                    # 如果有成交价格，使用成交价格
-                                    executed_quantity = int(float(order_status.get("executed_quantity", 0)))
-                                    if order_status.get("executed_price") and float(order_status.get("executed_price")) > 0:
-                                        exit_price = float(order_status.get("executed_price"))
-                                    
-                                    # 计算盈亏
-                                    pnl = (exit_price - entry_price) * position_direction * position_quantity
-                                    pnl_pct = (exit_price / entry_price - 1) * 100 * position_direction
-                                    
-                                    print(f"平仓成功: {side} {executed_quantity} {symbol} 价格: {exit_price}")
-                                    print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
-                                    break
-                                elif "RejectedStatus" in status or "CanceledStatus" in status:
-                                    print(f"订单未成功执行: {status}")
-                                    break
-                                elif "NewStatus" in status or "PendingNewStatus" in status or "PendingCancelStatus" in status:
-                                    if i < max_retries - 1:
-                                        print("等待订单状态更新...")
-                                        time_module.sleep(3)
-                                    else:
-                                        print(f"订单状态确认超时，状态: {status}")
-                                else:
-                                    # 未知状态，等待
-                                    if i < max_retries - 1:
-                                        print(f"订单状态未知: {status}，等待更新...")
-                                        time_module.sleep(3)
-                                    else:
-                                        print(f"订单状态确认超时，状态未知: {status}")
+                            # 计算盈亏
+                            pnl = (exit_price - entry_price) * position_direction * position_quantity
+                            pnl_pct = (exit_price / entry_price - 1) * 100 * position_direction
+                            
+                            print(f"平仓成功: {side} {position_quantity} {symbol} 价格: {exit_price}")
+                            print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
                             
                             # 无论订单状态如何，都重置持仓状态
                             position_direction = 0
                             position_quantity = 0
-                            entry_price = 0
-                            entry_time = None
                             print("持仓状态已重置")
                     except Exception as e:
                         print(f"平仓出错: {e}")
@@ -1356,7 +1271,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                                             entry_price = float(order_info.get("executed_price"))
                                         else:
                                             entry_price = latest_price
-                                        entry_time = now
                                         positions_opened_today += 1
                                         
                                         print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
@@ -1421,11 +1335,8 @@ if __name__ == "__main__":
     print("*"*70 + "\n")
     
     if QUOTE_CTX is None or TRADE_CTX is None:
-        print("错误: 无法创建API上下文。请检查API凭证是否正确设置。")
-        print("请确保以下环境变量已正确设置:")
-        print("- LONGPORT_APP_KEY")
-        print("- LONGPORT_APP_SECRET")
-        print("- LONGPORT_ACCESS_TOKEN")
+        print("错误: 无法创建API上下文")
+
         sys.exit(1)
     
     try:
