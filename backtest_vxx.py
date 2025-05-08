@@ -1312,8 +1312,8 @@ if __name__ == "__main__":
         # ticker='QQQ',                     # 指定ticker 
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 1), 
-        end_date=date(2025, 4, 4),
+        start_date=date(2024, 1, 20), 
+        end_date=date(2025, 1, 20),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -1328,8 +1328,8 @@ if __name__ == "__main__":
         print_trade_details=False,  # 是否打印交易细节
         leverage_symbol="VXX.US",  # 指定杠杆标的
         leverage_thresholds={
-            'high': {'threshold': 60, 'factor': 0.5},   # 高于58使用0.5倍杠杆
-            'medium': {'threshold': 50, 'factor': 1.0}, # 52-58之间使用1倍杠杆
+            'high': {'threshold': 62, 'factor': 0.5},   # 高于58使用0.5倍杠杆
+            'medium': {'threshold': 55, 'factor': 1.0}, # 52-58之间使用1倍杠杆
             'low': {'threshold': 0, 'factor': 2.0}      # 低于52使用2倍杠杆
         }  # 使用自定义杠杆阈值
     )

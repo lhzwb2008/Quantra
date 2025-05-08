@@ -461,6 +461,19 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 12.5% when VIX is extreme
             vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is moderate
             vix_daily.loc[vix_daily['Open'] <= 20, 'position_factor'] = 2.0  # 200% when VIX is low
+            
+            # # 统计VIX在各个区间的分布比例
+            # total_days = len(vix_daily)
+            # vix_extreme = len(vix_daily[vix_daily['Open'] > 30])
+            # vix_high = len(vix_daily[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20)])
+            # vix_low = len(vix_daily[vix_daily['Open'] <= 20])
+            
+            # print("\nVIX区间分布统计:")
+            # print(f"VIX > 30 (极端波动): {vix_extreme}天 ({vix_extreme/total_days*100:.2f}%)")
+            # print(f"20 < VIX <= 30 (高波动): {vix_high}天 ({vix_high/total_days*100:.2f}%)")
+            # print(f"VIX <= 20 (低波动): {vix_low}天 ({vix_low/total_days*100:.2f}%)")
+            # print(f"总计: {total_days}天")
+            
             # Create a date-indexed series for easy lookup
             # Convert index to date (not datetime) for consistent lookup
             position_factors = vix_daily.set_index('Date')['position_factor']
@@ -1273,7 +1286,7 @@ if __name__ == "__main__":
         initial_capital=10000, 
         lookback_days=10,
         start_date=date(2024, 1, 20), 
-        end_date=date(2025, 4, 4),
+        end_date=date(2025, 1, 20),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -1284,6 +1297,6 @@ if __name__ == "__main__":
         use_macd=False,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=True,  # 是否打印每日交易详情
+        print_daily_trades=False,  # 是否打印每日交易详情
         print_trade_details=False  # 是否打印交易细节
     )
