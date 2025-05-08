@@ -20,6 +20,11 @@ TRADING_END_TIME = (15, 40)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 3
 LOOKBACK_DAYS = 10
 
+# VIX动态杠杆配置
+USE_DYNAMIC_LEVERAGE = False  # 是否使用VIX动态杠杆
+VIX_SYMBOL = "VXX.US"  # VXX ETF的代码
+
+
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
@@ -504,9 +509,72 @@ def is_trading_day(symbol=None):
     is_half_trade_day = current_date in half_trading_dates
     return is_trade_day or is_half_trade_day
 
+def get_vix_value():
+    """
+    从Longport API获取最新的VXX ETF值
+    返回: 当前VXX ETF的收盘价
+    """
+    try:
+        # 如果是调试模式，获取调试时间对应的历史VXX数据
+        if DEBUG_MODE:
+            now_et = get_us_eastern_time()
+            current_time = now_et.strftime('%H:%M')
+            current_date = now_et.date()
+            
+            # 获取VXX的历史数据
+            vxx_df = get_historical_data(VIX_SYMBOL)
+            
+            if not vxx_df.empty:
+                # 查找对应调试时间点的数据
+                debug_data = vxx_df[(vxx_df["Date"] == current_date) & (vxx_df["Time"] == current_time)]
+                
+                if not debug_data.empty:
+                    vxx_value = float(debug_data["Close"].iloc[0])
+                    print(f"调试模式: 使用历史VXX指数值: {vxx_value:.2f} (时间: {current_date} {current_time})")
+                    return vxx_value
+                else:
+                    # 如果找不到精确时间点，使用当天最新的数据
+                    today_data = vxx_df[vxx_df["Date"] == current_date]
+                    if not today_data.empty:
+                        # 找到当天最接近且早于当前时间的数据
+                        today_data = today_data[today_data["Time"] <= current_time]
+                        if not today_data.empty:
+                            vxx_value = float(today_data.iloc[-1]["Close"])
+                            print(f"调试模式: 使用最近的历史VXX指数值: {vxx_value:.2f} (时间: {current_date} {today_data.iloc[-1]['Time']})")
+                            return vxx_value
+            
+            print("调试模式: 无法找到历史VXX数据，使用默认值50")
+            return 50.0
+        
+        # 正常模式: 使用现有的QUOTE_CTX获取VXX报价
+        vxx_quotes = QUOTE_CTX.quote([VIX_SYMBOL])
+        if vxx_quotes and len(vxx_quotes) > 0:
+            vxx_value = float(vxx_quotes[0].last_done)
+            print(f"当前VXX指数值: {vxx_value:.2f}")
+            return vxx_value
+        else:
+            print("警告: 无法获取VXX数据，使用默认值50")
+            return 50.0  # 默认中等波动率的VXX值
+    except Exception as e:
+        print(f"获取VXX数据时出错: {e}")
+        print("使用默认VXX值50")
+        return 50.0  # 出错时使用默认值
+
+def calculate_position_factor(vix_value):
+    if vix_value > 70:
+        position_factor = 0.5  # 极高波动率，减少仓位
+    elif vix_value > 50:
+        position_factor = 1.0  # 中等波动率，标准仓位
+    else:
+        position_factor = 2.0  # 低波动率，增加仓位
+    
+    print(f"VXX: {vix_value:.2f} -> 仓位因子: {position_factor:.1f}x")
+    return position_factor
+
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
-                        max_positions_per_day=MAX_POSITIONS_PER_DAY, lookback_days=LOOKBACK_DAYS):
+                        max_positions_per_day=MAX_POSITIONS_PER_DAY, lookback_days=LOOKBACK_DAYS,
+                        use_dynamic_leverage=USE_DYNAMIC_LEVERAGE):
     now_et = get_us_eastern_time()
     print("\n" + "="*50)
     print(f"启动交易策略 - 交易品种: {symbol}")
@@ -519,6 +587,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     print(f"检查间隔: {check_interval_minutes} 分钟")
     print(f"每日最大持仓数: {max_positions_per_day}")
     print(f"回溯天数: {lookback_days}")
+    print(f"VXX动态杠杆: {'开启' if use_dynamic_leverage else '关闭'}")
     print("="*50 + "\n")
     initial_capital = get_account_balance()
     if initial_capital <= 0:
@@ -717,7 +786,19 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 if signal != 0:
                     print(f"触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
                     available_capital = get_account_balance()
-                    position_size = floor(available_capital / latest_price)
+                    
+                    # 使用VXX动态杠杆
+                    position_factor = 1.0  # 默认为1.0倍仓位
+                    if use_dynamic_leverage:
+                        # 获取VXX值并计算仓位因子
+                        vxx_value = get_vix_value()
+                        position_factor = calculate_position_factor(vxx_value)
+                        print(f"VXX动态杠杆: VXX={vxx_value:.2f} -> 仓位因子={position_factor:.1f}x")
+                    
+                    # 应用仓位因子计算最终仓位
+                    position_size = floor(available_capital * position_factor / latest_price)
+                    print(f"资金: ${available_capital:.2f} x 仓位因子: {position_factor:.1f}x -> 仓位: {position_size}股")
+                    
                     if position_size <= 0:
                         print("Warning: Insufficient capital for position")
                         sys.exit(1)
@@ -761,18 +842,21 @@ if __name__ == "__main__":
             print(f"* 调试时间: {DEBUG_TIME}")
         if DEBUG_ONCE:
             print("* 单次运行模式已开启")
+    if USE_DYNAMIC_LEVERAGE:
+        print("* VXX动态杠杆已开启")
     print("*"*70 + "\n")
     
     if QUOTE_CTX is None or TRADE_CTX is None:
         print("错误: 无法创建API上下文")
         sys.exit(1)
-        
+    
     run_trading_strategy(
         symbol=SYMBOL,
         check_interval_minutes=CHECK_INTERVAL_MINUTES,
         trading_start_time=TRADING_START_TIME,
         trading_end_time=TRADING_END_TIME,
         max_positions_per_day=MAX_POSITIONS_PER_DAY,
-        lookback_days=LOOKBACK_DAYS
+        lookback_days=LOOKBACK_DAYS,
+        use_dynamic_leverage=USE_DYNAMIC_LEVERAGE
     )
     
