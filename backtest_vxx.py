@@ -329,7 +329,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 volatility_target=0.02, check_interval_minutes=30, 
                 transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                use_macd=True, print_daily_trades=True, print_trade_details=False):
+                use_macd=True, print_daily_trades=True, print_trade_details=False,
+                leverage_symbol="VXX.US", leverage_thresholds=None):
     """
     Run the backtest on any 1-minute k-line data
     
@@ -353,6 +354,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         use_macd: Whether to use MACD as an entry condition (default: True)
         print_daily_trades: Whether to print details of each day's trades (default: True)
         print_trade_details: Whether to print detailed boundary calculation for each trade (default: False)
+        leverage_symbol: Symbol for leverage (default: "VXX.US")
+        leverage_thresholds: List of thresholds for leverage (default: None)
         
     Returns:
         DataFrame with daily results
@@ -395,81 +398,118 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     
     # Load and process VIX data for position sizing
     if use_dynamic_leverage:
-        print(f"Loading VIX data for {ticker} dynamic position sizing...")
+        print(f"获取{leverage_symbol}日线数据用于动态仓位控制...")
         try:
-            # Load VIX data
-            vix_df = pd.read_csv(vix_path)
+            from longport.openapi import Config, QuoteContext, Period, AdjustType
+            from datetime import date
+
+            # 设置默认杠杆阈值配置
+            default_thresholds = {
+                'high': {'threshold': 58, 'factor': 0.5},
+                'medium': {'threshold': 52, 'factor': 1.0},
+                'low': {'threshold': 0, 'factor': 2.0}
+            }
             
-            # Process VIX data - handle concatenated header if needed
-            if 'DateTimeOpenHighLowClose' in vix_df.columns:
-                print("Processing VIX data with concatenated header...")
-                # Extract column names
-                vix_columns = ['DateTime', 'Open', 'High', 'Low', 'Close']
+            # 如果提供了自定义阈值，则使用它
+            if leverage_thresholds is not None:
+                thresholds = leverage_thresholds
+            else:
+                thresholds = default_thresholds
                 
-                # Create a new DataFrame with proper columns
-                new_vix_df = pd.DataFrame(columns=vix_columns)
+            print(f"使用杠杆阈值配置:")
+            for level, config in sorted(thresholds.items(), key=lambda x: x[1]['threshold'], reverse=True):
+                print(f"  - {level}: > {config['threshold']} 使用 {config['factor']}x 杠杆")
+
+            # 使用日期范围一次性获取所有交易日的开盘价
+            print("初始化Longport配置和上下文...")
+            config = Config.from_env()
+            quote_ctx = QuoteContext(config)
+            
+            # 获取需要回测的日期范围
+            unique_dates = price_df['Date'].unique()
+            unique_dates.sort()  # 确保日期有序
+            
+            if len(unique_dates) > 0:
+                # 获取起始日期和结束日期
+                vxx_start_date = unique_dates[0]
+                vxx_end_date = unique_dates[-1]
                 
-                # Process each row
-                for i, row in vix_df.iterrows():
-                    # First row might be the header
-                    if i == 0 and not row[0].startswith('2'):  # Skip if it's a header
-                        continue
+                if isinstance(vxx_start_date, str):
+                    vxx_start_date = date.fromisoformat(vxx_start_date.split()[0])
+                elif hasattr(vxx_start_date, 'date'):
+                    vxx_start_date = vxx_start_date.date()
+                
+                if isinstance(vxx_end_date, str):
+                    vxx_end_date = date.fromisoformat(vxx_end_date.split()[0])
+                elif hasattr(vxx_end_date, 'date'):
+                    vxx_end_date = vxx_end_date.date()
+                
+                print(f"获取{leverage_symbol}日线数据，日期范围: {vxx_start_date} 到 {vxx_end_date}")
+                
+                # 一次性请求整个日期范围的K线数据
+                candles = quote_ctx.history_candlesticks_by_date(
+                    leverage_symbol,
+                    Period.Day,  # 日K线
+                    AdjustType.ForwardAdjust,  # 前复权
+                    vxx_start_date,
+                    vxx_end_date
+                )
+                
+                # 处理获取的所有K线数据
+                vxx_position_data = {}
+                for candle in candles:
+                    candle_date = candle.timestamp.date()
+                    vxx_open = candle.open
                     
-                    # Split the concatenated data
-                    values = row[0].split()
-                    if len(values) >= 5:  # Ensure we have enough values
-                        # Remove leading digit if present (e.g., "02008-01-02" -> "2008-01-02")
-                        date_str = values[0]
-                        if date_str[0].isdigit() and date_str[1].isdigit():
-                            date_str = date_str[1:]
-                        time_str = values[1]
-                        datetime_str = f"{date_str} {time_str}"
-                        print(f"DEBUG: Parsed VIX date: {date_str}, time: {time_str}")
-                        
-                        # Add to new DataFrame
-                        new_vix_df.loc[len(new_vix_df)] = [
-                            datetime_str,
-                            float(values[2]),
-                            float(values[3]),
-                            float(values[4]),
-                            float(values[5]) if len(values) > 5 else float(values[4])
-                        ]
+                    # 根据开盘价和阈值设置仓位因子
+                    # 按阈值从高到低排序
+                    sorted_thresholds = sorted(thresholds.items(), key=lambda x: x[1]['threshold'], reverse=True)
+                    position_factor = sorted_thresholds[-1][1]['factor']  # 默认使用最低阈值的因子
+                    
+                    for level, config in sorted_thresholds:
+                        if vxx_open > config['threshold']:
+                            position_factor = config['factor']
+                            break
+                            
+                    # 存储到字典中
+                    vxx_position_data[candle_date] = {
+                        'open': vxx_open,
+                        'position_factor': position_factor
+                    }
                 
-                vix_df = new_vix_df
-            
-            # Ensure DateTime is parsed correctly
-            vix_df['DateTime'] = pd.to_datetime(vix_df['DateTime'])
-            
-            # Extract date from DateTime
-            vix_df['Date'] = vix_df['DateTime'].dt.date
-            
-            # Get daily opening VIX value (first value of each day)
-            vix_daily = vix_df.groupby('Date')['Open'].first().reset_index()
-            vix_daily['Date'] = pd.to_datetime(vix_daily['Date'])
-            
-            # Create a rule-based position sizing with 5 levels based on VIX thresholds
-            # VIX > 30: 12.5% position (extreme volatility)
-            # VIX between 25 and 30: 25% position (very high volatility)
-            # VIX between 20 and 25: 50% position (high volatility)
-            # VIX between 15 and 20: 100% position (moderate volatility)
-            # VIX < 15: 200% position (low volatility)
-            
-            # First set all to default 50% (between 20 and 25 threshold)
-            vix_daily['position_factor'] = 0.5
-            
-            # Then apply the rules in order
-            vix_daily.loc[vix_daily['Open'] > 30, 'position_factor'] = 0.5  # 12.5% when VIX is extreme
-            vix_daily.loc[(vix_daily['Open'] <= 30) & (vix_daily['Open'] > 20), 'position_factor'] = 1.0  # 100% when VIX is moderate
-            vix_daily.loc[vix_daily['Open'] <= 20, 'position_factor'] = 2.0  # 200% when VIX is low
-            # Create a date-indexed series for easy lookup
-            # Convert index to date (not datetime) for consistent lookup
-            position_factors = vix_daily.set_index('Date')['position_factor']
-            
-            print(f"VIX-based position sizing completed. Found {len(vix_daily)} daily VIX records.")
-            
+                print(f"成功获取 {len(vxx_position_data)} 天的{leverage_symbol}日线数据")
+                
+                # 创建DataFrame以便于后续处理
+                vxx_df = pd.DataFrame.from_dict(
+                    {date_key: {'open': data['open'], 'position_factor': data['position_factor']}
+                     for date_key, data in vxx_position_data.items()},
+                    orient='index'
+                )
+                vxx_df.index.name = 'Date'
+                
+                # 创建一个日期索引的仓位因子序列
+                position_factors = vxx_df['position_factor']
+                
+                # 计算每个仓位的使用天数
+                factor_counts = position_factors.value_counts().to_dict()
+                
+                # 打印仓位分布统计信息
+                print(f"\n{leverage_symbol}开盘价仓位分布统计:")
+                for factor, count in sorted(factor_counts.items()):
+                    print(f"{factor}倍仓位: {count} 天 ({count/len(position_factors)*100:.1f}%)")
+                print(f"总计交易日: {len(position_factors)} 天")
+                
+                # 打印平均仓位因子
+                print(f"平均仓位因子: {position_factors.mean():.2f}x")
+                
+                print(f"基于{leverage_symbol}开盘价的仓位控制设置完成")
+            else:
+                print("错误: 没有有效的交易日期")
+                use_dynamic_leverage = False
+                
         except Exception as e:
-            print(f"Error loading or processing VIX data: {e}")
-            print("Falling back to fixed position sizing (100%)...")
+            print(f"使用{leverage_symbol}数据进行仓位调整时出错: {e}")
+            print("回退到固定仓位大小 (1.0x)...")
             use_dynamic_leverage = False
     
     # Filter data by date range if specified
@@ -882,7 +922,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         strategy_name += " + MACD"
     
     if use_dynamic_leverage:
-        print(f"Strategy: {strategy_name} with VIX-based Position Sizing")
+        print(f"Strategy: {strategy_name} with {leverage_symbol}-based Position Sizing")
         # Calculate average position factor
         if 'position_factors' in locals():
             avg_position = position_factors.mean()
@@ -1272,7 +1312,7 @@ if __name__ == "__main__":
         # ticker='QQQ',                     # 指定ticker 
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 20), 
+        start_date=date(2024, 1, 1), 
         end_date=date(2025, 4, 4),
         use_dynamic_leverage=True,
         check_interval_minutes=10,
@@ -1284,6 +1324,12 @@ if __name__ == "__main__":
         use_macd=False,  # 使用MACD作为入场条件，设为False可以禁用MACD条件
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=True,  # 是否打印每日交易详情
-        print_trade_details=False  # 是否打印交易细节
+        print_daily_trades=False,  # 是否打印每日交易详情
+        print_trade_details=False,  # 是否打印交易细节
+        leverage_symbol="VXX.US",  # 指定杠杆标的
+        leverage_thresholds={
+            'high': {'threshold': 60, 'factor': 0.5},   # 高于58使用0.5倍杠杆
+            'medium': {'threshold': 50, 'factor': 1.0}, # 52-58之间使用1倍杠杆
+            'low': {'threshold': 0, 'factor': 2.0}      # 低于52使用2倍杠杆
+        }  # 使用自定义杠杆阈值
     )

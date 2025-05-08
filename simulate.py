@@ -21,7 +21,7 @@ MAX_POSITIONS_PER_DAY = 3
 LOOKBACK_DAYS = 10
 
 # VIX动态杠杆配置
-USE_DYNAMIC_LEVERAGE = True  # 是否使用VIX动态杠杆
+USE_DYNAMIC_LEVERAGE = False  # 是否使用VIX动态杠杆
 VIX_SYMBOL = "VXX.US"  # VXX ETF的代码
 
 
@@ -29,7 +29,7 @@ VIX_SYMBOL = "VXX.US"  # VXX ETF的代码
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = True  # 设置为True开启调试模式
+DEBUG_MODE = False  # 设置为True开启调试模式
 DEBUG_TIME = "2025-04-24 09:50:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
@@ -561,18 +561,12 @@ def get_vix_value():
         return 50.0  # 出错时使用默认值
 
 def calculate_position_factor(vix_value):
-    # if vix_value > 70:
-    #     position_factor = 0.5  # 极高波动率，减少仓位
-    # elif vix_value > 50:
-    #     position_factor = 1.0  # 中等波动率，标准仓位
-    # else:
-    #     position_factor = 2.0  # 低波动率，增加仓位
     if vix_value > 70:
-        position_factor = 0.25  # 极高波动率，减少仓位
+        position_factor = 0.5  # 极高波动率，减少仓位
     elif vix_value > 50:
-        position_factor = 0.5  # 中等波动率，标准仓位
+        position_factor = 1.0  # 中等波动率，标准仓位
     else:
-        position_factor = 1  # 低波动率，增加仓位
+        position_factor = 2.0  # 低波动率，增加仓位
     
     print(f"VXX: {vix_value:.2f} -> 仓位因子: {position_factor:.1f}x")
     return position_factor
