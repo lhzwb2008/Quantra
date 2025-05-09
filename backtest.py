@@ -1278,8 +1278,8 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 if __name__ == "__main__":  
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
-        # 'tqqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
-        'tqqq_longport.csv',  # 使用带有MACD指标的TQQQ数据
+        'tqqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
+        # 'tqqq_longport.csv',  # 使用带有MACD指标的TQQQ数据
         ticker='TQQQ',                     # 指定ticker
         # 'qqq_market_hours_with_indicators.csv',  # 使用带有MACD指标的TQQQ数据
         # ticker='QQQ',                     # 指定ticker 

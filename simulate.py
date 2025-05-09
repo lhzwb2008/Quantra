@@ -24,8 +24,8 @@ LOOKBACK_DAYS = 10
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = False  # 设置为True开启调试模式
-DEBUG_TIME = "2025-04-24 09:50:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
+DEBUG_MODE = False   # 设置为True开启调试模式
+DEBUG_TIME = "2025-05-08 15:20:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
 def get_us_eastern_time():
@@ -70,10 +70,13 @@ def get_current_positions():
     return positions
 
 def get_historical_data(symbol, days_back=None):
+    print(f"\n=== 开始获取历史数据 ===")
+    print(f"交易品种: {symbol}")
 
     # 简化天数计算逻辑
     if days_back is None:
         days_back = LOOKBACK_DAYS + 10  # 简化为固定天数
+    print(f"回溯天数: {days_back}")
         
     # 直接使用1分钟K线
     sdk_period = Period.Min_1
@@ -81,9 +84,11 @@ def get_historical_data(symbol, days_back=None):
     eastern = pytz.timezone('US/Eastern')
     now_et = get_us_eastern_time()
     current_date = now_et.date()
+    print(f"当前日期: {current_date}")
     
     # 计算起始日期
     start_date = current_date - timedelta(days=days_back)
+    print(f"起始日期: {start_date}")
     
     # 对于1分钟数据使用按日获取的方式
     all_candles = []
@@ -101,9 +106,14 @@ def get_historical_data(symbol, days_back=None):
         )
         
         if day_candles:
+            print(f"日期 {date_to_check} 获取到 {len(day_candles)} 条K线数据")
             all_candles.extend(day_candles)
+        else:
+            print(f"日期 {date_to_check} 没有数据")
             
         date_to_check -= timedelta(days=1)
+    
+    print(f"总共获取到 {len(all_candles)} 条原始K线数据")
     
     # 处理数据并去重
     data = []
@@ -153,28 +163,55 @@ def get_historical_data(symbol, days_back=None):
             "DateTime": dt
         })
     
+    print(f"处理后数据行数: {len(data)}")
+    
     # 转换为DataFrame并进行后处理
     df = pd.DataFrame(data)
     if df.empty:
+        print("警告: 转换后的DataFrame为空")
         return df
         
     df["Date"] = df["DateTime"].dt.date
     df["Time"] = df["DateTime"].dt.strftime('%H:%M')
     
     # 过滤交易时间
+    rows_before = len(df)
     if symbol.endswith(".US"):
         df = df[df["Time"].between("09:30", "16:00")]
+    print(f"过滤交易时间后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
         
     # 去除重复数据
+    rows_before = len(df)
     df = df.drop_duplicates(subset=['Date', 'Time'])
+    print(f"去重后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
     
     # 过滤掉未来日期的数据（双重保险）
+    rows_before = len(df)
     df = df[df["Date"] <= current_date]
+    print(f"过滤未来日期后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
     
     # 添加日志，打印历史数据信息
     trading_days_count = len(df["Date"].unique())
     total_rows = len(df)
+    date_time_counts = df.groupby(['Date', 'Time']).size()
+    min_time = df["Time"].min() if not df.empty else "N/A"
+    max_time = df["Time"].max() if not df.empty else "N/A"
+    
     print(f"获取到的历史数据: 共{trading_days_count}个交易日, {total_rows}行数据")
+    print(f"时间范围: {min_time} - {max_time}")
+    print(f"当前日期数据行数: {len(df[df['Date'] == current_date])}")
+    
+    # 检查15:30和15:40的数据
+    print("\n特定时间点数据检查:")
+    for check_time in ["15:30", "15:40"]:
+        time_data = df[(df["Date"] == current_date) & (df["Time"] == check_time)]
+        if not time_data.empty:
+            print(f"时间点 {check_time} 数据存在, 行数: {len(time_data)}")
+            print(time_data[["Time", "Close", "Volume"]].iloc[0])
+        else:
+            print(f"时间点 {check_time} 数据不存在")
+    
+    print("=== 历史数据获取完成 ===\n")
     
     # 保存到本地临时文件
     df.to_csv('temp_historical_data.csv', index=False)
@@ -456,19 +493,91 @@ def get_order_status(order_id):
     return order_info
 
 def check_exit_conditions(df, position_quantity, trailing_stop):
-    latest = df.iloc[-1]
+    # 获取当前时间点
+    now = get_us_eastern_time()
+    current_time = now.strftime('%H:%M')
+    current_date = now.date()
+    
+    print(f"\n=== 检查退出条件详细日志 ===")
+    print(f"当前日期时间: {current_date} {current_time}")
+    print(f"数据集行数: {len(df)}")
+    print(f"数据集日期范围: {df['Date'].min()} 到 {df['Date'].max()}")
+    
+    # 打印当前日期的所有时间点
+    date_data = df[df["Date"] == current_date]
+    if not date_data.empty:
+        time_points = date_data["Time"].unique().tolist()
+        print(f"当前日期所有时间点数量: {len(time_points)}")
+        print(f"当前日期部分时间点: {time_points[:10]}...")
+        if current_time in time_points:
+            print(f"当前时间点 {current_time} 存在于数据中")
+        else:
+            print(f"警告: 当前时间点 {current_time} 不存在于数据中")
+            current_hour, current_minute = now.hour, now.minute
+            closest_time = min(time_points, key=lambda x: abs(int(x.split(':')[0])*60 + int(x.split(':')[1]) - (current_hour*60 + current_minute)))
+            print(f"最接近的时间点: {closest_time}")
+    else:
+        print(f"警告: 当前日期 {current_date} 无数据")
+    
+    # 尝试获取当前时间点的数据
+    current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
+    
+    # 如果当前时间点没有数据，使用最新数据
+    if current_data.empty:
+        print(f"警告: 当前时间点 {current_time} 没有数据，使用最新数据")
+        latest = df.iloc[-1]
+        print(f"最新数据日期时间: {latest['Date']} {latest['Time']}")
+    else:
+        latest = current_data.iloc[0]
+        print(f"使用当前时间点数据: {latest['Date']} {latest['Time']}")
+        
     price = latest["Close"]
     vwap = latest["VWAP"]
     upper = latest["UpperBound"]
     lower = latest["LowerBound"]
+    
+    # 检查数据是否为空值
+    if price is None:
+        print("警告: 价格数据为空，无法检查退出条件")
+        return False, trailing_stop
+    
+    # 打印数据情况帮助调试
+    print(f"退出条件检查数据: 价格={price}, VWAP={vwap}, 上边界={upper}, 下边界={lower}")
+    print(f"数据来源: {'当前时间点' if not current_data.empty else '最新数据点'}")
+    print(f"=== 检查退出条件详细日志结束 ===\n")
+    
     if position_quantity > 0:
-        new_stop = max(upper, vwap)
+        # 检查上边界或VWAP是否为None
+        if upper is None or vwap is None:
+            print("警告: 上边界或VWAP数据为空，使用价格作为止损")
+            if upper is None and vwap is None:
+                # 如果两者都为None，使用价格的0.99作为止损价格
+                new_stop = price * 0.99
+            elif upper is None:
+                new_stop = vwap
+            else:
+                new_stop = upper
+        else:
+            new_stop = max(upper, vwap)
+            
         if trailing_stop is not None:
             new_stop = max(trailing_stop, new_stop)
         exit_signal = price < new_stop
         return exit_signal, new_stop
     elif position_quantity < 0:
-        new_stop = min(lower, vwap)
+        # 检查下边界或VWAP是否为None
+        if lower is None or vwap is None:
+            print("警告: 下边界或VWAP数据为空，使用价格作为止损")
+            if lower is None and vwap is None:
+                # 如果两者都为None，使用价格的1.01作为止损价格
+                new_stop = price * 1.01
+            elif lower is None:
+                new_stop = vwap
+            else:
+                new_stop = lower
+        else:
+            new_stop = min(lower, vwap)
+            
         if trailing_stop is not None:
             new_stop = min(trailing_stop, new_stop)
         exit_signal = price > new_stop
@@ -525,8 +634,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         print("Error: Could not get account balance or balance is zero")
         sys.exit(1)
     print(f"使用 {check_interval_minutes} 分钟间隔进行定时检查")
-    position_quantity = 0
-    entry_price = None
+    
+    # 获取当前实际持仓
+    current_positions = get_current_positions()
+    symbol_position = current_positions.get(symbol, {"quantity": 0, "cost_price": 0})
+    position_quantity = symbol_position["quantity"]
+    entry_price = symbol_position.get("cost_price", None)
+    print(f"当前持仓: {symbol} 数量: {position_quantity}, 成本价: {entry_price}")
+    
     trailing_stop = None
     positions_opened_today = 0
     last_date = None
@@ -540,6 +655,89 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         now = get_us_eastern_time()
         current_date = now.date()
         print(f"\n当前美东时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 每次循环都更新当前持仓状态
+        current_positions = get_current_positions()
+        symbol_position = current_positions.get(symbol, {"quantity": 0, "cost_price": 0})
+        position_quantity = symbol_position["quantity"]
+        if position_quantity != 0 and entry_price is None:
+            entry_price = symbol_position.get("cost_price", None)
+        print(f"当前持仓: {symbol} 数量: {position_quantity}, 成本价: {entry_price}")
+        
+        # 检查是否是交易时间结束点，如果是且有持仓，则强制平仓
+        current_hour, current_minute = now.hour, now.minute
+        is_trading_end = current_hour == trading_end_time[0] and current_minute == trading_end_time[1]
+        if is_trading_end and position_quantity != 0:
+            print(f"当前时间为交易结束时间 {trading_end_time[0]}:{trading_end_time[1]}，执行平仓")
+            
+            # 获取历史数据
+            print("\n=== 开始获取平仓价格数据 ===")
+            df = get_historical_data(symbol)
+            if df.empty:
+                print("错误: 获取历史数据为空")
+                sys.exit(1)
+                
+            print(f"获取到的历史数据行数: {len(df)}")
+            print(f"历史数据日期范围: {df['Date'].min()} 到 {df['Date'].max()}")
+            print(f"历史数据时间范围: {df['Time'].min()} 到 {df['Time'].max()}")
+                
+            if DEBUG_MODE:
+                df = df[df["DateTime"] <= now]
+                print(f"调试模式: 数据已截断至 {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"截断后数据行数: {len(df)}")
+                
+            # 获取当前时间点的价格数据
+            current_time = now.strftime('%H:%M')
+            print(f"当前日期: {current_date}, 当前时间点: {current_time}")
+            
+            # 打印当前日期的所有时间点
+            date_data = df[df["Date"] == current_date]
+            if not date_data.empty:
+                time_points = date_data["Time"].unique().tolist()
+                print(f"当前日期 {current_date} 的所有时间点: {time_points}")
+                if current_time in time_points:
+                    print(f"当前时间点 {current_time} 存在于数据中")
+                else:
+                    print(f"警告: 当前时间点 {current_time} 不存在于数据中")
+                    print(f"最接近的时间点: {min(time_points, key=lambda x: abs(int(x.split(':')[0])*60 + int(x.split(':')[1]) - (current_hour*60 + current_minute)))}")
+            else:
+                print(f"警告: 当前日期 {current_date} 无数据")
+            
+            current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
+            
+            if current_data.empty:
+                print(f"错误: 当前时间点 {current_time} 没有数据，无法获取正确价格进行平仓")
+                # 打印最后几行数据用于调试
+                if not df.empty:
+                    print("最后5行数据:")
+                    print(df.tail(5)[["Date", "Time", "Close", "VWAP"]])
+                sys.exit(1)
+                
+            # 使用当前时间点的价格
+            current_price = float(current_data["Close"].iloc[0])
+            print(f"使用当前时间点 {current_time} 的价格: {current_price}")
+            print("=== 价格数据获取完成 ===\n")
+            
+            # 执行平仓
+            side = "Sell" if position_quantity > 0 else "Buy"
+            close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
+            print(f"平仓订单已提交，ID: {close_order_id}")
+            
+            # 计算盈亏
+            if entry_price:
+                pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                pnl_pct = (current_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
+                print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
+                print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+            else:
+                print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
+                
+            position_quantity = 0
+            print("持仓状态已重置")
+            if DEBUG_MODE and DEBUG_ONCE:
+                print("\n调试模式单次运行完成，程序退出")
+                break
+            continue
         
         # 检查是否是交易日（调试模式下保持原有逻辑）
         print(f"准备检查今天 {current_date} 是否是交易日...")
@@ -566,7 +764,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         last_date = current_date
         
         # 保持原有交易时间检查逻辑
-        current_hour, current_minute = now.hour, now.minute
         start_hour, start_minute = trading_start_time
         end_hour, end_minute = trading_end_time
         is_trading_hours = (
@@ -648,10 +845,25 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             print(f"更新追踪止损价格: {trailing_stop}")
             if exit_signal:
                 print("触发退出信号!")
+                
+                # 确保使用当前时间点的价格数据
+                current_time = now.strftime('%H:%M')
+                current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
+                
+                if current_data.empty:
+                    print(f"错误: 当前时间点 {current_time} 没有数据，无法获取正确价格进行平仓")
+                    sys.exit(1)
+                    
+                # 使用当前时间点的价格
+                exit_price = float(current_data["Close"].iloc[0])
+                print(f"使用当前时间点 {current_time} 的价格: {exit_price}")
+                
+                # 执行平仓
                 side = "Sell" if position_quantity > 0 else "Buy"
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"平仓订单已提交，ID: {close_order_id}")
-                exit_price = df.iloc[-1]["Close"]
+                
+                # 计算盈亏
                 pnl = (exit_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
                 pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
                 print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
@@ -660,6 +872,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 print("持仓状态已重置")
         else:
             print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
+            
+            # 检查是否已有持仓，如果有则不再开仓
+            if position_quantity != 0:
+                print(f"已有持仓 {abs(position_quantity)} 份，跳过开仓检查")
+                continue
+                
+            # 检查今日是否达到最大持仓数
+            if positions_opened_today >= max_positions_per_day:
+                print(f"今日已达到最大持仓数 {max_positions_per_day}，跳过开仓检查")
+                continue
             
             # 获取价格
             if DEBUG_MODE:
