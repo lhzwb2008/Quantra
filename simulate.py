@@ -19,6 +19,7 @@ TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 40)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 3
 LOOKBACK_DAYS = 10
+LEVERAGE = 2.0 # 杠杆倍数，默认为1倍
 
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
@@ -200,16 +201,6 @@ def get_historical_data(symbol, days_back=None):
     print(f"获取到的历史数据: 共{trading_days_count}个交易日, {total_rows}行数据")
     print(f"时间范围: {min_time} - {max_time}")
     print(f"当前日期数据行数: {len(df[df['Date'] == current_date])}")
-    
-    # 检查15:30和15:40的数据
-    print("\n特定时间点数据检查:")
-    for check_time in ["15:30", "15:40"]:
-        time_data = df[(df["Date"] == current_date) & (df["Time"] == check_time)]
-        if not time_data.empty:
-            print(f"时间点 {check_time} 数据存在, 行数: {len(time_data)}")
-            print(time_data[["Time", "Close", "Volume"]].iloc[0])
-        else:
-            print(f"时间点 {check_time} 数据不存在")
     
     print("=== 历史数据获取完成 ===\n")
     
@@ -939,10 +930,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 if signal != 0:
                     print(f"触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
                     available_capital = get_account_balance()
-                    position_size = floor(available_capital / latest_price)
+                    # 应用杠杆比例
+                    adjusted_capital = available_capital * LEVERAGE
+                    position_size = floor(adjusted_capital / latest_price)
                     if position_size <= 0:
                         print("Warning: Insufficient capital for position")
                         sys.exit(1)
+                    print(f"可用资金: ${available_capital:.2f}, 杠杆比例: {LEVERAGE}倍, 调整后资金: ${adjusted_capital:.2f}")
+                    print(f"开仓数量: {position_size} 股")
                     side = "Buy" if signal > 0 else "Sell"
                     order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                     print(f"订单已提交，ID: {order_id}")
@@ -983,6 +978,7 @@ if __name__ == "__main__":
             print(f"* 调试时间: {DEBUG_TIME}")
         if DEBUG_ONCE:
             print("* 单次运行模式已开启")
+    print(f"* 杠杆倍数: {LEVERAGE}倍")
     print("*"*70 + "\n")
     
     if QUOTE_CTX is None or TRADE_CTX is None:
