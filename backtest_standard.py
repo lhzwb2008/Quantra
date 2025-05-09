@@ -1285,7 +1285,7 @@ if __name__ == "__main__":
         # ticker='QQQ',                     # 指定ticker 
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 20), 
+        start_date=date(2020, 1, 20), 
         end_date=date(2025, 1, 20),
         use_dynamic_leverage=False,
         check_interval_minutes=10,
