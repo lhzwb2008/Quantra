@@ -489,28 +489,12 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     current_time = now.strftime('%H:%M')
     current_date = now.date()
     
-    print(f"\n=== 检查退出条件详细日志 ===")
+    print(f"\n=== 检查退出条件 ===")
     print(f"当前日期时间: {current_date} {current_time}")
     print(f"数据集行数: {len(df)}")
     print(f"数据集日期范围: {df['Date'].min()} 到 {df['Date'].max()}")
     
-    # 打印当前日期的所有时间点
-    date_data = df[df["Date"] == current_date]
-    if not date_data.empty:
-        time_points = date_data["Time"].unique().tolist()
-        print(f"当前日期所有时间点数量: {len(time_points)}")
-        print(f"当前日期部分时间点: {time_points[:10]}...")
-        if current_time in time_points:
-            print(f"当前时间点 {current_time} 存在于数据中")
-        else:
-            print(f"警告: 当前时间点 {current_time} 不存在于数据中")
-            current_hour, current_minute = now.hour, now.minute
-            closest_time = min(time_points, key=lambda x: abs(int(x.split(':')[0])*60 + int(x.split(':')[1]) - (current_hour*60 + current_minute)))
-            print(f"最接近的时间点: {closest_time}")
-    else:
-        print(f"警告: 当前日期 {current_date} 无数据")
-    
-    # 尝试获取当前时间点的数据
+    # 精简日志，直接获取当前时间点数据
     current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
     
     # 如果当前时间点没有数据，使用最新数据
@@ -534,8 +518,7 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     
     # 打印数据情况帮助调试
     print(f"退出条件检查数据: 价格={price}, VWAP={vwap}, 上边界={upper}, 下边界={lower}")
-    print(f"数据来源: {'当前时间点' if not current_data.empty else '最新数据点'}")
-    print(f"=== 检查退出条件详细日志结束 ===\n")
+    print(f"=== 检查退出条件结束 ===\n")
     
     if position_quantity > 0:
         # 检查上边界或VWAP是否为None
@@ -630,7 +613,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     current_positions = get_current_positions()
     symbol_position = current_positions.get(symbol, {"quantity": 0, "cost_price": 0})
     position_quantity = symbol_position["quantity"]
-    entry_price = symbol_position.get("cost_price", None)
+    
+    # 初始化入场价格为None，后续由交易操作更新
+    entry_price = None
+    
     print(f"当前持仓: {symbol} 数量: {position_quantity}, 成本价: {entry_price}")
     
     trailing_stop = None
@@ -651,8 +637,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         current_positions = get_current_positions()
         symbol_position = current_positions.get(symbol, {"quantity": 0, "cost_price": 0})
         position_quantity = symbol_position["quantity"]
-        if position_quantity != 0 and entry_price is None:
-            entry_price = symbol_position.get("cost_price", None)
+        
+        # 如果持仓量变为0，重置入场价格
+        if position_quantity == 0:
+            entry_price = None
+            
         print(f"当前持仓: {symbol} 数量: {position_quantity}, 成本价: {entry_price}")
         
         # 检查是否是交易时间结束点，如果是且有持仓，则强制平仓
@@ -681,19 +670,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             current_time = now.strftime('%H:%M')
             print(f"当前日期: {current_date}, 当前时间点: {current_time}")
             
-            # 打印当前日期的所有时间点
-            date_data = df[df["Date"] == current_date]
-            if not date_data.empty:
-                time_points = date_data["Time"].unique().tolist()
-                print(f"当前日期 {current_date} 的所有时间点: {time_points}")
-                if current_time in time_points:
-                    print(f"当前时间点 {current_time} 存在于数据中")
-                else:
-                    print(f"警告: 当前时间点 {current_time} 不存在于数据中")
-                    print(f"最接近的时间点: {min(time_points, key=lambda x: abs(int(x.split(':')[0])*60 + int(x.split(':')[1]) - (current_hour*60 + current_minute)))}")
-            else:
-                print(f"警告: 当前日期 {current_date} 无数据")
-            
+            # 简化日志，直接检查当前时间点数据
             current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
             
             if current_data.empty:
@@ -724,6 +701,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
                 
             position_quantity = 0
+            entry_price = None
             print("持仓状态已重置")
             if DEBUG_MODE and DEBUG_ONCE:
                 print("\n调试模式单次运行完成，程序退出")
@@ -743,12 +721,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"平仓订单已提交，ID: {close_order_id}")
                 position_quantity = 0
+                entry_price = None
                 print("持仓状态已重置")
             next_check_time = now + timedelta(hours=12)
             wait_seconds = (next_check_time - now).total_seconds()
             time_module.sleep(wait_seconds)
             continue
             
+        # 检查是否是新交易日，如果是则重置今日开仓计数
         if last_date is not None and current_date != last_date:
             print(f"新的交易日开始，重置今日开仓计数")
             positions_opened_today = 0
@@ -792,6 +772,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"平仓订单已提交，ID: {close_order_id}")
                 position_quantity = 0
+                entry_price = None
                 print("持仓状态已重置")
             now = get_us_eastern_time()
             today = now.date()
@@ -855,11 +836,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 print(f"平仓订单已提交，ID: {close_order_id}")
                 
                 # 计算盈亏
-                pnl = (exit_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
-                pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
-                print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
-                print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                if entry_price:
+                    pnl = (exit_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                    pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
+                    print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
+                    print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
                 position_quantity = 0
+                entry_price = None
                 print("持仓状态已重置")
         else:
             print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
@@ -947,12 +930,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         executed_quantity = int(float(order_info.get("executed_quantity", 0)))
                         if executed_quantity > 0:
                             position_quantity = executed_quantity if signal > 0 else -executed_quantity
+                            # 保存实际成交价格作为入场价格
                             if order_info.get("executed_price") and float(order_info.get("executed_price")) > 0:
                                 entry_price = float(order_info.get("executed_price"))
                             else:
                                 entry_price = latest_price
+                                
+                            print(f"记录成本价: {entry_price} (成交价)")
                             positions_opened_today += 1
                             print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
+                            print(f"更新今日已开仓次数: {positions_opened_today}/{max_positions_per_day}")
                     elif "RejectedStatus" in status or "CanceledStatus" in status or "ExpiredStatus" in status or "FailedStatus" in status:
                         print(f"订单未成功: {status}")
         
