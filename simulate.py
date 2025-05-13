@@ -19,7 +19,7 @@ TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 40)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 3
 LOOKBACK_DAYS = 10
-LEVERAGE = 2.0 # 杠杆倍数，默认为1倍
+LEVERAGE = 1.5 # 杠杆倍数，默认为1倍
 
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
