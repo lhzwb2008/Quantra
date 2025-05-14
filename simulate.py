@@ -500,7 +500,9 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     # 如果当前时间点没有数据，使用最新数据
     if current_data.empty:
         print(f"警告: 当前时间点 {current_time} 没有数据，使用最新数据")
-        latest = df.iloc[-1]
+        # 按日期和时间排序，获取最新的数据
+        df_sorted = df.sort_values(by=["Date", "Time"], ascending=True)
+        latest = df_sorted.iloc[-1]
         print(f"最新数据日期时间: {latest['Date']} {latest['Time']}")
     else:
         latest = current_data.iloc[0]
@@ -523,14 +525,8 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     if position_quantity > 0:
         # 检查上边界或VWAP是否为None
         if upper is None or vwap is None:
-            print("警告: 上边界或VWAP数据为空，使用价格作为止损")
-            if upper is None and vwap is None:
-                # 如果两者都为None，使用价格的0.99作为止损价格
-                new_stop = price * 0.99
-            elif upper is None:
-                new_stop = vwap
-            else:
-                new_stop = upper
+            print("错误: 上边界或VWAP数据为空")
+            sys.exit(1)  # 直接退出程序
         else:
             new_stop = max(upper, vwap)
             
@@ -541,14 +537,8 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     elif position_quantity < 0:
         # 检查下边界或VWAP是否为None
         if lower is None or vwap is None:
-            print("警告: 下边界或VWAP数据为空，使用价格作为止损")
-            if lower is None and vwap is None:
-                # 如果两者都为None，使用价格的1.01作为止损价格
-                new_stop = price * 1.01
-            elif lower is None:
-                new_stop = vwap
-            else:
-                new_stop = lower
+            print("错误: 下边界或VWAP数据为空")
+            sys.exit(1)  # 直接退出程序
         else:
             new_stop = min(lower, vwap)
             
@@ -841,11 +831,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
                     print(f"平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
                     print(f"交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                
+                # 平仓后增加交易次数计数器
+                positions_opened_today += 1
+                print(f"更新今日交易次数: {positions_opened_today}/{max_positions_per_day}")
+                
                 position_quantity = 0
                 entry_price = None
                 print("持仓状态已重置")
         else:
-            print(f"检查入场条件 (今日已开仓: {positions_opened_today}/{max_positions_per_day})...")
+            print(f"检查入场条件 (今日已交易: {positions_opened_today}/{max_positions_per_day})...")
             
             # 检查是否已有持仓，如果有则不再开仓
             if position_quantity != 0:
@@ -924,24 +919,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     side = "Buy" if signal > 0 else "Sell"
                     order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                     print(f"订单已提交，ID: {order_id}")
-                    order_info = get_order_status(order_id)
-                    status = order_info.get("status", "")
-                    if "FilledStatus" in status or "PartialFilledStatus" in status:
-                        executed_quantity = int(float(order_info.get("executed_quantity", 0)))
-                        if executed_quantity > 0:
-                            position_quantity = executed_quantity if signal > 0 else -executed_quantity
-                            # 保存实际成交价格作为入场价格
-                            if order_info.get("executed_price") and float(order_info.get("executed_price")) > 0:
-                                entry_price = float(order_info.get("executed_price"))
-                            else:
-                                entry_price = latest_price
-                                
-                            print(f"记录成本价: {entry_price} (成交价)")
-                            positions_opened_today += 1
-                            print(f"开仓成功: {side} {executed_quantity} {symbol} 价格: {entry_price}")
-                            print(f"更新今日已开仓次数: {positions_opened_today}/{max_positions_per_day}")
-                    elif "RejectedStatus" in status or "CanceledStatus" in status or "ExpiredStatus" in status or "FailedStatus" in status:
-                        print(f"订单未成功: {status}")
+                    
+                    # 删除订单状态检查代码，直接更新持仓状态
+                    position_quantity = position_size if signal > 0 else -position_size
+                    entry_price = latest_price
+                    print(f"记录成本价: {entry_price}")
+                    print(f"开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
         
         # 调试模式且单次运行模式，完成一次循环后退出
         if DEBUG_MODE and DEBUG_ONCE:
@@ -980,4 +963,3 @@ if __name__ == "__main__":
         max_positions_per_day=MAX_POSITIONS_PER_DAY,
         lookback_days=LOOKBACK_DAYS
     )
-    
