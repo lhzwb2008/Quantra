@@ -429,7 +429,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
     # 计算每个时间点的绝对回报的滚动平均值
     # 这确保我们对每个时间点使用前lookback_days天的数据
-    sigma = pivot.rolling(window=lookback_days, min_periods=1).mean().shift(1)
+    sigma = pivot.rolling(window=lookback_days, min_periods=lookback_days).mean().shift(1)
     # 转回长格式
     sigma = sigma.stack().reset_index(name='sigma')
     
@@ -996,11 +996,13 @@ if __name__ == "__main__":
     # 运行回测
     daily_results, monthly_results, trades, metrics = run_backtest(
         # 'tqqq_market_hours_with_indicators.csv',  # 数据文件
+        # 'soxl_longport.csv',
+        # ticker='SOXL',                     # 指定ticker
         'tqqq_longport.csv',
-        ticker='TQQQ',                     # 指定ticker
+        ticker='QQQ',   
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2025, 4, 20), 
+        start_date=date(2024, 1, 1), 
         end_date=date(2025, 5, 20),
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
