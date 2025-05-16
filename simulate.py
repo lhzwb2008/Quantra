@@ -25,8 +25,8 @@ LEVERAGE = 1.5 # 杠杆倍数，默认为1倍
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = False   # 设置为True开启调试模式
-DEBUG_TIME = "2025-05-08 15:20:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
+DEBUG_MODE = True   # 设置为True开启调试模式
+DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
 def get_us_eastern_time():
@@ -72,7 +72,6 @@ def get_current_positions():
 
 def get_historical_data(symbol, days_back=None):
     print(f"\n=== 开始获取历史数据 ===")
-    print(f"交易品种: {symbol}")
 
     # 简化天数计算逻辑
     if days_back is None:
@@ -85,11 +84,9 @@ def get_historical_data(symbol, days_back=None):
     eastern = pytz.timezone('US/Eastern')
     now_et = get_us_eastern_time()
     current_date = now_et.date()
-    print(f"当前日期: {current_date}")
     
     # 计算起始日期
     start_date = current_date - timedelta(days=days_back)
-    print(f"起始日期: {start_date}")
     
     # 对于1分钟数据使用按日获取的方式
     all_candles = []
@@ -107,10 +104,7 @@ def get_historical_data(symbol, days_back=None):
         )
         
         if day_candles:
-            print(f"日期 {date_to_check} 获取到 {len(day_candles)} 条K线数据")
             all_candles.extend(day_candles)
-        else:
-            print(f"日期 {date_to_check} 没有数据")
             
         date_to_check -= timedelta(days=1)
     
@@ -201,7 +195,6 @@ def get_historical_data(symbol, days_back=None):
     print(f"获取到的历史数据: 共{trading_days_count}个交易日, {total_rows}行数据")
     print(f"时间范围: {min_time} - {max_time}")
     print(f"当前日期数据行数: {len(df[df['Date'] == current_date])}")
-    
     print("=== 历史数据获取完成 ===\n")
     
     # 保存到本地临时文件
@@ -248,7 +241,7 @@ def calculate_vwap(df):
     
     return result_df['VWAP']
 
-def calculate_noise_area(df, lookback_days=14):
+def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS):
     # 创建数据副本
     df_copy = df.copy()
     
@@ -272,145 +265,159 @@ def calculate_noise_area(df, lookback_days=14):
         if DEBUG_MODE:
             print(f"过滤后日期数量: {len(unique_dates)}")
     
-    # 检查数据是否足够
-    if len(unique_dates) <= lookback_days:
-        print(f"错误: 历史数据不足，至少需要{lookback_days+1}个交易日，当前只有{len(unique_dates)}个交易日")
+    # 假设最后一天是当前交易日，直接排除
+    if len(unique_dates) > 1:
+        target_date = unique_dates[-1]  # 保存目标日期（当前交易日）
+        history_dates = unique_dates[:-1]  # 排除最后一天
+        
+        # 从剩余日期中选择最近的lookback_days天
+        history_dates = history_dates[-lookback_days:] if len(history_dates) >= lookback_days else history_dates
+        
         if DEBUG_MODE:
-            print(f"可用交易日: {unique_dates}")
+            print(f"目标日期（当前交易日）: {target_date}")
+            print(f"历史数据日期数量: {len(history_dates)}")
+            if len(history_dates) > 0:
+                print(f"历史数据日期范围: {history_dates[0]} 到 {history_dates[-1]}")
+    else:
+        print(f"错误: 数据中只有一天或没有数据，无法计算噪声空间")
         sys.exit(1)
     
-    # 为每个日期计算当日开盘价
+    # 检查数据是否足够
+    if len(history_dates) < lookback_days:
+        print(f"错误: 历史数据不足，至少需要{lookback_days}个交易日，当前只有{len(history_dates)}个交易日")
+        if DEBUG_MODE:
+            print(f"可用历史交易日: {history_dates}")
+        sys.exit(1)
+    
+    # 为历史日期计算当日开盘价和相对变动率
+    history_df = df_copy[df_copy["Date"].isin(history_dates)].copy()
+    
+    # 为每个历史日期计算当日开盘价
     day_opens = {}
-    for date in unique_dates:
-        day_data = df_copy[df_copy["Date"] == date]
+    for date in history_dates:
+        day_data = history_df[history_df["Date"] == date]
         if day_data.empty:
             print(f"错误: {date} 日期数据为空")
             sys.exit(1)
         day_opens[date] = day_data["Open"].iloc[0]
     
-    # 计算前一日收盘价
-    prev_closes = {}
-    for i in range(1, len(unique_dates)):
-        prev_date = unique_dates[i-1]
-        curr_date = unique_dates[i]
-        prev_day_data = df_copy[df_copy["Date"] == prev_date]
-        if prev_day_data.empty:
-            print(f"错误: {prev_date} 前一交易日数据为空")
-            sys.exit(1)
-        prev_closes[curr_date] = prev_day_data["Close"].iloc[-1]
-    
     # 为每个时间点计算相对于开盘价的绝对变动率
-    df_copy["move"] = 0.0
-    for date in unique_dates:
+    history_df["move"] = 0.0
+    for date in history_dates:
         day_open = day_opens[date]
-        df_copy.loc[df_copy["Date"] == date, "move"] = abs(df_copy.loc[df_copy["Date"] == date, "Close"] / day_open - 1)
+        history_df.loc[history_df["Date"] == date, "move"] = abs(history_df.loc[history_df["Date"] == date, "Close"] / day_open - 1)
     
-    # 按日期和时间对数据进行分组
-    df_copy["DateTime"] = df_copy["Date"].astype(str) + " " + df_copy["Time"]
-    
-    # 计算每个时间点的sigma (过去lookback_days天的平均变动率)
+    # 计算每个时间点的sigma (使用历史数据)
     time_sigma = {}
-    for i in range(lookback_days, len(unique_dates)):
-        curr_date = unique_dates[i]
-        curr_day_data = df_copy[df_copy["Date"] == curr_date]
-        
-        # 获取当前日期的所有时间点
-        times = curr_day_data["Time"].unique()
-        
-        # 对每个时间点计算sigma
-        for tm in times:
-            # 获取历史lookback_days天中相同时间点的数据
-            historical_moves = []
-            for j in range(i-lookback_days, i):
-                hist_date = unique_dates[j]
-                hist_data = df_copy[(df_copy["Date"] == hist_date) & (df_copy["Time"] == tm)]
-                if not hist_data.empty:
-                    historical_moves.append(hist_data["move"].iloc[0])
-            
-            # 确保有足够的历史数据计算sigma
-            if len(historical_moves) == 0:
-                if DEBUG_MODE and curr_date == current_date:
-                    print(f"时间点 {tm} 没有足够的历史数据")
-                continue
-                
-            # 计算平均变动率作为sigma
-            sigma = sum(historical_moves) / len(historical_moves)
-            time_sigma[(curr_date, tm)] = sigma
     
+    # 获取目标日期的所有时间点
+    target_day_data = df[df["Date"] == target_date]
+    times = target_day_data["Time"].unique()
     
-    # 计算上下边界
-    df_copy["UpperBound"] = None
-    df_copy["LowerBound"] = None
-    
-    bounds_count = 0
-    for i in range(lookback_days, len(unique_dates)):
-        curr_date = unique_dates[i]
-        curr_day_data = df_copy[df_copy["Date"] == curr_date]
-        day_open = day_opens[curr_date]
-        prev_close = prev_closes.get(curr_date)
+    # 对每个时间点计算sigma
+    for tm in times:
+        # 获取历史数据中相同时间点的数据
+        historical_moves = []
+        for date in history_dates:
+            hist_data = history_df[(history_df["Date"] == date) & (history_df["Time"] == tm)]
+            if not hist_data.empty:
+                historical_moves.append(hist_data["move"].iloc[0])
         
-        if DEBUG_MODE and curr_date == current_date:
-            print(f"\n当前日期 {curr_date} 的边界计算:")
-            print(f"当日开盘价: {day_open}")
-            print(f"前一日收盘价: {prev_close}")
-            times_with_sigma = [tm for (dt, tm) in time_sigma.keys() if dt == curr_date]
-            print(f"有sigma值的时间点数量: {len(times_with_sigma)}")
-            if len(times_with_sigma) > 0:
-                print(f"时间点示例: {times_with_sigma[:5] if len(times_with_sigma) >= 5 else times_with_sigma}")
-        
-        if prev_close is None:
+        # 确保有足够的历史数据计算sigma
+        if len(historical_moves) == 0:
             if DEBUG_MODE:
-                print(f"日期 {curr_date} 没有前一日收盘价")
+                print(f"时间点 {tm} 没有足够的历史数据")
             continue
         
-        # 根据算法计算参考价格
-        upper_ref = max(day_open, prev_close)
-        lower_ref = min(day_open, prev_close)
-        
-        if DEBUG_MODE and curr_date == current_date:
-            print(f"上界参考价格选择: max({day_open}, {prev_close}) = {upper_ref}")
-            print(f"下界参考价格选择: min({day_open}, {prev_close}) = {lower_ref}")
-        
-        # 对当日每个时间点计算上下边界
-        for _, row in curr_day_data.iterrows():
-            tm = row["Time"]
-            sigma = time_sigma.get((curr_date, tm))
-            
-            if sigma is not None:
-                # 使用时间点特定的sigma计算上下边界
-                upper_bound = upper_ref * (1 + sigma)
-                lower_bound = lower_ref * (1 - sigma)
-                
-                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "UpperBound"] = upper_bound
-                df_copy.loc[(df_copy["Date"] == curr_date) & (df_copy["Time"] == tm), "LowerBound"] = lower_bound
-                bounds_count += 1
-                
-                if DEBUG_MODE and curr_date == current_date and tm == now_et.strftime('%H:%M'):
-                    print(f"\n当前时间点 {tm} 的边界计算详情:")
-                    print(f"Sigma值: {sigma:.6f}")
-                    print(f"上界计算: {upper_ref} * (1 + {sigma:.6f}) = {upper_bound:.6f}")
-                    print(f"下界计算: {lower_ref} * (1 - {sigma:.6f}) = {lower_bound:.6f}")
+        # 计算平均变动率作为sigma
+        sigma = sum(historical_moves) / len(historical_moves)
+        time_sigma[(target_date, tm)] = sigma
     
-    # 在调试模式下检查最后一天的边界数据
+    # 计算上下边界
+    # 获取目标日期的开盘价
+    target_day_data = df[df["Date"] == target_date]
+    if target_day_data.empty:
+        print(f"错误: 目标日期 {target_date} 数据为空")
+        sys.exit(1)
+    
+    day_open = target_day_data["Open"].iloc[0]
+    
+    # 获取目标日期的前一日收盘价
+    if target_date in unique_dates and unique_dates.index(target_date) > 0:
+        prev_date = unique_dates[unique_dates.index(target_date) - 1]
+        prev_day_data = df[df["Date"] == prev_date]
+        if not prev_day_data.empty:
+            prev_close = prev_day_data["Close"].iloc[-1]
+        else:
+            prev_close = None
+    else:
+        prev_close = None
+    
+    if DEBUG_MODE:
+        print(f"\n目标日期 {target_date} 的边界计算:")
+        print(f"当日开盘价: {day_open}")
+        print(f"前一日收盘价: {prev_close}")
+        times_with_sigma = [tm for (dt, tm) in time_sigma.keys() if dt == target_date]
+        print(f"有sigma值的时间点数量: {len(times_with_sigma)}")
+        if len(times_with_sigma) > 0:
+            print(f"时间点示例: {times_with_sigma[:5] if len(times_with_sigma) >= 5 else times_with_sigma}")
+    
+    if prev_close is None:
+        if DEBUG_MODE:
+            print(f"日期 {target_date} 没有前一日收盘价")
+        return df
+    
+    # 根据算法计算参考价格
+    upper_ref = max(day_open, prev_close)
+    lower_ref = min(day_open, prev_close)
+    
+    if DEBUG_MODE:
+        print(f"上界参考价格选择: max({day_open}, {prev_close}) = {upper_ref}")
+        print(f"下界参考价格选择: min({day_open}, {prev_close}) = {lower_ref}")
+    
+    # 对目标日期的每个时间点计算上下边界
+    bounds_count = 0
+    
+    # 使用目标日期的数据
+    for _, row in target_day_data.iterrows():
+        tm = row["Time"]
+        sigma = time_sigma.get((target_date, tm))
+        
+        if sigma is not None:
+            # 使用时间点特定的sigma计算上下边界
+            upper_bound = upper_ref * (1 + sigma)
+            lower_bound = lower_ref * (1 - sigma)
+            
+            # 更新df中的边界值
+            df.loc[(df["Date"] == target_date) & (df["Time"] == tm), "UpperBound"] = upper_bound
+            df.loc[(df["Date"] == target_date) & (df["Time"] == tm), "LowerBound"] = lower_bound
+            bounds_count += 1
+            
+            if DEBUG_MODE and target_date == current_date and tm == now_et.strftime('%H:%M'):
+                print(f"\n当前时间点 {tm} 的边界计算详情:")
+                print(f"Sigma值: {sigma:.6f}")
+                print(f"上界计算: {upper_ref} * (1 + {sigma:.6f}) = {upper_bound:.6f}")
+                print(f"下界计算: {lower_ref} * (1 - {sigma:.6f}) = {lower_bound:.6f}")
+    
+    # 在调试模式下检查目标日期的边界数据
     if DEBUG_MODE:
         print(f"\n边界数据统计:")
         print(f"总计算的边界点数: {bounds_count}")
         
-        if unique_dates:
-            latest_date = max(unique_dates)
-            latest_data = df_copy[df_copy["Date"] == latest_date]
-            has_upper = latest_data["UpperBound"].notna().sum()
-            has_lower = latest_data["LowerBound"].notna().sum()
-            total_rows = len(latest_data)
-            
-            print(f"最新日期 {latest_date} 数据行数: {total_rows}")
-            if total_rows > 0:
-                print(f"有上边界值的行数: {has_upper}/{total_rows} ({has_upper/total_rows*100:.2f}%)")
-                print(f"有下边界值的行数: {has_lower}/{total_rows} ({has_lower/total_rows*100:.2f}%)")
-            
-            # 检查当前测试时间点是否有边界值
+        target_data = df[df["Date"] == target_date]
+        has_upper = target_data["UpperBound"].notna().sum()
+        has_lower = target_data["LowerBound"].notna().sum()
+        total_rows = len(target_data)
+        
+        print(f"目标日期 {target_date} 数据行数: {total_rows}")
+        if total_rows > 0:
+            print(f"有上边界值的行数: {has_upper}/{total_rows} ({has_upper/total_rows*100:.2f}%)")
+            print(f"有下边界值的行数: {has_lower}/{total_rows} ({has_lower/total_rows*100:.2f}%)")
+        
+        # 检查当前测试时间点是否有边界值
+        if target_date == current_date:
             test_time = now_et.strftime('%H:%M')
-            test_data = df_copy[(df_copy["Date"] == current_date) & (df_copy["Time"] == test_time)]
+            test_data = df[(df["Date"] == current_date) & (df["Time"] == test_time)]
             if not test_data.empty:
                 has_test_upper = test_data["UpperBound"].notna().all()
                 has_test_lower = test_data["LowerBound"].notna().all()
@@ -422,7 +429,7 @@ def calculate_noise_area(df, lookback_days=14):
             else:
                 print(f"当前测试时间点 {test_time} 没有找到数据")
     
-    return df_copy
+    return df
 
 def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth=None):
     sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell

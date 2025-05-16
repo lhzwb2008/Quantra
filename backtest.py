@@ -982,7 +982,7 @@ if __name__ == "__main__":
         ticker='TQQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2025, 5, 13), 
+        start_date=date(2025, 5, 14), 
         end_date=date(2025, 5, 20),
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -993,5 +993,5 @@ if __name__ == "__main__":
         random_plots=3,  # 随机选择3天生成图表
         plots_dir='trading_plots',  # 图表保存目录
         print_daily_trades=True,  # 是否打印每日交易详情
-        print_trade_details=False  # 是否打印交易细节
+        print_trade_details=True  # 是否打印交易细节
     ) 
