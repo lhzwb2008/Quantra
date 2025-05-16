@@ -25,7 +25,7 @@ LEVERAGE = 1.5 # 杠杆倍数，默认为1倍
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = True   # 设置为True开启调试模式
+DEBUG_MODE = False   # 设置为True开启调试模式
 DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
@@ -108,7 +108,7 @@ def get_historical_data(symbol, days_back=None):
             
         date_to_check -= timedelta(days=1)
     
-    print(f"总共获取到 {len(all_candles)} 条原始K线数据")
+    # print(f"总共获取到 {len(all_candles)} 条原始K线数据")
     
     # 处理数据并去重
     data = []
@@ -158,7 +158,7 @@ def get_historical_data(symbol, days_back=None):
             "DateTime": dt
         })
     
-    print(f"处理后数据行数: {len(data)}")
+    # print(f"处理后数据行数: {len(data)}")
     
     # 转换为DataFrame并进行后处理
     df = pd.DataFrame(data)
@@ -173,17 +173,17 @@ def get_historical_data(symbol, days_back=None):
     rows_before = len(df)
     if symbol.endswith(".US"):
         df = df[df["Time"].between("09:30", "16:00")]
-    print(f"过滤交易时间后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
+    # print(f"过滤交易时间后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
         
     # 去除重复数据
     rows_before = len(df)
     df = df.drop_duplicates(subset=['Date', 'Time'])
-    print(f"去重后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
+    # print(f"去重后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
     
     # 过滤掉未来日期的数据（双重保险）
     rows_before = len(df)
     df = df[df["Date"] <= current_date]
-    print(f"过滤未来日期后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
+    # print(f"过滤未来日期后行数: {len(df)} (过滤掉 {rows_before - len(df)} 行)")
     
     # 添加日志，打印历史数据信息
     trading_days_count = len(df["Date"].unique())
@@ -193,7 +193,6 @@ def get_historical_data(symbol, days_back=None):
     max_time = df["Time"].max() if not df.empty else "N/A"
     
     print(f"获取到的历史数据: 共{trading_days_count}个交易日, {total_rows}行数据")
-    print(f"时间范围: {min_time} - {max_time}")
     print(f"当前日期数据行数: {len(df[df['Date'] == current_date])}")
     print("=== 历史数据获取完成 ===\n")
     
@@ -809,6 +808,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         
         if position_quantity != 0:
             print(f"检查退出条件 (当前持仓方向: {'多' if position_quantity > 0 else '空'}, 持仓数量: {abs(position_quantity)}, 追踪止损: {trailing_stop})...")
+            print(f"当前价格: {latest_price:.2f}")
+            print(f"VWAP: {latest_row['VWAP']:.2f}")
+            print(f"上边界: {latest_row['UpperBound']:.2f}")
+            print(f"下边界: {latest_row['LowerBound']:.2f}")
             exit_signal, new_stop = check_exit_conditions(df, position_quantity, trailing_stop)
             trailing_stop = new_stop
             print(f"更新追踪止损价格: {trailing_stop}")
@@ -883,16 +886,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if not latest_data.empty:
                 latest_row = latest_data.iloc[-1].copy()
                 latest_row["Close"] = latest_price
-                print("\n开仓条件判断:")
                 print(f"当前价格: {latest_price:.2f}")
                 print(f"VWAP: {latest_row['VWAP']:.2f}")
                 print(f"上边界: {latest_row['UpperBound']:.2f}")
                 print(f"下边界: {latest_row['LowerBound']:.2f}")
                 long_price_above_upper = latest_price > latest_row["UpperBound"]
                 long_price_above_vwap = latest_price > latest_row["VWAP"]
-                print("\n多头入场条件:")
-                print(f"价格 > 上边界: {long_price_above_upper} ({latest_price:.2f} > {latest_row['UpperBound']:.2f})")
-                print(f"价格 > VWAP: {long_price_above_vwap} ({latest_price:.2f} > {latest_row['VWAP']:.2f})")
                 signal = 0
                 price = latest_price
                 stop = None
@@ -903,9 +902,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 else:
                     short_price_below_lower = latest_price < latest_row["LowerBound"]
                     short_price_below_vwap = latest_price < latest_row["VWAP"]
-                    print("\n空头入场条件:")
-                    print(f"价格 < 下边界: {short_price_below_lower} ({latest_price:.2f} < {latest_row['LowerBound']:.2f})")
-                    print(f"价格 < VWAP: {short_price_below_vwap} ({latest_price:.2f} < {latest_row['VWAP']:.2f})")
                     if short_price_below_lower and short_price_below_vwap:
                         print("满足空头入场条件!")
                         signal = -1

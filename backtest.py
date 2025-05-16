@@ -13,7 +13,7 @@ def calculate_vwap(prices, volumes):
     """
     return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), print_details=False):
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), print_details=False, debug_time=None):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
     
@@ -38,12 +38,28 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
     prices = []
     volumes = []
     
+    # 调试时间点标记，确保只打印一次
+    debug_printed = False
+    
     for idx, row in day_df.iterrows():
         current_time = row['Time']
         price = row['Close']
         volume = row['Volume']
         upper = row['UpperBound']
         lower = row['LowerBound']
+        sigma = row.get('sigma', 0)
+        
+        # # 调试特定时间点
+        # if debug_time is not None and current_time >= debug_time and not debug_printed:
+        #     date_str = row['DateTime'].strftime('%Y-%m-%d')
+        #     print(f"\n===== 调试信息 [{date_str} {current_time}] =====")
+        #     print(f"价格: {price:.6f}")
+        #     print(f"上边界: {upper:.6f}")
+        #     print(f"下边界: {lower:.6f}")
+        #     print(f"Sigma值: {sigma:.6f}")
+        #     print(f"VWAP: {calculate_vwap(prices, volumes):.6f}")
+        #     print("=====================================\n")
+        #     debug_printed = True  # 确保只打印一次
         
         # 更新VWAP计算数据
         prices.append(price)
@@ -298,7 +314,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 plot_days=None, random_plots=0, plots_dir='trading_plots',
                 check_interval_minutes=30, transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                print_daily_trades=True, print_trade_details=False):
+                print_daily_trades=True, print_trade_details=False, debug_time=None):
     """
     运行回测 - 噪声空间策略 + VWAP
     
@@ -485,7 +501,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             # 模拟当天交易
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
                                            transaction_fee_per_share=transaction_fee_per_share,
-                                           print_details=print_trade_details)
+                                           print_details=print_trade_details,
+                                           debug_time=debug_time)
             
             # 从结果中提取交易
             trades = simulation_result
@@ -562,7 +579,8 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
                            transaction_fee_per_share=transaction_fee_per_share,
                            trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day,
-                           print_details=print_trade_details)
+                           print_details=print_trade_details,
+                           debug_time=debug_time)
         
         # 从结果中提取交易
         trades = simulation_result
@@ -982,7 +1000,7 @@ if __name__ == "__main__":
         ticker='TQQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2025, 5, 14), 
+        start_date=date(2025, 4, 20), 
         end_date=date(2025, 5, 20),
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
@@ -990,8 +1008,9 @@ if __name__ == "__main__":
         trading_start_time=(9, 40),  # 交易开始时间
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        random_plots=3,  # 随机选择3天生成图表
-        plots_dir='trading_plots',  # 图表保存目录
+        # random_plots=3,  # 随机选择3天生成图表
+        # plots_dir='trading_plots',  # 图表保存目录
         print_daily_trades=True,  # 是否打印每日交易详情
-        print_trade_details=True  # 是否打印交易细节
-    ) 
+        print_trade_details=False,  # 是否打印交易细节
+        # debug_time='12:46'  # 指定调试时间点
+    )
