@@ -13,7 +13,7 @@ def calculate_vwap(prices, volumes):
     """
     return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), print_details=False, debug_time=None):
+def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
     
@@ -22,11 +22,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         prev_close: 前一日收盘价
         allowed_times: 允许交易的时间列表
         position_size: 仓位大小
-        transaction_fee_per_share: 每股交易费用
-        trading_end_time: 交易结束时间 (小时, 分钟)
-        max_positions_per_day: 每日最大开仓次数
-        print_details: 是否打印交易详情
+        config: 配置字典，包含所有交易参数
     """
+    # 从配置中提取参数
+    transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    trading_end_time = config.get('trading_end_time', (15, 50))
+    max_positions_per_day = config.get('max_positions_per_day', float('inf'))
+    print_details = config.get('print_trade_details', False)
+    debug_time = config.get('debug_time', None)
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
     trailing_stop = np.nan
@@ -310,31 +313,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
     
     return trades 
 
-def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=90, start_date=None, end_date=None, 
-                plot_days=None, random_plots=0, plots_dir='trading_plots',
-                check_interval_minutes=30, transaction_fee_per_share=0.01,
-                trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                print_daily_trades=True, print_trade_details=False, debug_time=None):
+def run_backtest(config):
     """
     运行回测 - 噪声空间策略 + VWAP
     
     参数:
-        data_path: 分钟数据CSV文件的路径
-        ticker: 标的代码（如果为None，则从文件名中提取）
-        initial_capital: 初始资金
-        lookback_days: 用于计算噪声区域的天数
-        start_date: 回测开始日期
-        end_date: 回测结束日期
-        plot_days: 要绘制的特定日期列表
-        random_plots: 要随机绘制的交易日数量
-        plots_dir: 保存绘图的目录
-        check_interval_minutes: 交易检查间隔（分钟）
-        transaction_fee_per_share: 每股交易费用
-        trading_start_time: 交易开始时间
-        trading_end_time: 交易结束时间
-        max_positions_per_day: 每日最大开仓次数
-        print_daily_trades: 是否打印每日交易详情
-        print_trade_details: 是否打印交易详细信息
+        config: 配置字典，包含所有回测参数
         
     返回:
         日度结果DataFrame
@@ -342,6 +326,24 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         交易记录DataFrame
         性能指标字典
     """
+    # 从配置中提取参数
+    data_path = config.get('data_path')
+    ticker = config.get('ticker')
+    initial_capital = config.get('initial_capital', 100000)
+    lookback_days = config.get('lookback_days', 90)
+    start_date = config.get('start_date')
+    end_date = config.get('end_date')
+    plot_days = config.get('plot_days')
+    random_plots = config.get('random_plots', 0)
+    plots_dir = config.get('plots_dir', 'trading_plots')
+    check_interval_minutes = config.get('check_interval_minutes', 30)
+    transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    trading_start_time = config.get('trading_start_time', (10, 00))
+    trading_end_time = config.get('trading_end_time', (15, 40))
+    max_positions_per_day = config.get('max_positions_per_day', float('inf'))
+    print_daily_trades = config.get('print_daily_trades', True)
+    print_trade_details = config.get('print_trade_details', False)
+    debug_time = config.get('debug_time')
     # 如果未提供ticker，从文件名中提取
     if ticker is None:
         # 从文件名中提取ticker
@@ -499,10 +501,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
-                                           transaction_fee_per_share=transaction_fee_per_share,
-                                           print_details=print_trade_details,
-                                           debug_time=debug_time)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config)
             
             # 从结果中提取交易
             trades = simulation_result
@@ -576,11 +575,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             continue
                 
         # 模拟当天的交易
-        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size,
-                           transaction_fee_per_share=transaction_fee_per_share,
-                           trading_end_time=trading_end_time, max_positions_per_day=max_positions_per_day,
-                           print_details=print_trade_details,
-                           debug_time=debug_time)
+        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config)
         
         # 从结果中提取交易
         trades = simulation_result
@@ -960,31 +955,20 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
     
     return metrics 
 
-def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
-                      check_interval_minutes=30, transaction_fee_per_share=0.01,
-                      trading_start_time=(9, 40), trading_end_time=(15, 50), max_positions_per_day=float('inf')):
+def plot_specific_days(config, dates_to_plot):
     """
     为指定的日期生成交易图表
     
     参数:
-        data_path: 分钟数据CSV文件的路径
+        config: 配置字典，包含所有回测参数
         dates_to_plot: 要绘制的日期列表 (datetime.date 对象列表)
-        lookback_days: 用于计算Noise Area的天数
-        plots_dir: 保存图表的目录
-        check_interval_minutes: 交易检查间隔（分钟）
     """
+    # 创建配置的副本并更新plot_days
+    plot_config = config.copy()
+    plot_config['plot_days'] = dates_to_plot
+    
     # 运行回测，指定要绘制的日期
-    _, _, _, _ = run_backtest(
-        data_path=data_path,
-        lookback_days=lookback_days,
-        plot_days=dates_to_plot,
-        plots_dir=plots_dir,
-        check_interval_minutes=check_interval_minutes,
-        transaction_fee_per_share=transaction_fee_per_share,
-        trading_start_time=trading_start_time,
-        trading_end_time=trading_end_time,
-        max_positions_per_day=max_positions_per_day
-    )
+    _, _, _, _ = run_backtest(plot_config)
     
     print(f"\n已为以下日期生成图表:")
     for d in dates_to_plot:
@@ -993,26 +977,26 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
 
 # 示例用法
 if __name__ == "__main__":  
+    # 创建配置字典
+    config = {
+        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
+        'data_path': 'tqqq_longport.csv',
+        'ticker': 'TQQQ',
+        'initial_capital': 10000,
+        'lookback_days': 10,
+        'start_date': date(2024, 4, 1),
+        'end_date': date(2025, 4, 1),
+        'check_interval_minutes': 10,
+        'transaction_fee_per_share': 0.005,
+        'trading_start_time': (9, 40),
+        'trading_end_time': (15, 40),
+        'max_positions_per_day': 3,
+        # 'random_plots': 3,
+        # 'plots_dir': 'trading_plots',
+        'print_daily_trades': True,
+        'print_trade_details': False,
+        # 'debug_time': '12:46'
+    }
+    
     # 运行回测
-    daily_results, monthly_results, trades, metrics = run_backtest(
-        # 'tqqq_market_hours_with_indicators.csv',  # 数据文件
-        # 'soxl_longport.csv',
-        # ticker='SOXL',                     # 指定ticker
-        'tqqq_longport.csv',
-        ticker='QQQ',   
-        initial_capital=10000, 
-        lookback_days=10,
-        start_date=date(2024, 1, 1), 
-        end_date=date(2025, 5, 20),
-        check_interval_minutes=10,
-        transaction_fee_per_share=0.005,  # 每股交易费用
-        # 交易时间配置
-        trading_start_time=(9, 40),  # 交易开始时间
-        trading_end_time=(15, 40),      # 交易结束时间
-        max_positions_per_day=3,  # 每天最多开仓3次
-        # random_plots=3,  # 随机选择3天生成图表
-        # plots_dir='trading_plots',  # 图表保存目录
-        print_daily_trades=True,  # 是否打印每日交易详情
-        print_trade_details=False,  # 是否打印交易细节
-        # debug_time='12:46'  # 指定调试时间点
-    )
+    daily_results, monthly_results, trades, metrics = run_backtest(config)
