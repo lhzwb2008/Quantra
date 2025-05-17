@@ -656,8 +656,14 @@ def run_backtest(config):
     
     # 创建买入持有DataFrame
     buy_hold_df = pd.DataFrame(buy_hold_data)
-    buy_hold_df['Date'] = pd.to_datetime(buy_hold_df['Date'])
-    buy_hold_df.set_index('Date', inplace=True)
+    
+    # 检查buy_hold_data是否为空
+    if not buy_hold_data:
+        print("警告: 没有足够的数据来计算买入持有策略的表现")
+        buy_hold_df = pd.DataFrame()  # 创建一个空的DataFrame
+    else:
+        buy_hold_df['Date'] = pd.to_datetime(buy_hold_df['Date'])
+        buy_hold_df.set_index('Date', inplace=True)
     
     # 计算买入持有策略的表现
     if not buy_hold_df.empty:
@@ -984,8 +990,8 @@ if __name__ == "__main__":
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days': 10,
-        'start_date': date(2024, 4, 1),
-        'end_date': date(2025, 4, 1),
+        'start_date': date(2025, 5, 1),
+        'end_date': date(2025, 5, 20),
         'check_interval_minutes': 10,
         'transaction_fee_per_share': 0.005,
         'trading_start_time': (9, 40),
@@ -994,7 +1000,7 @@ if __name__ == "__main__":
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
         'print_daily_trades': True,
-        'print_trade_details': False,
+        'print_trade_details': True,
         # 'debug_time': '12:46'
     }
     
