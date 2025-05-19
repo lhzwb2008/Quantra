@@ -1006,13 +1006,15 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'tqqq_market_hours_with_indicators.csv',
-        # 'data_path': 'tqqq_longport.csv',
+        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
+        'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days':2,
-        'start_date': date(2015, 3, 1),
-        'end_date': date(2025, 3, 1),
+        'start_date': date(2025, 1, 1),
+        'end_date': date(2025, 5, 20),
+        # 'start_date': date(2015, 3, 1),
+        # 'end_date': date(2025, 3, 1),
         'check_interval_minutes': 10 ,
         'transaction_fee_per_share': 0.005,
         'trading_start_time': (9, 40),
@@ -1020,10 +1022,10 @@ if __name__ == "__main__":
         'max_positions_per_day': 3,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         # 'debug_time': '12:46',
-        'K1': 1,  # 上边界sigma乘数
+        'K1': 1.2,  # 上边界sigma乘数
         'K2': 1.2   # 下边界sigma乘数
     }
     
