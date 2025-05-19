@@ -1000,7 +1000,6 @@ def plot_specific_days(config, dates_to_plot):
     print(f"\n已为以下日期生成图表:")
     for d in dates_to_plot:
         print(f"- {d}")
-    print(f"图表保存在 '{plots_dir}' 目录中")
 
 # 示例用法
 if __name__ == "__main__":  
