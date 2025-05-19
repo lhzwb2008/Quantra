@@ -13,7 +13,7 @@ def calculate_vwap(prices, volumes):
     """
     return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), take_profit_pct=None, print_details=False):
+def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_fee_per_share=0.01, trading_end_time=(15, 50), max_positions_per_day=float('inf'), target_profit_k=None, print_details=False):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
     
@@ -25,8 +25,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         transaction_fee_per_share: 每股交易费用
         trading_end_time: 交易结束时间 (小时, 分钟)
         max_positions_per_day: 每日最大开仓次数
-        take_profit_pct: 止盈百分比（例如：0.02表示2%）
+        target_profit_k: 止盈/止损参数k（基于sigma的倍数）
         print_details: 是否打印交易详情
+        
+    注意:
+        当日触发止盈后将不再开仓
     """
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
@@ -34,6 +37,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
     trade_entry_time = None
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
+    take_profit_triggered = False  # 标记是否触发过止盈
     
     # 存储用于计算VWAP的数据
     prices = []
@@ -54,7 +58,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
         vwap = calculate_vwap(prices, volumes)
         
         # 在允许时间内的入场信号
-        if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+        if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day and not take_profit_triggered:
             # 检查潜在多头入场 - 加入VWAP条件
             if price > upper and price > vwap:
                 # 打印边界计算详情（如果需要）
@@ -78,6 +82,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 # 允许多头入场
                 position = 1
                 entry_price = price
+                entry_sigma = row.get('sigma', 0)  # 记录入场时的sigma值，用于后续止盈/止损计算
+                entry_upper_ref = row.get('upper_ref', 0)  # 记录入场时的上边界参考价
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
                 # 追踪止损设为上边界和VWAP的最大值
@@ -106,6 +112,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 # 允许空头入场
                 position = -1
                 entry_price = price
+                entry_sigma = row.get('sigma', 0)  # 记录入场时的sigma值，用于后续止盈/止损计算
+                entry_lower_ref = row.get('lower_ref', 0)  # 记录入场时的下边界参考价
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
                 # 追踪止损设为下边界和VWAP的最小值
@@ -122,11 +130,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 # 如果价格跌破追踪止损，则平仓
                 exit_condition = price < trailing_stop
                 
-                # 主动止盈条件: 如果设置了止盈比例，并且当前盈利达到了止盈水平，则触发主动止盈
+                # 主动止盈/止损条件: 使用对称性基于k*sigma计算止盈/止损点位
                 take_profit_condition = False
-                if take_profit_pct is not None:
-                    profit_pct = (price / entry_price) - 1
-                    take_profit_condition = profit_pct >= take_profit_pct
+                # 使用与开仓判断对称的方式设置止盈点位
+                if target_profit_k is not None and entry_sigma > 0:
+                    # 对于多头，当价格达到 entry_price + k*sigma*entry_upper_ref 时止盈
+                    target_profit_price = entry_upper_ref * (1 + target_profit_k * entry_sigma)
+                    take_profit_condition = price >= target_profit_price
                 
                 # 检查是否出场（止损或者止盈）
                 if (exit_condition or take_profit_condition) and current_time in allowed_times:
@@ -136,7 +146,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                         if take_profit_condition:
                             profit_pct = (price / entry_price) - 1
                             print(f"\n交易点位详情 [{date_str} {current_time}] - 多头止盈出场:")
-                            print(f"  价格: {price:.2f}, 入场价: {entry_price:.2f}, 盈利: {profit_pct*100:.2f}% >= 止盈目标: {take_profit_pct*100:.2f}%")
+                            print(f"  价格: {price:.2f}, 入场价: {entry_price:.2f}, 盈利: {profit_pct*100:.2f}%")
+                            print(f"  止盈目标价: {target_profit_price:.2f} = {entry_upper_ref:.2f} * (1 + {target_profit_k} * {entry_sigma:.6f})")
                         else:
                             print(f"\n交易点位详情 [{date_str} {current_time}] - 多头止损出场:")
                             print(f"  价格: {price:.2f} < 追踪止损: {trailing_stop:.2f}")
@@ -149,6 +160,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                     pnl = position_size * (price - entry_price) - transaction_fees
                     
                     exit_reason = 'Take Profit' if take_profit_condition else 'Stop Loss'
+                    
+                    # 如果是止盈，标记为今天不再开仓
+                    if take_profit_condition:
+                        take_profit_triggered = True
+                        if print_details:
+                            date_str = row['DateTime'].strftime('%Y-%m-%d')
+                            print(f"  触发止盈，今日不再开仓")
+                    
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -171,11 +190,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                 # 如果价格涨破追踪止损，则平仓
                 exit_condition = price > trailing_stop
                 
-                # 主动止盈条件: 如果设置了止盈比例，并且当前盈利达到了止盈水平，则触发主动止盈
+                # 主动止盈/止损条件: 使用对称性基于k*sigma计算止盈/止损点位
                 take_profit_condition = False
-                if take_profit_pct is not None:
-                    profit_pct = (entry_price / price) - 1  # 空头盈利计算
-                    take_profit_condition = profit_pct >= take_profit_pct
+                # 使用与开仓判断对称的方式设置止盈点位
+                if target_profit_k is not None and entry_sigma > 0:
+                    # 对于空头，当价格达到 entry_price - k*sigma*entry_lower_ref 时止盈
+                    target_profit_price = entry_lower_ref * (1 - target_profit_k * entry_sigma)
+                    take_profit_condition = price <= target_profit_price
                 
                 # 检查是否出场（止损或者止盈）
                 if (exit_condition or take_profit_condition) and current_time in allowed_times:
@@ -185,7 +206,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                         if take_profit_condition:
                             profit_pct = (entry_price / price) - 1
                             print(f"\n交易点位详情 [{date_str} {current_time}] - 空头止盈出场:")
-                            print(f"  价格: {price:.2f}, 入场价: {entry_price:.2f}, 盈利: {profit_pct*100:.2f}% >= 止盈目标: {take_profit_pct*100:.2f}%")
+                            print(f"  价格: {price:.2f}, 入场价: {entry_price:.2f}, 盈利: {profit_pct*100:.2f}%")
+                            print(f"  止盈目标价: {target_profit_price:.2f} = {entry_lower_ref:.2f} * (1 - {target_profit_k} * {entry_sigma:.6f})")
                         else:
                             print(f"\n交易点位详情 [{date_str} {current_time}] - 空头止损出场:")
                             print(f"  价格: {price:.2f} > 追踪止损: {trailing_stop:.2f}")
@@ -198,6 +220,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, transaction_f
                     pnl = position_size * (entry_price - price) - transaction_fees
                     
                     exit_reason = 'Take Profit' if take_profit_condition else 'Stop Loss'
+                    
+                    # 如果是止盈，标记为今天不再开仓
+                    if take_profit_condition:
+                        take_profit_triggered = True
+                        if print_details:
+                            date_str = row['DateTime'].strftime('%Y-%m-%d')
+                            print(f"  触发止盈，今日不再开仓")
+                    
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -321,7 +351,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 plot_days=None, random_plots=0, plots_dir='trading_plots',
                 check_interval_minutes=30, transaction_fee_per_share=0.01,
                 trading_start_time=(10, 00), trading_end_time=(15, 40), max_positions_per_day=float('inf'),
-                take_profit_pct=None, print_daily_trades=True, print_trade_details=False):
+                target_profit_k=None, print_daily_trades=True, print_trade_details=False):
     """
     运行回测 - 噪声空间策略 + VWAP
     
@@ -340,7 +370,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
         trading_start_time: 交易开始时间
         trading_end_time: 交易结束时间
         max_positions_per_day: 每日最大开仓次数
-        take_profit_pct: 止盈百分比（例如：0.02表示2%）
+        target_profit_k: 止盈/止损参数k（基于sigma的倍数）
         print_daily_trades: 是否打印每日交易详情
         print_trade_details: 是否打印交易详细信息
         
@@ -508,9 +538,9 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                 
             # 模拟当天交易
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, 
-                                           transaction_fee_per_share=transaction_fee_per_share,
-                                           take_profit_pct=take_profit_pct,
-                                           print_details=print_trade_details)
+                            transaction_fee_per_share=transaction_fee_per_share,
+                            target_profit_k=target_profit_k,
+                            print_details=print_trade_details)
             
             # 从结果中提取交易
             trades = simulation_result
@@ -588,7 +618,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
                            transaction_fee_per_share=transaction_fee_per_share,
                            trading_end_time=trading_end_time, 
                            max_positions_per_day=max_positions_per_day,
-                           take_profit_pct=take_profit_pct,
+                           target_profit_k=target_profit_k,
                            print_details=print_trade_details)
         
         # 从结果中提取交易
@@ -601,17 +631,27 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
             
             # 创建交易方向与时间的简要信息
             trade_summary = []
+            take_profit_trades = 0  # 计数止盈交易的数量
             for trade in trades:
                 direction = "多" if trade['side'] == 'Long' else "空"
                 entry_time = trade['entry_time'].strftime('%H:%M')
                 exit_time = trade['exit_time'].strftime('%H:%M')
                 pnl = trade['pnl']
-                # 添加简要信息: 方向(入场时间->出场时间) 盈亏
-                trade_summary.append(f"{direction}({entry_time}->{exit_time}) ${pnl:.2f}")
+                exit_reason = trade['exit_reason']
+                
+                # 标记止盈交易
+                if exit_reason == 'Take Profit':
+                    take_profit_trades += 1
+                    reason_tag = "[止盈]"
+                else:
+                    reason_tag = ""
+                
+                # 添加简要信息: 方向(入场时间->出场时间) 盈亏 [止盈标记]
+                trade_summary.append(f"{direction}({entry_time}->{exit_time}) ${pnl:.2f}{reason_tag}")
             
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
-            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f} | {trade_info}")
+            print(f"{date_str} | 交易数: {len(trades)} | 止盈数: {take_profit_trades} | 总盈亏: ${day_total_pnl:.2f} | {trade_info}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -739,6 +779,7 @@ def run_backtest(data_path, ticker=None, initial_capital=100000, lookback_days=9
     # 策略特有指标
     print(f"\n策略特有指标:")
     print(f"胜率: {metrics['hit_ratio']*100:.1f}%")
+    print(f"止盈交易比例: {metrics['take_profit_ratio']*100:.1f}%")
     print(f"总交易次数: {metrics['total_trades']}")
     print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
     
@@ -850,6 +891,13 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
     daily_df['drawdown'] = (daily_df['capital'] - daily_df['peak']) / daily_df['peak']
     # 最大回撤
     metrics['mdd'] = daily_df['drawdown'].min() * -1
+    
+    # 7. 计算止盈交易比率
+    if len(trades_df) > 0:
+        take_profit_trades = trades_df[trades_df['exit_reason'] == 'Take Profit']
+        metrics['take_profit_ratio'] = len(take_profit_trades) / len(trades_df)
+    else:
+        metrics['take_profit_ratio'] = 0
     
     # 计算回撤持续时间
     # 找到每个回撤开始的点
@@ -972,7 +1020,7 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
 def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='trading_plots', 
                       check_interval_minutes=30, transaction_fee_per_share=0.01,
                       trading_start_time=(9, 40), trading_end_time=(15, 50), 
-                      max_positions_per_day=float('inf'), take_profit_pct=None):
+                      max_positions_per_day=float('inf'), target_profit_k=None):
     """
     为指定的日期生成交易图表
     
@@ -982,7 +1030,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         lookback_days: 用于计算Noise Area的天数
         plots_dir: 保存图表的目录
         check_interval_minutes: 交易检查间隔（分钟）
-        take_profit_pct: 止盈百分比
+        target_profit_k: 止盈/止损参数k（基于sigma的倍数）
     """
     # 运行回测，指定要绘制的日期
     _, _, _, _ = run_backtest(
@@ -995,7 +1043,7 @@ def plot_specific_days(data_path, dates_to_plot, lookback_days=90, plots_dir='tr
         trading_start_time=trading_start_time,
         trading_end_time=trading_end_time,
         max_positions_per_day=max_positions_per_day,
-        take_profit_pct=take_profit_pct
+        target_profit_k=target_profit_k
     )
     
     print(f"\n已为以下日期生成图表:")
@@ -1011,15 +1059,15 @@ if __name__ == "__main__":
         ticker='TQQQ',                     # 指定ticker
         initial_capital=10000, 
         lookback_days=10,
-        start_date=date(2024, 1, 20), 
-        end_date=date(2025, 1, 20),
+        start_date=date(2024, 3, 1), 
+        end_date=date(2025, 3, 1),
         check_interval_minutes=10,
         transaction_fee_per_share=0.005,  # 每股交易费用
         # 交易时间配置
         trading_start_time=(9, 40),  # 交易开始时间
         trading_end_time=(15, 40),      # 交易结束时间
         max_positions_per_day=3,  # 每天最多开仓3次
-        take_profit_pct=0.03,     # 2%止盈
+        target_profit_k=100,      # 基于参数k的止盈止损设置
         # random_plots=3,  # 随机选择3天生成图表
         # plots_dir='trading_plots',  # 图表保存目录
         print_daily_trades=False,  # 是否打印每日交易详情
