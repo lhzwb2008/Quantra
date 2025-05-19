@@ -435,6 +435,9 @@ def run_backtest(config):
     # 转回长格式
     sigma = sigma.stack().reset_index(name='sigma')
     
+    # 保存一个原始数据的副本，用于计算买入持有策略
+    price_df_original = price_df.copy()
+    
     # 将sigma合并回主DataFrame
     price_df = pd.merge(price_df, sigma, on=['Date', 'Time'], how='left')
     
@@ -454,8 +457,15 @@ def run_backtest(config):
         print(f"警告: 仍有{price_df['sigma'].isna().sum()}个缺失的sigma值")
     
     # 使用正确的参考价格计算噪声区域的上下边界
-    price_df['UpperBound'] = price_df['upper_ref'] * (1 + price_df['sigma'])
-    price_df['LowerBound'] = price_df['lower_ref'] * (1 - price_df['sigma'])
+    # 从配置中获取K1和K2参数
+    K1 = config.get('K1', 1)  # 如果未设置，默认为1
+    K2 = config.get('K2', 1)  # 如果未设置，默认为1
+    
+    print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
+    
+    # 将K1和K2应用于sigma进行边界计算
+    price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
+    price_df['LowerBound'] = price_df['lower_ref'] * (1 - K2 * price_df['sigma'])
     
     # 根据检查间隔生成允许的交易时间
     allowed_times = []
@@ -528,10 +538,32 @@ def run_backtest(config):
     if all_plot_days and plots_dir:
         os.makedirs(plots_dir, exist_ok=True)
     
-    # 创建买入持有回测数据
+    # 创建买入持有回测数据（使用原始数据，不受sigma筛选影响）
     buy_hold_data = []
+    filtered_dates = price_df['Date'].unique()  # 策略交易使用的日期（经过sigma筛选）
     
-    for i, trade_date in enumerate(unique_dates):
+    # 创建独立的买入持有数据，使用原始数据（未经过sigma筛选）
+    for trade_date in unique_dates:
+        # 获取当天的数据（从原始数据中）
+        day_data = price_df_original[price_df_original['Date'] == trade_date].copy()
+        
+        # 跳过数据不足的日期
+        if len(day_data) < 10:  # 任意阈值
+            continue
+        
+        # 获取当天的开盘价和收盘价（用于计算买入持有）
+        open_price = day_data['day_open'].iloc[0]
+        close_price = day_data['DayClose'].iloc[0]
+        
+        # 存储买入持有数据
+        buy_hold_data.append({
+            'Date': trade_date,
+            'Open': open_price,
+            'Close': close_price
+        })
+    
+    # 处理策略交易部分
+    for i, trade_date in enumerate(filtered_dates):
         # 获取当天的数据
         day_data = price_df[price_df['Date'] == trade_date].copy()
         day_data = day_data.sort_values('DateTime').reset_index(drop=True)
@@ -547,17 +579,6 @@ def run_backtest(config):
         
         # 获取前一天的收盘价
         prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
-        
-        # 获取当天的开盘价和收盘价（用于计算买入持有）
-        open_price = day_data['day_open'].iloc[0]
-        close_price = day_data['DayClose'].iloc[0]
-        
-        # 存储买入持有数据
-        buy_hold_data.append({
-            'Date': trade_date,
-            'Open': open_price,
-            'Close': close_price
-        })
         
         # 将trade_date转换为字符串格式以便统一显示
         date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
@@ -985,23 +1006,25 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'tqqq_longport.csv',
+        'data_path': 'tqqq_market_hours_with_indicators.csv',
+        # 'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 10000,
-        'lookback_days': 10,
-        'start_date': date(2025, 5, 1),
-        'end_date': date(2025, 5, 20),
-        'check_interval_minutes': 10,
+        'lookback_days':2,
+        'start_date': date(2015, 3, 1),
+        'end_date': date(2025, 3, 1),
+        'check_interval_minutes': 10 ,
         'transaction_fee_per_share': 0.005,
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 3,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
-        'print_trade_details': True,
-        # 'debug_time': '12:46'
+        'print_daily_trades': False,
+        'print_trade_details': False,
+        # 'debug_time': '12:46',
+        'K1': 1,  # 上边界sigma乘数
+        'K2': 1.2   # 下边界sigma乘数
     }
     
     # 运行回测

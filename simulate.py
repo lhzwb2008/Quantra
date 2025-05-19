@@ -18,8 +18,10 @@ CHECK_INTERVAL_MINUTES = 10
 TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 40)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 3
-LOOKBACK_DAYS = 10
+LOOKBACK_DAYS = 2
 LEVERAGE = 1.5 # 杠杆倍数，默认为1倍
+K1 = 1.2 # 上边界sigma乘数
+K2 = 1.2 # 下边界sigma乘数
 
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'TQQQ.US')
@@ -240,7 +242,7 @@ def calculate_vwap(df):
     
     return result_df['VWAP']
 
-def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS):
+def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     # 创建数据副本
     df_copy = df.copy()
     
@@ -383,9 +385,9 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS):
         sigma = time_sigma.get((target_date, tm))
         
         if sigma is not None:
-            # 使用时间点特定的sigma计算上下边界
-            upper_bound = upper_ref * (1 + sigma)
-            lower_bound = lower_ref * (1 - sigma)
+            # 使用时间点特定的sigma计算上下边界，应用K1和K2乘数
+            upper_bound = upper_ref * (1 + K1 * sigma)
+            lower_bound = lower_ref * (1 - K2 * sigma)
             
             # 更新df中的边界值
             df.loc[(df["Date"] == target_date) & (df["Time"] == tm), "UpperBound"] = upper_bound
@@ -395,8 +397,10 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS):
             if DEBUG_MODE and target_date == current_date and tm == now_et.strftime('%H:%M'):
                 print(f"\n当前时间点 {tm} 的边界计算详情:")
                 print(f"Sigma值: {sigma:.6f}")
-                print(f"上界计算: {upper_ref} * (1 + {sigma:.6f}) = {upper_bound:.6f}")
-                print(f"下界计算: {lower_ref} * (1 - {sigma:.6f}) = {lower_bound:.6f}")
+                print(f"K1(上边界乘数): {K1}")
+                print(f"K2(下边界乘数): {K2}")
+                print(f"上界计算: {upper_ref} * (1 + {K1} * {sigma:.6f}) = {upper_bound:.6f}")
+                print(f"下界计算: {lower_ref} * (1 - {K2} * {sigma:.6f}) = {lower_bound:.6f}")
     
     # 在调试模式下检查目标日期的边界数据
     if DEBUG_MODE:
@@ -804,7 +808,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         
         # 直接计算噪声区域，不需要中间复制
         print("计算噪声区域边界...")
-        df = calculate_noise_area(df, lookback_days)
+        print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
+        df = calculate_noise_area(df, lookback_days, K1, K2)
         
         if position_quantity != 0:
             print(f"检查退出条件 (当前持仓方向: {'多' if position_quantity > 0 else '空'}, 持仓数量: {abs(position_quantity)}, 追踪止损: {trailing_stop})...")
