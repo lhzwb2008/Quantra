@@ -497,6 +497,10 @@ def run_backtest(config):
     all_trades = []
     total_transaction_fees = 0  # 跟踪总交易费用
     
+    # 添加交易日期统计变量
+    trading_days = set()       # 有交易的日期集合
+    non_trading_days = set()   # 无交易的日期集合
+    
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
     if random_plots > 0:
@@ -600,6 +604,12 @@ def run_backtest(config):
         
         # 从结果中提取交易
         trades = simulation_result
+        
+        # 更新交易日期统计
+        if trades:  # 有交易的日期
+            trading_days.add(trade_date)
+        else:  # 无交易的日期
+            non_trading_days.add(trade_date)
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
@@ -723,6 +733,12 @@ def run_backtest(config):
         print(f"平均每日交易费用: ${total_transaction_fees / len(daily_df):.2f}")
     print(f"交易费用占初始资金比例: {total_transaction_fees / initial_capital * 100:.2f}%")
     print(f"交易费用占总收益比例: {total_transaction_fees / (capital - initial_capital) * 100:.2f}%" if capital > initial_capital else "交易费用占总收益比例: N/A (无盈利)")
+    
+    # 打印交易日期统计
+    print(f"\n交易日期统计:")
+    print(f"总交易日数: {len(trading_days) + len(non_trading_days)}")
+    print(f"有交易的天数: {len(trading_days)} ({len(trading_days)/(len(trading_days) + len(non_trading_days))*100:.1f}%)")
+    print(f"无交易的天数: {len(non_trading_days)} ({len(non_trading_days)/(len(trading_days) + len(non_trading_days))*100:.1f}%)")
     
     # 打印简化的性能指标
     print(f"\n策略性能指标:")
@@ -1005,14 +1021,14 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
         'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days':2,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 5, 20),
-        # 'start_date': date(2015, 3, 1),
+        'start_date': date(2025, 4, 1),
+        'end_date': date(2025, 5, 21),
+        # 'start_date': date(2020, 3, 1),
         # 'end_date': date(2025, 3, 1),
         'check_interval_minutes': 10 ,
         'transaction_fee_per_share': 0.005,
