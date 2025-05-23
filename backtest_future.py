@@ -3,20 +3,18 @@ import numpy as np
 from datetime import time, timedelta, datetime
 
 # --- Configuration ---
-FILE_PATH = 'ss2401.csv'  # Path to your 1-minute K-line data
+FILE_PATH = 'ss2401_tick.csv'  # Path to your tick data
 LOOKBACK_DAYS = 2  # Lookback period for sigma calculation
 K1 = 1.2  # Upper boundary multiplier
 K2 = 1.2  # Lower boundary multiplier
-CHECK_INTERVAL_MINUTES = 10  # How often to check for opening conditions
-SESSION_WARMUP_MINUTES = 10  # Wait time after session start
-SESSION_COOLDOWN_MINUTES = 10  # Time before session end to force close
+CHECK_INTERVAL_MINUTES = 5  # How often to check for opening conditions
+SESSION_WARMUP_MINUTES = 5  # Wait time after session start
+SESSION_COOLDOWN_MINUTES = 5  # Time before session end to force close
 INITIAL_CAPITAL = 100000  # 初始资金（人民币）
 # 期货交易相关参数
 CONTRACT_MULTIPLIER = 5  # 合约乘数，实际使用时需要根据具体期货品种设置，如螺纹钢为10吨/手
 # 保证金比例，简化处理，这里假设为100%
 MARGIN_RATIO = 0.08  # 实际交易中通常为5%-15%
-# 滑点设置
-SLIPPAGE = 2.5  # 单边滑点（元），期权交易最小变动单位是5元，设置为2.5元的滑点
 
 # SHFE Stainless Steel (ss) Trading Sessions
 # (start_time_str, end_time_str, is_overnight_end (True if end_time is on next calendar day))
@@ -71,19 +69,26 @@ def generate_dummy_data():
 def load_data(file_path):
     try:
         df = pd.read_csv(file_path, low_memory=False)
-        if df.columns[0].startswith('Unnamed:'): # Handles cases like ",DateTime,Open,..."
+        if df.columns[0].startswith('Unnamed:'): # Handles cases like ",datetime,last_price,..."
             df = df.iloc[:, 1:]
 
-        if 'DateTime' not in df.columns:
-            raise ValueError("CSV must contain a 'DateTime' column.")
+        if 'datetime' not in df.columns:
+            raise ValueError("CSV must contain a 'datetime' column.")
         
-        df['DateTime'] = pd.to_datetime(df['DateTime'])
+        # Convert datetime to proper format and set as index
+        df['DateTime'] = pd.to_datetime(df['datetime'])
         df.set_index('DateTime', inplace=True)
         df.sort_index(inplace=True)
         
-        required_cols = ['Open', 'Close'] # Volume is optional for this strategy logic
+        # For tick data, we need last_price, bid_price1, and ask_price1
+        required_cols = ['last_price', 'bid_price1', 'ask_price1']
         if not all(col in df.columns for col in required_cols):
             raise ValueError(f"CSV must contain {required_cols} columns. Found: {df.columns.tolist()}")
+        
+        # Map tick data columns to the expected column names for the strategy
+        df['Open'] = df['last_price']  # Use last_price as Open for historical data compatibility
+        df['Close'] = df['last_price']  # Use last_price as Close for signal determination
+        
         print(f"Data loaded successfully from {file_path}. Shape: {df.shape}")
         return df
     except FileNotFoundError:
@@ -183,8 +188,7 @@ def run_backtest(df, config):
     position_size = 0  # 持仓数量（手数，整数）
     current_equity = current_capital  # 当前净值（现金+持仓价值）
     
-    # 滑点设置
-    slippage = config.get('SLIPPAGE', 0)  # 获取滑点设置，默认为0
+    # 不再使用滑点，而是使用买一卖一价格
     
     # 用于记录每日净值，计算回撤等指标
     equity_curve = {}  # 格式为 {日期: 净值}
@@ -278,16 +282,16 @@ def run_backtest(df, config):
                 exit_capital_before = current_capital
                 
                 if position == 'LONG':
-                    # 多头平仓（考虑滑点）
-                    exit_price_with_slippage = current_price - slippage  # 卖出时价格降低
-                    pnl_points = exit_price_with_slippage - entry_price
+                    # 多头平仓（使用bid_price1）
+                    exit_price = row['bid_price1']  # 卖出时使用买一价
+                    pnl_points = exit_price - entry_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    position_value = position_size * exit_price_with_slippage * CONTRACT_MULTIPLIER
+                    position_value = position_size * exit_price * CONTRACT_MULTIPLIER
                     current_capital = current_capital + position_value  # 平仓后加上持仓价值
                 else:  # SHORT
-                    # 空头平仓（考虑滑点）
-                    exit_price_with_slippage = current_price + slippage  # 买入时价格提高
-                    pnl_points = entry_price - exit_price_with_slippage
+                    # 空头平仓（使用ask_price1）
+                    exit_price = row['ask_price1']  # 买入时使用卖一价
+                    pnl_points = entry_price - exit_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
                     current_capital = current_capital + pnl_amount  # 空头平仓后的资金
                 
@@ -298,20 +302,19 @@ def run_backtest(df, config):
                 trade_record = {
                     'entry_time': entry_time, 'exit_time': current_dt,
                     'position': position, 'entry_price': entry_price,
-                    'exit_price': exit_price_with_slippage,
-                    'exit_price_market': current_price,  # 记录市场价格（不含滑点）
+                    'exit_price': exit_price,
+                    'exit_price_market': current_price,  # 记录市场价格（last_price）
                     'pnl_points': pnl_points,
                     'pnl_amount': pnl_amount, 'position_size': position_size,
                     'exit_capital': current_capital, 'exit_reason': exit_reason,
-                    'trade_return_pct': trade_return_pct,
-                    'slippage': slippage  # 记录滑点
+                    'trade_return_pct': trade_return_pct
                 }
                 
                 trades.append(trade_record)
                 
                 # 打印当前交易详情
                 print(f"交易: {exit_reason} {position} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price_with_slippage:.2f} (市场价: {current_price:.2f}, 滑点: {slippage:.2f}) 手数: {position_size}手")
+                print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
                 print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
                 
                 position = None
@@ -331,11 +334,11 @@ def run_backtest(df, config):
                     
                     exit_capital_before = current_capital
                     
-                    # 多头平仓（考虑滑点）
-                    exit_price_with_slippage = current_price - slippage  # 卖出时价格降低
-                    pnl_points = exit_price_with_slippage - entry_price
+                    # 多头平仓（使用bid_price1）
+                    exit_price = row['bid_price1']  # 卖出时使用买一价
+                    pnl_points = exit_price - entry_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    position_value = position_size * exit_price_with_slippage * CONTRACT_MULTIPLIER
+                    position_value = position_size * exit_price * CONTRACT_MULTIPLIER
                     current_capital = current_capital + position_value  # 平仓后加上持仓价值
                     
                     # 计算此笔交易的收益率
@@ -344,20 +347,19 @@ def run_backtest(df, config):
                     trade_record = {
                         'entry_time': entry_time, 'exit_time': current_dt,
                         'position': 'LONG', 'entry_price': entry_price,
-                        'exit_price': exit_price_with_slippage,
-                        'exit_price_market': current_price,  # 记录市场价格（不含滑点）
+                        'exit_price': exit_price,
+                        'exit_price_market': current_price,  # 记录市场价格（last_price）
                         'pnl_points': pnl_points,
                         'pnl_amount': pnl_amount, 'position_size': position_size,
                         'exit_capital': current_capital, 'exit_reason': exit_reason,
-                        'trade_return_pct': trade_return_pct,
-                        'slippage': slippage  # 记录滑点
+                        'trade_return_pct': trade_return_pct
                     }
                     
                     trades.append(trade_record)
                     
                     # 打印当前交易详情
                     print(f"交易: {exit_reason} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price_with_slippage:.2f} (市场价: {current_price:.2f}, 滑点: {slippage:.2f}) 手数: {position_size}手")
+                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
                     print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
                     
                     position = None
@@ -377,9 +379,9 @@ def run_backtest(df, config):
                     
                     exit_capital_before = current_capital
                     
-                    # 空头平仓（考虑滑点）
-                    exit_price_with_slippage = current_price + slippage  # 买入时价格提高
-                    pnl_points = entry_price - exit_price_with_slippage
+                    # 空头平仓（使用ask_price1）
+                    exit_price = row['ask_price1']  # 买入时使用卖一价
+                    pnl_points = entry_price - exit_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
                     current_capital = current_capital + pnl_amount  # 空头平仓后的资金
                     
@@ -389,20 +391,19 @@ def run_backtest(df, config):
                     trade_record = {
                         'entry_time': entry_time, 'exit_time': current_dt,
                         'position': 'SHORT', 'entry_price': entry_price,
-                        'exit_price': exit_price_with_slippage,
-                        'exit_price_market': current_price,  # 记录市场价格（不含滑点）
+                        'exit_price': exit_price,
+                        'exit_price_market': current_price,  # 记录市场价格（last_price）
                         'pnl_points': pnl_points,
                         'pnl_amount': pnl_amount, 'position_size': position_size,
                         'exit_capital': current_capital, 'exit_reason': exit_reason,
-                        'trade_return_pct': trade_return_pct,
-                        'slippage': slippage  # 记录滑点
+                        'trade_return_pct': trade_return_pct
                     }
                     
                     trades.append(trade_record)
                     
                     # 打印当前交易详情
                     print(f"交易: {exit_reason} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price_with_slippage:.2f} (市场价: {current_price:.2f}, 滑点: {slippage:.2f}) 手数: {position_size}手")
+                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
                     print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
                     
                     position = None
@@ -421,10 +422,9 @@ def run_backtest(df, config):
                 lower_bound = lower_ref * (1 - config['K2'] * sigma)
 
                 if current_price > upper_bound:
-                    # 多头开仓（全仓买入，考虑滑点）
+                    # 多头开仓（全仓买入，使用ask_price1）
                     position = 'LONG'
-                    entry_price_with_slippage = current_price + slippage  # 买入时价格提高
-                    entry_price = entry_price_with_slippage
+                    entry_price = row['ask_price1']  # 买入时使用卖一价
                     entry_time = current_dt
                     stop_loss_price = upper_bound # Initial stop for long
                     
@@ -439,7 +439,7 @@ def run_backtest(df, config):
                     if position_size > 0:
                         current_capital = current_capital - used_capital  # 多头开仓后，资金减少，但持有股票价值
                         
-                        print(f"开仓: 多头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}, 滑点: {slippage:.2f}) | 手数: {position_size}手")
+                        print(f"开仓: 多头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}) | 手数: {position_size}手")
                         print(f"  资金使用: {used_capital:.2f}元 | 资金剩余: {current_capital:.2f}元")
                     else:
                         # 如果资金不足以买一手，取消此次交易
@@ -448,10 +448,9 @@ def run_backtest(df, config):
                         stop_loss_price = 0
                     
                 elif current_price < lower_bound:
-                    # 空头开仓（全仓卖空，考虑滑点）
+                    # 空头开仓（全仓卖空，使用bid_price1）
                     position = 'SHORT'
-                    entry_price_with_slippage = current_price - slippage  # 卖出时价格降低
-                    entry_price = entry_price_with_slippage
+                    entry_price = row['bid_price1']  # 卖出时使用买一价
                     entry_time = current_dt
                     stop_loss_price = lower_bound # Initial stop for short
                     
@@ -463,7 +462,7 @@ def run_backtest(df, config):
                     # 空头开仓不减少资金，只是冻结保证金
                     if position_size > 0:
                         # 资金不变
-                        print(f"开仓: 空头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}, 滑点: {slippage:.2f}) | 手数: {position_size}手")
+                        print(f"开仓: 空头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}) | 手数: {position_size}手")
                         print(f"  资金: {current_capital:.2f}元 (保证金)")
                     else:
                         # 如果资金不足以卖一手，取消此次交易
@@ -475,23 +474,24 @@ def run_backtest(df, config):
         # Force close any open position at the very end of the tradable window if not caught by deadline check
         if position and not tradable_session_df.empty and tradable_session_df.index[-1] >= force_close_deadline_time:
              # This check might be redundant if loop handles deadline correctly, but as a safeguard
-             last_bar_price = tradable_session_df['Close'].iloc[-1]
+             last_row = tradable_session_df.iloc[-1]
+             last_bar_price = last_row['Close']
              exit_reason = "强制平仓（交易时段结束）"
              
              exit_capital_before = current_capital
              
-             # 计算盈亏（考虑滑点）
+             # 计算盈亏（使用买一卖一价格）
              if position == 'LONG':
-                 # 多头平仓
-                 exit_price_with_slippage = last_bar_price - slippage  # 卖出时价格降低
-                 pnl_points = exit_price_with_slippage - entry_price
+                 # 多头平仓（使用bid_price1）
+                 exit_price = last_row['bid_price1']  # 卖出时使用买一价
+                 pnl_points = exit_price - entry_price
                  pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                 position_value = position_size * exit_price_with_slippage * CONTRACT_MULTIPLIER
+                 position_value = position_size * exit_price * CONTRACT_MULTIPLIER
                  current_capital = current_capital + position_value  # 平仓后加上持仓价值
              else:  # SHORT
-                 # 空头平仓
-                 exit_price_with_slippage = last_bar_price + slippage  # 买入时价格提高
-                 pnl_points = entry_price - exit_price_with_slippage
+                 # 空头平仓（使用ask_price1）
+                 exit_price = last_row['ask_price1']  # 买入时使用卖一价
+                 pnl_points = entry_price - exit_price
                  pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
                  current_capital = current_capital + pnl_amount  # 空头平仓后的资金
              
@@ -501,20 +501,19 @@ def run_backtest(df, config):
              trade_record = {
                  'entry_time': entry_time, 'exit_time': tradable_session_df.index[-1],
                  'position': position, 'entry_price': entry_price,
-                 'exit_price': exit_price_with_slippage,
-                 'exit_price_market': last_bar_price,  # 记录市场价格（不含滑点）
+                 'exit_price': exit_price,
+                 'exit_price_market': last_bar_price,  # 记录市场价格（last_price）
                  'pnl_points': pnl_points,
                  'pnl_amount': pnl_amount, 'position_size': position_size,
                  'exit_capital': current_capital, 'exit_reason': exit_reason,
-                 'trade_return_pct': trade_return_pct,
-                 'slippage': slippage  # 记录滑点
+                 'trade_return_pct': trade_return_pct
              }
              
              trades.append(trade_record)
              
              # 打印当前交易详情
              print(f"交易: {exit_reason} {position} | 开仓时间: {entry_time} 平仓时间: {tradable_session_df.index[-1]}")
-             print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price_with_slippage:.2f} (市场价: {last_bar_price:.2f}, 滑点: {slippage:.2f}) 手数: {position_size}手")
+             print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {last_bar_price:.2f}) 手数: {position_size}手")
              print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
              
              position = None
@@ -700,20 +699,7 @@ def print_results(trades_log, strategy_info, df_data, risk_free_rate_annual=0.0)
             outperform_sign = '+' if total_profit > buy_hold_pnl_amount else ''
             print(f"策略相对买入持有超额收益: {outperform_sign}{outperform_pct:.2f}%")
 
-    # 计算滑点的影响
-    if trades_log and 'slippage' in trades_log[0]:
-        total_slippage_cost = 0
-        for trade in trades_log:
-            # 每笔交易有开仓和平仓两次滑点
-            slippage_points = trade['slippage'] * 2  # 开仓和平仓的总滑点点数
-            slippage_cost = slippage_points * trade['position_size'] * CONTRACT_MULTIPLIER
-            total_slippage_cost += slippage_cost
-        
-        print(f"滑点总成本: {total_slippage_cost:.2f}元")
-        if num_trades > 0:
-            print(f"平均每笔交易滑点成本: {total_slippage_cost/num_trades:.2f}元")
-        else:
-            print("平均每笔交易滑点成本: 0.00元")
+    # 不再计算滑点的影响，因为现在使用买一卖一价格进行交易
 
 # --- Execution ---
 if __name__ == "__main__":
@@ -726,7 +712,6 @@ if __name__ == "__main__":
         'SESSION_COOLDOWN_MINUTES': SESSION_COOLDOWN_MINUTES,
         'INITIAL_CAPITAL': INITIAL_CAPITAL,
         'CONTRACT_MULTIPLIER': CONTRACT_MULTIPLIER,  # 添加合约乘数到配置
-        'SLIPPAGE': SLIPPAGE,  # 添加滑点到配置
     }
 
     df_data = load_data(FILE_PATH)
@@ -736,4 +721,4 @@ if __name__ == "__main__":
         trades_log, strategy_info = run_backtest(df_data, config_params)
         print_results(trades_log, strategy_info, df_data)
     else:
-        print(f"无法从 {FILE_PATH} 加载数据，也无法生成模拟数据。回测未运行。") 
+        print(f"无法从 {FILE_PATH} 加载数据，也无法生成模拟数据。回测未运行。")

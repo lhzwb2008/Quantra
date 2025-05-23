@@ -535,8 +535,15 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     if position_quantity > 0:
         # 检查上边界或VWAP是否为None
         if upper is None or vwap is None:
-            print("错误: 上边界或VWAP数据为空")
-            sys.exit(1)  # 直接退出程序
+            print("警告: 上边界或VWAP数据为空，无法更新追踪止损")
+            # 如果已有追踪止损，继续使用
+            if trailing_stop is not None:
+                new_stop = trailing_stop
+                exit_signal = price < new_stop
+                return exit_signal, new_stop
+            else:
+                print("无法计算退出条件，等待下次检查")
+                return False, trailing_stop
         else:
             new_stop = max(upper, vwap)
             
@@ -547,8 +554,15 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     elif position_quantity < 0:
         # 检查下边界或VWAP是否为None
         if lower is None or vwap is None:
-            print("错误: 下边界或VWAP数据为空")
-            sys.exit(1)  # 直接退出程序
+            print("警告: 下边界或VWAP数据为空，无法更新追踪止损")
+            # 如果已有追踪止损，继续使用
+            if trailing_stop is not None:
+                new_stop = trailing_stop
+                exit_signal = price > new_stop
+                return exit_signal, new_stop
+            else:
+                print("无法计算退出条件，等待下次检查")
+                return False, trailing_stop
         else:
             new_stop = min(lower, vwap)
             
@@ -680,10 +694,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     print("最后5行数据:")
                     print(df.tail(5)[["Date", "Time", "Close", "VWAP"]])
                 sys.exit(1)
-                
-            # 使用当前时间点的价格
-            current_price = float(current_data["Close"].iloc[0])
-            print(f"使用当前时间点 {current_time} 的价格: {current_price}")
+            else:
+                # 使用当前时间点的价格
+                current_price = float(current_data["Close"].iloc[0])
+                print(f"使用当前时间点 {current_time} 的价格: {current_price}")
             print("=== 价格数据获取完成 ===\n")
             
             # 执行平仓
@@ -827,13 +841,17 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 current_time = now.strftime('%H:%M')
                 current_data = df[(df["Date"] == current_date) & (df["Time"] == current_time)]
                 
+                # 如果当前时间点没有数据，等待重试
                 if current_data.empty:
-                    print(f"错误: 当前时间点 {current_time} 没有数据，无法获取正确价格进行平仓")
-                    sys.exit(1)
-                    
-                # 使用当前时间点的价格
-                exit_price = float(current_data["Close"].iloc[0])
-                print(f"使用当前时间点 {current_time} 的价格: {exit_price}")
+                    print(f"警告: 当前时间点 {current_time} 没有数据，无法获取正确价格进行平仓")
+                    # 等待一段时间后重新获取数据
+                    print("等待60秒后重新尝试...")
+                    time_module.sleep(60)
+                    continue
+                else:
+                    # 使用当前时间点的价格
+                    exit_price = float(current_data["Close"].iloc[0])
+                    print(f"使用当前时间点 {current_time} 的价格: {exit_price}")
                 
                 # 执行平仓
                 side = "Sell" if position_quantity > 0 else "Buy"
