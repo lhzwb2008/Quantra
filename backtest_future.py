@@ -20,50 +20,11 @@ MARGIN_RATIO = 0.08  # 实际交易中通常为5%-15%
 # (start_time_str, end_time_str, is_overnight_end (True if end_time is on next calendar day))
 # Standard ss sessions: 21:00-23:00, 09:00-10:15, 10:30-11:30, 13:30-15:00
 PREDEFINED_SESSIONS_SPEC = [
-    ("21:00:00", "23:00:00", False), # Night session
-    ("09:00:00", "10:15:00", False), # Morning session 1
-    ("10:30:00", "11:30:00", False), # Morning session 2
+    ("21:00:00", "23:50:00", False), # Night session
+    # ("09:00:00", "10:15:00", False), # Morning session 1
+    # ("10:30:00", "11:30:00", False), # Morning session 2
     ("13:30:00", "15:00:00", False)  # Afternoon session
 ]
-
-def generate_dummy_data():
-    """Generates sample data for testing if actual CSV is not available/valid."""
-    print("Generating dummy data for backtesting structure demonstration.")
-    base_time = datetime(2024, 1, 8, 0, 0, 0)
-    rng = pd.date_range(start=base_time, periods=5000, freq='1min')
-    data = []
-    price = 15000
-    for ts in rng:
-        # Simulate SHFE ss trading hours
-        t = ts.time()
-        is_trading_hour = False
-        if (time(21,0) <= t < time(23,0)) or \
-           (time(9,0) <= t < time(10,15)) or \
-           (time(10,30) <= t < time(11,30)) or \
-           (time(13,30) <= t < time(15,0)):
-            is_trading_hour = True
-
-        if is_trading_hour:
-            open_p = price + np.random.randint(-5, 6)
-            close_p = open_p + np.random.randint(-5, 6)
-            high_p = max(open_p, close_p) + np.random.randint(0, 3)
-            low_p = min(open_p, close_p) - np.random.randint(0, 3)
-            volume = np.random.randint(100, 1000)
-            data.append([ts, open_p, high_p, low_p, close_p, volume])
-            price = close_p
-        
-    df = pd.DataFrame(data, columns=['DateTime', 'Open', 'High', 'Low', 'Close', 'Volume'])
-    if df.empty: # Fallback if loop generated no data
-        dummy_dates = pd.to_datetime(['2024-01-08 09:00:00', '2024-01-08 09:01:00', '2024-01-08 21:00:00', '2024-01-08 21:01:00',
-                                      '2024-01-09 09:00:00', '2024-01-09 09:01:00'])
-        dummy_prices = {'Open': [100, 101, 105, 106, 110, 111], 'Close': [101, 100, 106, 105, 111, 110],
-                        'High': [102,102,107,107,112,112], 'Low': [99,99,104,104,109,109], 'Volume':[10,10,10,10,10,10]}
-        df = pd.DataFrame(dummy_prices, index=dummy_dates)
-        df.index.name = 'DateTime'
-        df.reset_index(inplace=True)
-
-    df.set_index('DateTime', inplace=True)
-    return df
 
 # --- Helper Functions ---
 def load_data(file_path):
@@ -93,10 +54,10 @@ def load_data(file_path):
         return df
     except FileNotFoundError:
         print(f"Error: File {file_path} not found.")
-        return generate_dummy_data()
+        return None
     except Exception as e:
         print(f"Error loading or processing data from {file_path}: {e}")
-        return generate_dummy_data()
+        return None
 
 def get_all_trading_sessions(unique_dates, sessions_spec):
     all_sessions = []
@@ -324,7 +285,8 @@ def run_backtest(df, config):
                 
                 # 简化的交易日志 - 一行显示
                 position_cn = "多" if position == 'LONG' else "空"
-                print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+                total_assets = current_capital  # 平仓后总资产就是可用资金
+                print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%) | 总资产:{total_assets:.0f}元")
                 
                 position = None
                 position_size = 0
@@ -372,7 +334,8 @@ def run_backtest(df, config):
                             
                             # 简化的交易日志 - 一行显示
                             position_cn = "多" if position == 'LONG' else "空"
-                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+                            total_assets = current_capital  # 平仓后总资产就是可用资金
+                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%) | 总资产:{total_assets:.0f}元")
                             
                             position = None
                             position_size = 0
@@ -419,7 +382,8 @@ def run_backtest(df, config):
                             
                             # 简化的交易日志 - 一行显示
                             position_cn = "多" if position == 'LONG' else "空"
-                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+                            total_assets = current_capital  # 平仓后总资产就是可用资金
+                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%) | 总资产:{total_assets:.0f}元")
                             
                             position = None
                             position_size = 0
@@ -458,7 +422,9 @@ def run_backtest(df, config):
                         # 不再设置固定止损价，使用动态止损
                         
                         # 简化的开仓日志
-                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 多头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元")
+                        total_assets_before = current_capital + frozen_margin  # 开仓前总资产
+                        total_assets_after = current_capital + frozen_margin  # 开仓后总资产（保证金模式下总资产不变）
+                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 多头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元 | 总资产:{total_assets_after:.0f}元")
                         
                         # 开仓时同时更新止损检查时间，避免立即止损
                         last_stop_check_time = current_dt
@@ -488,7 +454,9 @@ def run_backtest(df, config):
                         # 不再设置固定止损价，使用动态止损
                         
                         # 简化的开仓日志
-                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 空头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元")
+                        total_assets_before = current_capital + frozen_margin  # 开仓前总资产
+                        total_assets_after = current_capital + frozen_margin  # 开仓后总资产（保证金模式下总资产不变）
+                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 空头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元 | 总资产:{total_assets_after:.0f}元")
                         
                         # 开仓时同时更新止损检查时间，避免立即止损
                         last_stop_check_time = current_dt
@@ -499,9 +467,10 @@ def run_backtest(df, config):
         
         # --- End of session processing ---
         # Force close any open position at the very end of the tradable window if not caught by deadline check
-        if position and not tradable_session_df.empty and tradable_session_df.index[-1] >= force_close_deadline_time:
-             # This check might be redundant if loop handles deadline correctly, but as a safeguard
+        if position and not tradable_session_df.empty:
+             # 在交易时段结束时强制平仓
              last_row = tradable_session_df.iloc[-1]
+             last_dt = tradable_session_df.index[-1]
              last_bar_price = last_row['Close']
              exit_reason = "强制平仓（交易时段结束）"
              
@@ -530,7 +499,7 @@ def run_backtest(df, config):
              trade_return_pct = (pnl_amount / margin_used) * 100 if margin_used > 0 else 0
              
              trade_record = {
-                 'entry_time': entry_time, 'exit_time': tradable_session_df.index[-1],
+                 'entry_time': entry_time, 'exit_time': last_dt,
                  'position': position, 'entry_price': entry_price,
                  'exit_price': exit_price,
                  'exit_price_market': last_bar_price,  # 记录市场价格（last_price）
@@ -545,7 +514,8 @@ def run_backtest(df, config):
              
              # 简化的交易日志 - 一行显示
              position_cn = "多" if position == 'LONG' else "空"
-             print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+             total_assets = current_capital  # 平仓后总资产就是可用资金
+             print(f"{last_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%) | 总资产:{total_assets:.0f}元")
              
              position = None
              position_size = 0
@@ -751,4 +721,4 @@ if __name__ == "__main__":
         trades_log, strategy_info = run_backtest(df_data, config_params)
         print_results(trades_log, strategy_info, df_data)
     else:
-        print(f"无法从 {FILE_PATH} 加载数据，也无法生成模拟数据。回测未运行。")
+        print(f"无法从 {FILE_PATH} 加载数据。回测未运行。")
