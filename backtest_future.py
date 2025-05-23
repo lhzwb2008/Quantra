@@ -6,8 +6,8 @@ from datetime import time, timedelta, datetime
 FILE_PATH = 'ss2401_tick.csv'  # Path to your tick data
 LOOKBACK_DAYS = 2  # Lookback period for sigma calculation
 K1 = 1.2  # Upper boundary multiplier
-K2 = 1.2  # Lower boundary multiplier
-CHECK_INTERVAL_MINUTES = 5  # How often to check for opening conditions
+K2 = 1.2 # Lower boundary multiplier
+CHECK_INTERVAL_MINUTES = 10  # How often to check for opening conditions
 SESSION_WARMUP_MINUTES = 5  # Wait time after session start
 SESSION_COOLDOWN_MINUTES = 5  # Time before session end to force close
 INITIAL_CAPITAL = 100000  # 初始资金（人民币）
@@ -181,12 +181,12 @@ def run_backtest(df, config):
     trades = []
     position = None  # None, 'LONG', 'SHORT'
     entry_price = 0
-    stop_loss_price = 0  # For ratcheting stop
     
     # 用于资金管理的变量
-    current_capital = config['INITIAL_CAPITAL']  # 当前资金
+    current_capital = config['INITIAL_CAPITAL']  # 当前可用资金
     position_size = 0  # 持仓数量（手数，整数）
     current_equity = current_capital  # 当前净值（现金+持仓价值）
+    frozen_margin = 0  # 冻结的保证金
     
     # 不再使用滑点，而是使用买一卖一价格
     
@@ -202,7 +202,12 @@ def run_backtest(df, config):
     
     historical_first_opens = precompute_historical_first_opens(df, all_defined_sessions)
 
-    global_prev_session_close_price = np.nan
+    # 简化：直接使用数据中的上一条K线作为参考
+    prev_close_price = np.nan
+    
+    # 初始化prev_close_price：使用数据中的第一个收盘价
+    if not df.empty:
+        prev_close_price = df['Close'].iloc[0]
     
     # 遍历每个交易时段前，先记录初始净值
     if unique_dates:
@@ -224,26 +229,26 @@ def run_backtest(df, config):
         session_df = df.loc[actual_session_start:actual_session_end]
 
         if session_df.empty:
-            # Update global_prev_session_close_price if this "empty" session had a theoretical end within data
-            if session_end_dt <= df.index.max() and session_end_dt > (df.index.min() if global_prev_session_close_price is np.nan else pd.Timestamp(global_prev_session_close_price_dt)) :
-                 # Attempt to find a close price if the session was supposed to happen
-                 potential_closes = df.loc[:session_end_dt]
-                 if not potential_closes.empty:
-                     global_prev_session_close_price = potential_closes['Close'].iloc[-1]
-                     global_prev_session_close_price_dt = potential_closes.index[-1]
-
             continue
 
+        # 获取当前时段的第一条数据
         current_session_open_price = session_df['Open'].iloc[0]
-
-        if np.isnan(global_prev_session_close_price):
-            print(f"交易时段 {session_start_dt} - {session_end_dt}: 无上一交易时段收盘价。跳过此时段交易。")
-            global_prev_session_close_price = session_df['Close'].iloc[-1]
-            global_prev_session_close_price_dt = session_df.index[-1]
-            continue
+        current_session_open_time = session_df.index[0]
         
-        upper_ref = max(current_session_open_price, global_prev_session_close_price)
-        lower_ref = min(current_session_open_price, global_prev_session_close_price)
+        # 获取数据中在当前时段开始之前的最后一条K线的收盘价
+        prev_data = df[df.index < current_session_open_time]
+        if not prev_data.empty:
+            prev_close_price = prev_data['Close'].iloc[-1]
+            # 调试信息
+            # print(f"  找到历史数据: {prev_data.index[-1]} 收盘价: {prev_close_price:.2f}")
+        else:
+            # 如果没有历史数据，使用当前时段的开盘价
+            if np.isnan(prev_close_price):
+                prev_close_price = current_session_open_price
+                print(f"交易时段 {session_start_dt} - {session_end_dt}: 使用当前时段开盘价作为参考价格")
+        
+        upper_ref = max(current_session_open_price, prev_close_price)
+        lower_ref = min(current_session_open_price, prev_close_price)
 
         trade_start_offset = timedelta(minutes=config['SESSION_WARMUP_MINUTES'])
         force_close_offset = timedelta(minutes=config['SESSION_COOLDOWN_MINUTES'])
@@ -251,7 +256,8 @@ def run_backtest(df, config):
         actual_trade_start_time = session_start_dt + trade_start_offset
         force_close_deadline_time = session_end_dt - force_close_offset
         
-        last_check_time = None
+        last_open_check_time = None  # 开仓检查时间
+        last_stop_check_time = None  # 止损检查时间
 
         # Iterate through 1-minute bars in the trading window of the session
         tradable_session_df = session_df.loc[actual_trade_start_time : force_close_deadline_time]
@@ -262,14 +268,13 @@ def run_backtest(df, config):
             # 更新当日净值
             current_date = current_dt.date()
             if current_date not in equity_curve:
-                # 计算当前净值
+                # 计算当前净值 = 可用资金 + 冻结保证金 + 未实现盈亏
                 if position == 'LONG':
-                    position_value = position_size * current_price * CONTRACT_MULTIPLIER
-                    current_equity = current_capital + position_value  # 多头持仓价值 + 剩余现金
+                    unrealized_pnl = position_size * (current_price - entry_price) * CONTRACT_MULTIPLIER
+                    current_equity = current_capital + frozen_margin + unrealized_pnl
                 elif position == 'SHORT':
-                    # 空头净值 = 剩余现金 + 未实现盈亏
                     unrealized_pnl = position_size * (entry_price - current_price) * CONTRACT_MULTIPLIER
-                    current_equity = current_capital + unrealized_pnl  # 空头持仓的未实现盈亏
+                    current_equity = current_capital + frozen_margin + unrealized_pnl
                 else:
                     current_equity = current_capital
                 
@@ -286,17 +291,21 @@ def run_backtest(df, config):
                     exit_price = row['bid_price1']  # 卖出时使用买一价
                     pnl_points = exit_price - entry_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    position_value = position_size * exit_price * CONTRACT_MULTIPLIER
-                    current_capital = current_capital + position_value  # 平仓后加上持仓价值
+                    # 释放保证金并结算盈亏
+                    current_capital = current_capital + frozen_margin + pnl_amount
+                    frozen_margin = 0
                 else:  # SHORT
                     # 空头平仓（使用ask_price1）
                     exit_price = row['ask_price1']  # 买入时使用卖一价
                     pnl_points = entry_price - exit_price
                     pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    current_capital = current_capital + pnl_amount  # 空头平仓后的资金
+                    # 释放保证金并结算盈亏
+                    current_capital = current_capital + frozen_margin + pnl_amount
+                    frozen_margin = 0
                 
-                # 计算此笔交易的收益率
-                trade_return_pct = (pnl_amount / (position_size * entry_price * CONTRACT_MULTIPLIER)) * 100
+                # 计算此笔交易的收益率（基于保证金）
+                margin_used = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+                trade_return_pct = (pnl_amount / margin_used) * 100 if margin_used > 0 else 0
                 
                 # 记录交易
                 trade_record = {
@@ -307,112 +316,119 @@ def run_backtest(df, config):
                     'pnl_points': pnl_points,
                     'pnl_amount': pnl_amount, 'position_size': position_size,
                     'exit_capital': current_capital, 'exit_reason': exit_reason,
-                    'trade_return_pct': trade_return_pct
+                    'trade_return_pct': trade_return_pct,
+                    'margin_used': margin_used
                 }
                 
                 trades.append(trade_record)
                 
-                # 打印当前交易详情
-                print(f"交易: {exit_reason} {position} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
-                print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
+                # 简化的交易日志 - 一行显示
+                position_cn = "多" if position == 'LONG' else "空"
+                print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
                 
                 position = None
                 position_size = 0
                 continue # Done with this bar
 
-            if position == 'LONG':
-                sigma = calculate_sigma(current_dt, df, config['LOOKBACK_DAYS'], historical_first_opens)
-                if np.isnan(sigma):
-                    pass 
-                else:
-                    current_upper_bound = upper_ref * (1 + config['K1'] * sigma)
-                    stop_loss_price = max(stop_loss_price, current_upper_bound) # Ratchet stop
-                
-                if current_price < stop_loss_price:
-                    exit_reason = "止损（多头）"
-                    
-                    exit_capital_before = current_capital
-                    
-                    # 多头平仓（使用bid_price1）
-                    exit_price = row['bid_price1']  # 卖出时使用买一价
-                    pnl_points = exit_price - entry_price
-                    pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    position_value = position_size * exit_price * CONTRACT_MULTIPLIER
-                    current_capital = current_capital + position_value  # 平仓后加上持仓价值
-                    
-                    # 计算此笔交易的收益率
-                    trade_return_pct = (pnl_amount / (position_size * entry_price * CONTRACT_MULTIPLIER)) * 100
-                    
-                    trade_record = {
-                        'entry_time': entry_time, 'exit_time': current_dt,
-                        'position': 'LONG', 'entry_price': entry_price,
-                        'exit_price': exit_price,
-                        'exit_price_market': current_price,  # 记录市场价格（last_price）
-                        'pnl_points': pnl_points,
-                        'pnl_amount': pnl_amount, 'position_size': position_size,
-                        'exit_capital': current_capital, 'exit_reason': exit_reason,
-                        'trade_return_pct': trade_return_pct
-                    }
-                    
-                    trades.append(trade_record)
-                    
-                    # 打印当前交易详情
-                    print(f"交易: {exit_reason} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
-                    print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
-                    
-                    position = None
-                    position_size = 0
-                    continue
+            # --- Check Stop Loss Condition (every N minutes) ---
+            if position and (last_stop_check_time is None or (current_dt - last_stop_check_time) >= timedelta(minutes=config['CHECK_INTERVAL_MINUTES'])):
+                if position == 'LONG':
+                    # 多头持仓：动态计算止损线
+                    # 每隔CHECK_INTERVAL_MINUTES分钟重新计算当前的sigma和upper_bound
+                    sigma = calculate_sigma(current_dt, df, config['LOOKBACK_DAYS'], historical_first_opens)
+                    if not np.isnan(sigma):
+                        current_upper_bound = upper_ref * (1 + config['K1'] * sigma)
+                        # 止损条件：价格跌破当前时刻的upper_bound
+                        if current_price < current_upper_bound:
+                            exit_reason = "止损（多头）"
+                            
+                            exit_capital_before = current_capital
+                            
+                            # 多头平仓（使用bid_price1）
+                            exit_price = row['bid_price1']  # 卖出时使用买一价
+                            pnl_points = exit_price - entry_price
+                            pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
+                            # 释放保证金并结算盈亏
+                            current_capital = current_capital + frozen_margin + pnl_amount
+                            frozen_margin = 0
+                            
+                            # 计算此笔交易的收益率（基于保证金）
+                            margin_used = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+                            trade_return_pct = (pnl_amount / margin_used) * 100 if margin_used > 0 else 0
+                            
+                            trade_record = {
+                                'entry_time': entry_time, 'exit_time': current_dt,
+                                'position': 'LONG', 'entry_price': entry_price,
+                                'exit_price': exit_price,
+                                'exit_price_market': current_price,  # 记录市场价格（last_price）
+                                'pnl_points': pnl_points,
+                                'pnl_amount': pnl_amount, 'position_size': position_size,
+                                'exit_capital': current_capital, 'exit_reason': exit_reason,
+                                'trade_return_pct': trade_return_pct,
+                                'margin_used': margin_used
+                            }
+                            
+                            trades.append(trade_record)
+                            
+                            # 简化的交易日志 - 一行显示
+                            position_cn = "多" if position == 'LONG' else "空"
+                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+                            
+                            position = None
+                            position_size = 0
+                            last_stop_check_time = current_dt  # 更新检查时间
+                            continue
 
-            elif position == 'SHORT':
-                sigma = calculate_sigma(current_dt, df, config['LOOKBACK_DAYS'], historical_first_opens)
-                if np.isnan(sigma):
-                    pass
-                else:
-                    current_lower_bound = lower_ref * (1 - config['K2'] * sigma)
-                    stop_loss_price = min(stop_loss_price, current_lower_bound) # Ratchet stop
-
-                if current_price > stop_loss_price:
-                    exit_reason = "止损（空头）"
-                    
-                    exit_capital_before = current_capital
-                    
-                    # 空头平仓（使用ask_price1）
-                    exit_price = row['ask_price1']  # 买入时使用卖一价
-                    pnl_points = entry_price - exit_price
-                    pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                    current_capital = current_capital + pnl_amount  # 空头平仓后的资金
-                    
-                    # 计算此笔交易的收益率
-                    trade_return_pct = (pnl_amount / (position_size * entry_price * CONTRACT_MULTIPLIER)) * 100
-                    
-                    trade_record = {
-                        'entry_time': entry_time, 'exit_time': current_dt,
-                        'position': 'SHORT', 'entry_price': entry_price,
-                        'exit_price': exit_price,
-                        'exit_price_market': current_price,  # 记录市场价格（last_price）
-                        'pnl_points': pnl_points,
-                        'pnl_amount': pnl_amount, 'position_size': position_size,
-                        'exit_capital': current_capital, 'exit_reason': exit_reason,
-                        'trade_return_pct': trade_return_pct
-                    }
-                    
-                    trades.append(trade_record)
-                    
-                    # 打印当前交易详情
-                    print(f"交易: {exit_reason} | 开仓时间: {entry_time} 平仓时间: {current_dt}")
-                    print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {current_price:.2f}) 手数: {position_size}手")
-                    print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
-                    
-                    position = None
-                    position_size = 0
-                    continue
+                elif position == 'SHORT':
+                    # 空头持仓：动态计算止损线
+                    # 每隔CHECK_INTERVAL_MINUTES分钟重新计算当前的sigma和lower_bound
+                    sigma = calculate_sigma(current_dt, df, config['LOOKBACK_DAYS'], historical_first_opens)
+                    if not np.isnan(sigma):
+                        current_lower_bound = lower_ref * (1 - config['K2'] * sigma)
+                        # 止损条件：价格涨破当前时刻的lower_bound
+                        if current_price > current_lower_bound:
+                            exit_reason = "止损（空头）"
+                            
+                            exit_capital_before = current_capital
+                            
+                            # 空头平仓（使用ask_price1）
+                            exit_price = row['ask_price1']  # 买入时使用卖一价
+                            pnl_points = entry_price - exit_price
+                            pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
+                            # 释放保证金并结算盈亏
+                            current_capital = current_capital + frozen_margin + pnl_amount
+                            frozen_margin = 0
+                            
+                            # 计算此笔交易的收益率（基于保证金）
+                            margin_used = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+                            trade_return_pct = (pnl_amount / margin_used) * 100 if margin_used > 0 else 0
+                            
+                            trade_record = {
+                                'entry_time': entry_time, 'exit_time': current_dt,
+                                'position': 'SHORT', 'entry_price': entry_price,
+                                'exit_price': exit_price,
+                                'exit_price_market': current_price,  # 记录市场价格（last_price）
+                                'pnl_points': pnl_points,
+                                'pnl_amount': pnl_amount, 'position_size': position_size,
+                                'exit_capital': current_capital, 'exit_reason': exit_reason,
+                                'trade_return_pct': trade_return_pct,
+                                'margin_used': margin_used
+                            }
+                            
+                            trades.append(trade_record)
+                            
+                            # 简化的交易日志 - 一行显示
+                            position_cn = "多" if position == 'LONG' else "空"
+                            print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(止损) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
+                            
+                            position = None
+                            position_size = 0
+                            last_stop_check_time = current_dt  # 更新检查时间
+                            continue
             
             # --- Check Open Condition (every N minutes) ---
-            if not position and (last_check_time is None or (current_dt - last_check_time) >= timedelta(minutes=config['CHECK_INTERVAL_MINUTES'])):
-                last_check_time = current_dt
+            if not position and (last_open_check_time is None or (current_dt - last_open_check_time) >= timedelta(minutes=config['CHECK_INTERVAL_MINUTES'])):
+                last_open_check_time = current_dt
                 sigma = calculate_sigma(current_dt, df, config['LOOKBACK_DAYS'], historical_first_opens)
 
                 if np.isnan(sigma):
@@ -422,53 +438,64 @@ def run_backtest(df, config):
                 lower_bound = lower_ref * (1 - config['K2'] * sigma)
 
                 if current_price > upper_bound:
-                    # 多头开仓（全仓买入，使用ask_price1）
+                    # 多头开仓（使用ask_price1）
                     position = 'LONG'
                     entry_price = row['ask_price1']  # 买入时使用卖一价
                     entry_time = current_dt
-                    stop_loss_price = upper_bound # Initial stop for long
                     
-                    # 计算可买入的整数手数 - 期货只能买卖整数手
-                    max_position_size_float = current_capital / (entry_price * CONTRACT_MULTIPLIER)
-                    position_size = int(max_position_size_float)  # 向下取整，确保是整数手
-                    
-                    # 计算实际使用的资金
-                    used_capital = position_size * entry_price * CONTRACT_MULTIPLIER
-                    
-                    # 更新当前资金（扣除购买所需资金）
-                    if position_size > 0:
-                        current_capital = current_capital - used_capital  # 多头开仓后，资金减少，但持有股票价值
-                        
-                        print(f"开仓: 多头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}) | 手数: {position_size}手")
-                        print(f"  资金使用: {used_capital:.2f}元 | 资金剩余: {current_capital:.2f}元")
-                    else:
-                        # 如果资金不足以买一手，取消此次交易
-                        print(f"资金不足 ({current_capital:.2f}元) 无法以 {entry_price:.2f}元/手 买入期货")
-                        position = None
-                        stop_loss_price = 0
-                    
-                elif current_price < lower_bound:
-                    # 空头开仓（全仓卖空，使用bid_price1）
-                    position = 'SHORT'
-                    entry_price = row['bid_price1']  # 卖出时使用买一价
-                    entry_time = current_dt
-                    stop_loss_price = lower_bound # Initial stop for short
-                    
-                    # 计算可卖空的整数手数 - 期货只能买卖整数手
-                    # 使用保证金比例
+                    # 计算可买入的整数手数 - 使用保证金制度
                     max_position_size_float = current_capital / (entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO)
                     position_size = int(max_position_size_float)  # 向下取整，确保是整数手
                     
-                    # 空头开仓不减少资金，只是冻结保证金
-                    if position_size > 0:
-                        # 资金不变
-                        print(f"开仓: 空头 | 时间: {entry_time} | 价格: {entry_price:.2f} (市场价: {current_price:.2f}) | 手数: {position_size}手")
-                        print(f"  资金: {current_capital:.2f}元 (保证金)")
+                    # 计算实际需要的保证金
+                    margin_required = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+                    
+                    # 更新资金状态
+                    if position_size > 0 and margin_required <= current_capital:
+                        frozen_margin = margin_required
+                        current_capital = current_capital - frozen_margin  # 冻结保证金
+                        
+                        # 不再设置固定止损价，使用动态止损
+                        
+                        # 简化的开仓日志
+                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 多头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元")
+                        
+                        # 开仓时同时更新止损检查时间，避免立即止损
+                        last_stop_check_time = current_dt
+                    else:
+                        # 如果资金不足以买一手，取消此次交易
+                        print(f"资金不足 (可用: {current_capital:.2f}元) 无法支付保证金 {margin_required:.2f}元")
+                        position = None
+                    
+                elif current_price < lower_bound:
+                    # 空头开仓（使用bid_price1）
+                    position = 'SHORT'
+                    entry_price = row['bid_price1']  # 卖出时使用买一价
+                    entry_time = current_dt
+                    
+                    # 计算可卖空的整数手数 - 使用保证金制度
+                    max_position_size_float = current_capital / (entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO)
+                    position_size = int(max_position_size_float)  # 向下取整，确保是整数手
+                    
+                    # 计算实际需要的保证金
+                    margin_required = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+                    
+                    # 更新资金状态
+                    if position_size > 0 and margin_required <= current_capital:
+                        frozen_margin = margin_required
+                        current_capital = current_capital - frozen_margin  # 冻结保证金
+                        
+                        # 不再设置固定止损价，使用动态止损
+                        
+                        # 简化的开仓日志
+                        print(f"{entry_time.strftime('%Y-%m-%d %H:%M')} | 空头开仓 | 价格:{entry_price:.0f} | 手数:{position_size} | 保证金:{margin_required:.0f}元")
+                        
+                        # 开仓时同时更新止损检查时间，避免立即止损
+                        last_stop_check_time = current_dt
                     else:
                         # 如果资金不足以卖一手，取消此次交易
-                        print(f"资金不足 ({current_capital:.2f}元) 无法以 {entry_price:.2f}元/手 卖空期货")
+                        print(f"资金不足 (可用: {current_capital:.2f}元) 无法支付保证金 {margin_required:.2f}元")
                         position = None
-                        stop_loss_price = 0
         
         # --- End of session processing ---
         # Force close any open position at the very end of the tradable window if not caught by deadline check
@@ -486,17 +513,21 @@ def run_backtest(df, config):
                  exit_price = last_row['bid_price1']  # 卖出时使用买一价
                  pnl_points = exit_price - entry_price
                  pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                 position_value = position_size * exit_price * CONTRACT_MULTIPLIER
-                 current_capital = current_capital + position_value  # 平仓后加上持仓价值
+                 # 释放保证金并结算盈亏
+                 current_capital = current_capital + frozen_margin + pnl_amount
+                 frozen_margin = 0
              else:  # SHORT
                  # 空头平仓（使用ask_price1）
                  exit_price = last_row['ask_price1']  # 买入时使用卖一价
                  pnl_points = entry_price - exit_price
                  pnl_amount = position_size * pnl_points * CONTRACT_MULTIPLIER
-                 current_capital = current_capital + pnl_amount  # 空头平仓后的资金
+                 # 释放保证金并结算盈亏
+                 current_capital = current_capital + frozen_margin + pnl_amount
+                 frozen_margin = 0
              
-             # 计算此笔交易的收益率
-             trade_return_pct = (pnl_amount / (position_size * entry_price * CONTRACT_MULTIPLIER)) * 100
+             # 计算此笔交易的收益率（基于保证金）
+             margin_used = position_size * entry_price * CONTRACT_MULTIPLIER * MARGIN_RATIO
+             trade_return_pct = (pnl_amount / margin_used) * 100 if margin_used > 0 else 0
              
              trade_record = {
                  'entry_time': entry_time, 'exit_time': tradable_session_df.index[-1],
@@ -506,27 +537,26 @@ def run_backtest(df, config):
                  'pnl_points': pnl_points,
                  'pnl_amount': pnl_amount, 'position_size': position_size,
                  'exit_capital': current_capital, 'exit_reason': exit_reason,
-                 'trade_return_pct': trade_return_pct
+                 'trade_return_pct': trade_return_pct,
+                 'margin_used': margin_used
              }
              
              trades.append(trade_record)
              
-             # 打印当前交易详情
-             print(f"交易: {exit_reason} {position} | 开仓时间: {entry_time} 平仓时间: {tradable_session_df.index[-1]}")
-             print(f"  开仓价: {entry_price:.2f} 平仓价: {exit_price:.2f} (市场价: {last_bar_price:.2f}) 手数: {position_size}手")
-             print(f"  盈亏: {pnl_amount:.2f}元 ({trade_return_pct:.2f}%) | 资金: {exit_capital_before:.2f} -> {current_capital:.2f}元")
+             # 简化的交易日志 - 一行显示
+             position_cn = "多" if position == 'LONG' else "空"
+             print(f"{current_dt.strftime('%Y-%m-%d %H:%M')} | {position_cn}头平仓(强制) | 开:{entry_price:.0f} -> 平:{exit_price:.0f} | 盈亏:{pnl_amount:+.0f}元({trade_return_pct:+.1f}%)")
              
              position = None
              position_size = 0
 
-        # Update global_prev_session_close_price with the actual close of this session
-        if not session_df.empty: # Ensure session_df had data
-            global_prev_session_close_price = session_df['Close'].iloc[-1]
-            global_prev_session_close_price_dt = session_df.index[-1]
+        # 更新上一条K线的收盘价（用于下一个交易时段）
+        if not session_df.empty:
+            prev_close_price = session_df['Close'].iloc[-1]
     
     # 添加策略信息到返回值中
     strategy_info = {
-        'final_capital': current_capital,
+        'final_capital': current_capital + frozen_margin,  # 最终资金应包括冻结的保证金
         'initial_capital': config['INITIAL_CAPITAL'],
         'equity_curve': equity_curve,
     }
