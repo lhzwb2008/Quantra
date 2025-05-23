@@ -77,7 +77,7 @@ def get_historical_data(symbol, days_back=None):
 
     # 简化天数计算逻辑
     if days_back is None:
-        days_back = LOOKBACK_DAYS + 10  # 简化为固定天数
+        days_back = LOOKBACK_DAYS + 5  # 简化为固定天数
     print(f"回溯天数: {days_back}")
         
     # 直接使用1分钟K线
