@@ -771,8 +771,19 @@ def run_backtest(config):
     print(f"总交易次数: {metrics['total_trades']}")
     print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
     
-    # 打印超额收益
-    print(f"\n策略超额收益: {(metrics['total_return'] - metrics['buy_hold_return'])*100:.1f}%")
+    # 打印策略总结
+    print(f"\n" + "="*50)
+    print(f"策略回测总结 - {strategy_name}")
+    print(f"="*50)
+    
+    # 核心表现指标
+    print(f"📈 总回报率: {metrics['total_return']*100:.1f}%")
+    print(f"📊 年化收益率: {metrics['irr']*100:.1f}%")
+    print(f"⚡ 夏普比率: {metrics['sharpe_ratio']:.2f}")
+    print(f"📉 最大回撤: {metrics['mdd']*100:.1f}%")
+    print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
+    
+    print(f"="*50)
     
     return daily_df, monthly, trades_df, metrics 
 
@@ -1026,15 +1037,15 @@ if __name__ == "__main__":
         'ticker': 'TQQQ',
         'initial_capital': 100000,
         'lookback_days':2,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 5, 30),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 6, 30),
         # 'start_date': date(2020, 3, 1),
         # 'end_date': date(2025, 3, 1),
-        'check_interval_minutes': 10 ,
+        'check_interval_minutes': 15 ,
         'transaction_fee_per_share': 0.005,
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 45),
-        'max_positions_per_day': 3,
+        'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
         'print_daily_trades': False,
