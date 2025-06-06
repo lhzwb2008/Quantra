@@ -68,10 +68,21 @@ def create_contexts():
 QUOTE_CTX, TRADE_CTX = create_contexts()
 
 def get_account_balance():
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取账户余额")
-    balance_list = TRADE_CTX.account_balance(currency="USD")
-    available_cash = float(balance_list[0].net_assets)
-    return available_cash
+    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
+    balance_list = TRADE_CTX.account_balance()  # 不需要指定currency参数
+    
+    # 从cash_infos中找到USD的可用现金
+    usd_available_cash = 0.0
+    for balance_info in balance_list:
+        for cash_info in balance_info.cash_infos:
+            if cash_info.currency == "USD":
+                usd_available_cash = float(cash_info.available_cash)
+                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 美元可用现金: ${usd_available_cash:.2f}")
+                return usd_available_cash
+    
+    # 如果没有找到USD账户，返回0
+    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
+    return 0.0
 
 def get_current_positions():
     print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
@@ -543,10 +554,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         current_date = now.date()
         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 主循环开始")
         
-        # 每次循环都更新当前持仓状态
+        # 每次循环都更新当前持仓状态和账户余额
         current_positions = get_current_positions()
         symbol_position = current_positions.get(symbol, {"quantity": 0, "cost_price": 0})
         position_quantity = symbol_position["quantity"]
+        
+        # 获取当前美元账户余额
+        current_balance = get_account_balance()
         
         # 如果持仓量变为0，重置入场价格
         if position_quantity == 0:
