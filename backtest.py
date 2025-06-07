@@ -765,6 +765,29 @@ def run_backtest(config):
     # 最大回撤
     print(f"{'最大回撤':<20} | {metrics['mdd']*100:>14.1f}% | {metrics['buy_hold_mdd']*100:>14.1f}%")
     
+    # 打印最大回撤的详细信息
+    if 'max_drawdown_start_date' in metrics and 'max_drawdown_date' in metrics:
+        start_date = metrics['max_drawdown_start_date'].strftime('%Y-%m-%d')
+        bottom_date = metrics['max_drawdown_date'].strftime('%Y-%m-%d')
+        
+        print(f"\n最大回撤详细信息:")
+        print(f"  峰值日期: {start_date}")
+        print(f"  最低点日期: {bottom_date}")
+        
+        if metrics['max_drawdown_end_date'] is not None:
+            end_date = metrics['max_drawdown_end_date'].strftime('%Y-%m-%d')
+            print(f"  恢复日期: {end_date}")
+            
+            # 计算回撤持续时间
+            duration = (metrics['max_drawdown_end_date'] - metrics['max_drawdown_start_date']).days
+            print(f"  回撤持续时间: {duration}天")
+        else:
+            print(f"  恢复日期: 尚未恢复")
+            
+            # 计算到目前为止的回撤持续时间
+            duration = (metrics['max_drawdown_date'] - metrics['max_drawdown_start_date']).days
+            print(f"  回撤持续时间: {duration}天 (仍在回撤中)")
+    
     # 策略特有指标
     print(f"\n策略特有指标:")
     print(f"胜率: {metrics['hit_ratio']*100:.1f}%")
@@ -781,6 +804,18 @@ def run_backtest(config):
     print(f"📊 年化收益率: {metrics['irr']*100:.1f}%")
     print(f"⚡ 夏普比率: {metrics['sharpe_ratio']:.2f}")
     print(f"📉 最大回撤: {metrics['mdd']*100:.1f}%")
+    if 'max_drawdown_start_date' in metrics and 'max_drawdown_date' in metrics:
+        start_date = metrics['max_drawdown_start_date'].strftime('%Y-%m-%d')
+        bottom_date = metrics['max_drawdown_date'].strftime('%Y-%m-%d')
+        print(f"   └─ 峰值: {start_date} → 最低点: {bottom_date}")
+        
+        if metrics['max_drawdown_end_date'] is not None:
+            end_date = metrics['max_drawdown_end_date'].strftime('%Y-%m-%d')
+            duration = (metrics['max_drawdown_end_date'] - metrics['max_drawdown_start_date']).days
+            print(f"   └─ 恢复: {end_date} (持续{duration}天)")
+        else:
+            duration = (metrics['max_drawdown_date'] - metrics['max_drawdown_start_date']).days
+            print(f"   └─ 尚未恢复 (已持续{duration}天)")
     print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
     
     print(f"="*50)
@@ -890,6 +925,26 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
     daily_df['drawdown'] = (daily_df['capital'] - daily_df['peak']) / daily_df['peak']
     # 最大回撤
     metrics['mdd'] = daily_df['drawdown'].min() * -1
+    
+    # 找到最大回撤发生的日期
+    max_drawdown_date = daily_df['drawdown'].idxmin()
+    metrics['max_drawdown_date'] = max_drawdown_date
+    
+    # 找到最大回撤开始的日期（即达到峰值的日期）
+    max_drawdown_peak = daily_df.loc[max_drawdown_date, 'peak']
+    # 找到达到这个峰值的最后一个日期
+    peak_dates = daily_df[daily_df['capital'] == max_drawdown_peak].index
+    max_drawdown_start_date = peak_dates[peak_dates <= max_drawdown_date].max()
+    metrics['max_drawdown_start_date'] = max_drawdown_start_date
+    
+    # 找到最大回撤结束的日期（资金重新达到峰值的日期）
+    recovery_dates = daily_df[daily_df['capital'] >= max_drawdown_peak].index
+    recovery_dates_after = recovery_dates[recovery_dates > max_drawdown_date]
+    if len(recovery_dates_after) > 0:
+        max_drawdown_end_date = recovery_dates_after.min()
+        metrics['max_drawdown_end_date'] = max_drawdown_end_date
+    else:
+        metrics['max_drawdown_end_date'] = None  # 尚未恢复
     
     # 计算回撤持续时间
     # 找到每个回撤开始的点
@@ -1032,13 +1087,13 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        'data_path': 'tqqq_longport.csv',
+        'data_path': 'tqqq_market_hours_with_indicators.csv',
+        # 'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
-        'initial_capital': 100000,
+        'initial_capital': 10000,
         'lookback_days':2,
-        'start_date': date(2024, 1, 1),
-        'end_date': date(2025, 6, 30),
+        'start_date': date(2020, 5, 1),
+        'end_date': date(2025, 5, 1),
         # 'start_date': date(2020, 3, 1),
         # 'end_date': date(2025, 3, 1),
         'check_interval_minutes': 15 ,
