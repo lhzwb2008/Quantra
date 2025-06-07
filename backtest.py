@@ -587,8 +587,11 @@ def run_backtest(config):
         # 将trade_date转换为字符串格式以便统一显示
         date_str = pd.to_datetime(trade_date).strftime('%Y-%m-%d')
         
+        # 获取当天的开盘价
+        day_open_price = day_data['day_open'].iloc[0]
+        
         # 计算仓位大小
-        position_size = floor(capital / open_price)
+        position_size = floor(capital / day_open_price)
         
         # 如果资金不足，跳过当天
         if position_size <= 0:
@@ -711,7 +714,40 @@ def run_backtest(config):
     
     # 打印月度回报
     print("\n月度回报:")
-    print(monthly[['month_start', 'month_end', 'monthly_return']])
+    # 设置pandas显示选项以显示所有行
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', None)
+    
+    # 创建格式化的月度回报显示
+    monthly_display = monthly[['month_start', 'month_end', 'monthly_return']].copy()
+    monthly_display['monthly_return_pct'] = monthly_display['monthly_return'] * 100
+    monthly_display = monthly_display.round({'month_start': 2, 'month_end': 2, 'monthly_return_pct': 2})
+    
+    print(monthly_display[['month_start', 'month_end', 'monthly_return_pct']].rename(columns={
+        'month_start': '月初资金',
+        'month_end': '月末资金', 
+        'monthly_return_pct': '月度收益率(%)'
+    }))
+    
+    # 打印月度回报统计信息
+    monthly_returns = monthly['monthly_return'].dropna()
+    if len(monthly_returns) > 0:
+        print(f"\n月度回报统计:")
+        print(f"  平均月度收益率: {monthly_returns.mean()*100:.2f}%")
+        print(f"  月度收益率标准差: {monthly_returns.std()*100:.2f}%")
+        print(f"  最佳月度收益率: {monthly_returns.max()*100:.2f}%")
+        print(f"  最差月度收益率: {monthly_returns.min()*100:.2f}%")
+        print(f"  正收益月份: {(monthly_returns > 0).sum()}个")
+        print(f"  负收益月份: {(monthly_returns < 0).sum()}个")
+        print(f"  胜率: {(monthly_returns > 0).mean()*100:.1f}%")
+    
+    # 恢复默认显示设置
+    pd.reset_option('display.max_rows')
+    pd.reset_option('display.max_columns')
+    pd.reset_option('display.width')
+    pd.reset_option('display.max_colwidth')
     
     # 计算总体表现
     total_return = capital / initial_capital - 1
@@ -1087,13 +1123,13 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'tqqq_market_hours_with_indicators.csv',
-        # 'data_path': 'tqqq_longport.csv',
+        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
+        'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days':2,
-        'start_date': date(2020, 5, 1),
-        'end_date': date(2025, 5, 1),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 6, 30),
         # 'start_date': date(2020, 3, 1),
         # 'end_date': date(2025, 3, 1),
         'check_interval_minutes': 15 ,
