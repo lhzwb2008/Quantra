@@ -828,6 +828,17 @@ def run_backtest(config):
     print(f"\n策略特有指标:")
     print(f"胜率: {metrics['hit_ratio']*100:.1f}%")
     print(f"总交易次数: {metrics['total_trades']}")
+    
+    # 计算做多和做空的笔数
+    if len(trades_df) > 0:
+        long_trades = len(trades_df[trades_df['side'] == 'Long'])
+        short_trades = len(trades_df[trades_df['side'] == 'Short'])
+        print(f"做多交易笔数: {long_trades}")
+        print(f"做空交易笔数: {short_trades}")
+    else:
+        print(f"做多交易笔数: 0")
+        print(f"做空交易笔数: 0")
+    
     print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
     
     # 打印策略总结
@@ -1123,15 +1134,13 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'tqqq_longport.csv',
+        'data_path': 'tqqq_market_hours_with_indicators.csv',
+        # 'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days':2,
-        'start_date': date(2024, 1, 1),
+        'start_date': date(2022, 3, 1),
         'end_date': date(2025, 6, 30),
-        # 'start_date': date(2020, 3, 1),
-        # 'end_date': date(2025, 3, 1),
         'check_interval_minutes': 15 ,
         'transaction_fee_per_share': 0.005,
         'trading_start_time': (9, 40),
