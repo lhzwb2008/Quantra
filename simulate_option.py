@@ -23,7 +23,7 @@ K2 = 1.2 # 下边界sigma乘数
 OPTION_CONTRACTS = int(os.environ.get('OPTION_CONTRACTS', '1'))  # 期权合约数，默认1手
 
 # 默认交易品种
-SYMBOL = os.environ.get('SYMBOL', 'SPY.US')
+SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
 
 # 调试模式配置
 DEBUG_MODE = False   # 设置为True开启调试模式
