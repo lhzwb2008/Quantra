@@ -17,9 +17,9 @@ load_dotenv()
 CHECK_INTERVAL_MINUTES = 15
 TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 45)   # 交易结束时间：15点45分
-LOOKBACK_DAYS = 2
-K1 = 1.2 # 上边界sigma乘数
-K2 = 1.2 # 下边界sigma乘数
+LOOKBACK_DAYS = 1
+K1 = 1 # 上边界sigma乘数
+K2 = 1 # 下边界sigma乘数
 OPTION_CONTRACTS = int(os.environ.get('OPTION_CONTRACTS', '1'))  # 期权合约数，默认1手
 
 # 默认交易品种
