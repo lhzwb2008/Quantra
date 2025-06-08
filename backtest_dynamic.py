@@ -79,7 +79,14 @@ def test_single_param_combination(args):
         return (params_dict, current_metric)
         
     except Exception as e:
-        # 静默处理错误
+        # 打印错误信息（仅在第一次出错时）
+        if not hasattr(test_single_param_combination, '_error_printed'):
+            test_single_param_combination._error_printed = True
+            print(f"\n    回测出错 - 参数: {params_dict}")
+            print(f"    错误类型: {type(e).__name__}")
+            print(f"    错误信息: {str(e)}")
+            import traceback
+            traceback.print_exc()
         return None
 
 def create_coarse_grid(param_grid, reduction_factor=2):
@@ -151,82 +158,92 @@ def optimize_parameters(base_config, param_grid, start_date, end_date, use_paral
     返回:
         最佳参数组合和对应的性能指标
     """
-    if n_processes is None:
-        n_processes = min(mp.cpu_count(), 8)  # 限制最大进程数
-    
-    # 第一阶段：粗糙网格筛选
-    print(f"    第一阶段：粗糙网格筛选...")
-    coarse_grid = create_coarse_grid(param_grid, reduction_factor=2)
-    
-    param_names = list(coarse_grid.keys())
-    param_values = list(coarse_grid.values())
-    coarse_combinations = list(product(*param_values))
-    
-    print(f"    粗筛选组合数: {len(coarse_combinations)}")
-    
-    # 准备并行计算的参数
-    args_list = [(params, param_names, base_config, start_date, end_date) 
-                 for params in coarse_combinations]
-    
-    # 并行测试粗糙网格
-    if use_parallel and len(coarse_combinations) > 10:
-        with mp.Pool(processes=n_processes) as pool:
-            results = pool.map(test_single_param_combination, args_list)
-    else:
-        results = [test_single_param_combination(args) for args in args_list]
-    
-    # 筛选有效结果
-    valid_results = [r for r in results if r is not None]
-    
-    if not valid_results:
-        return None, None
-    
-    # 选择前几名进行细化
-    top_n = min(5, len(valid_results))
-    valid_results.sort(key=lambda x: x[1], reverse=True)
-    top_results = valid_results[:top_n]
-    
-    print(f"    粗筛选完成，选出前{top_n}名进行细化")
-    
-    # 第二阶段：细化网格优化
-    print(f"    第二阶段：细化网格优化...")
-    best_overall_params = None
-    best_overall_metric = -float('inf')
-    
-    for coarse_params, coarse_metric in top_results:
-        # 为每个候选参数创建细化网格
-        fine_grid = create_fine_grid(param_grid, coarse_params, expansion_range=1)
+    try:
+        if n_processes is None:
+            n_processes = min(mp.cpu_count(), 8)  # 限制最大进程数
         
-        param_names = list(fine_grid.keys())
-        param_values = list(fine_grid.values())
-        fine_combinations = list(product(*param_values))
+        # 第一阶段：粗糙网格筛选
+        print(f"    第一阶段：粗糙网格筛选...")
+        coarse_grid = create_coarse_grid(param_grid, reduction_factor=2)
+        
+        param_names = list(coarse_grid.keys())
+        param_values = list(coarse_grid.values())
+        coarse_combinations = list(product(*param_values))
+        
+        print(f"    粗筛选组合数: {len(coarse_combinations)}")
         
         # 准备并行计算的参数
         args_list = [(params, param_names, base_config, start_date, end_date) 
-                     for params in fine_combinations]
+                     for params in coarse_combinations]
         
-        # 并行测试细化网格
-        if use_parallel and len(fine_combinations) > 5:
+        # 并行测试粗糙网格
+        if use_parallel and len(coarse_combinations) > 10:
             with mp.Pool(processes=n_processes) as pool:
-                fine_results = pool.map(test_single_param_combination, args_list)
+                results = pool.map(test_single_param_combination, args_list)
         else:
-            fine_results = [test_single_param_combination(args) for args in args_list]
+            results = [test_single_param_combination(args) for args in args_list]
         
-        # 找到当前细化网格的最佳结果
-        valid_fine_results = [r for r in fine_results if r is not None]
-        if valid_fine_results:
-            best_fine = max(valid_fine_results, key=lambda x: x[1])
-            if best_fine[1] > best_overall_metric:
-                best_overall_metric = best_fine[1]
-                best_overall_params = best_fine[0]
-    
-    total_combinations = len(coarse_combinations) + sum(
-        len(list(product(*create_fine_grid(param_grid, params, 1).values()))) 
-        for params, _ in top_results
-    )
-    print(f"    细化完成，总测试组合数: {total_combinations}")
-    
-    return best_overall_params, best_overall_metric
+        # 筛选有效结果
+        valid_results = [r for r in results if r is not None]
+        
+        print(f"    有效结果数: {len(valid_results)}/{len(results)}")
+        
+        if not valid_results:
+            print("    警告：没有有效的优化结果")
+            return None, None
+        
+        # 选择前几名进行细化
+        top_n = min(5, len(valid_results))
+        valid_results.sort(key=lambda x: x[1], reverse=True)
+        top_results = valid_results[:top_n]
+        
+        print(f"    粗筛选完成，选出前{top_n}名进行细化")
+        
+        # 第二阶段：细化网格优化
+        print(f"    第二阶段：细化网格优化...")
+        best_overall_params = None
+        best_overall_metric = -float('inf')
+        
+        for coarse_params, coarse_metric in top_results:
+            # 为每个候选参数创建细化网格
+            fine_grid = create_fine_grid(param_grid, coarse_params, expansion_range=1)
+            
+            param_names = list(fine_grid.keys())
+            param_values = list(fine_grid.values())
+            fine_combinations = list(product(*param_values))
+            
+            # 准备并行计算的参数
+            args_list = [(params, param_names, base_config, start_date, end_date) 
+                         for params in fine_combinations]
+            
+            # 并行测试细化网格
+            if use_parallel and len(fine_combinations) > 5:
+                with mp.Pool(processes=n_processes) as pool:
+                    fine_results = pool.map(test_single_param_combination, args_list)
+            else:
+                fine_results = [test_single_param_combination(args) for args in args_list]
+            
+            # 找到当前细化网格的最佳结果
+            valid_fine_results = [r for r in fine_results if r is not None]
+            if valid_fine_results:
+                best_fine = max(valid_fine_results, key=lambda x: x[1])
+                if best_fine[1] > best_overall_metric:
+                    best_overall_metric = best_fine[1]
+                    best_overall_params = best_fine[0]
+        
+        total_combinations = len(coarse_combinations) + sum(
+            len(list(product(*create_fine_grid(param_grid, params, 1).values()))) 
+            for params, _ in top_results
+        )
+        print(f"    细化完成，总测试组合数: {total_combinations}")
+        
+        return best_overall_params, best_overall_metric
+        
+    except Exception as e:
+        print(f"    优化过程出错: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None
 
 def run_dynamic_backtest(config):
     """
@@ -442,28 +459,29 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 数据和基础设置
+        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
         'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
         'initial_capital': 100000,
         
         # 总的回测时间范围
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 5, 30),
+        'start_date': date(2024, 1, 2),    # 修改为数据文件中的开始日期
+        'end_date': date(2025, 3, 1),      # 修改为合理的结束日期
         
         # 滚动窗口参数
-        'optimization_window_days': 10,  # 优化窗口期
-        'backtest_window_days': 10,      # 回测窗口期（可以与优化窗口期不同）
+        'optimization_window_days': 100,  # 优化窗口期
+        'backtest_window_days': 100,      # 回测窗口期（可以与优化窗口期不同）
         
         # 并行计算参数
-        'use_parallel': False,           # 是否使用并行计算
+        'use_parallel': True,           # 是否使用并行计算
         'n_processes': 4,               # 进程数，None表示自动检测
         
         # 参数网格（用于优化）
-        'lookback_days_grid': [1,2,3, 5, 10],
+        'lookback_days_grid': [1,2,3],
         'check_interval_minutes_grid': [5, 10, 15],
-        'max_positions_per_day_grid': [2, 3, 4],
-        'K1_grid': [0.8, 1, 1.2],
-        'K2_grid': [0.8, 1, 1.2],
+        'max_positions_per_day_grid': [3, 5, 10],
+        'K1_grid': [0.8,0.9, 1,1.1,1.2],
+        'K2_grid': [0.8,0.9, 1,1.1,1.2],
         
         # 固定参数
         'transaction_fee_per_share': 0.005,
