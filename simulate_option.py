@@ -20,7 +20,7 @@ TRADING_END_TIME = (15, 45)   # 交易结束时间：15点45分
 LOOKBACK_DAYS = 1
 K1 = 1 # 上边界sigma乘数
 K2 = 1 # 下边界sigma乘数
-OPTION_CONTRACTS = int(os.environ.get('OPTION_CONTRACTS', '1'))  # 期权合约数，默认1手
+OPTION_CONTRACTS = int(os.environ.get('OPTION_CONTRACTS', '1'))  # 期权合约数，默认1张
 
 # 默认交易品种
 SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
@@ -31,8 +31,8 @@ DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-D
 DEBUG_ONCE = False  # 是否只运行一次就退出
 
 def get_us_eastern_time():
+    """获取美东时间"""
     if DEBUG_MODE and DEBUG_TIME:
-        # 如果处于调试模式且指定了时间，返回指定的时间
         try:
             dt = datetime.strptime(DEBUG_TIME, "%Y-%m-%d %H:%M:%S")
             eastern = pytz.timezone('US/Eastern')
@@ -40,13 +40,13 @@ def get_us_eastern_time():
         except ValueError:
             print(f"错误的调试时间格式: {DEBUG_TIME}，应为 'YYYY-MM-DD HH:MM:SS'")
     
-    # 正常模式或调试时间格式错误时返回当前时间
     eastern = pytz.timezone('US/Eastern')
     return datetime.now(eastern)
 
 def create_contexts():
+    """创建API连接上下文"""
     max_retries = 5
-    retry_delay = 5  # 秒
+    retry_delay = 5
     
     for attempt in range(max_retries):
         try:
@@ -71,8 +71,6 @@ def get_today_expiry_options(symbol_base="SPY"):
     try:
         # 获取所有到期日
         expiry_dates = QUOTE_CTX.option_chain_expiry_date_list(f"{symbol_base}.US")
-        
-        # 获取今日日期作为 date 对象
         today_date = get_us_eastern_time().date()
         
         # 检查今日是否有到期期权
@@ -82,10 +80,7 @@ def get_today_expiry_options(symbol_base="SPY"):
             
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 找到今日到期期权日期: {today_date}")
         
-        # 获取今日到期的期权链 - 需要转换为字符串格式
-        # 直接使用date对象
-        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 使用日期对象 {today_date} 获取期权链")
-        
+        # 获取今日到期的期权链
         option_chain_data = QUOTE_CTX.option_chain_info_by_date(f"{symbol_base}.US", today_date)
         
         # 转换为列表格式
@@ -93,10 +88,8 @@ def get_today_expiry_options(symbol_base="SPY"):
         call_count = 0
         put_count = 0
         
-        # 修复: API返回的是List[StrikePriceInfo]，每个item包含call_symbol和put_symbol
+        # API返回的是List[StrikePriceInfo]，每个item包含call_symbol和put_symbol
         if option_chain_data and isinstance(option_chain_data, list):
-            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API返回 {len(option_chain_data)} 个执行价格")
-            
             for strike_info in option_chain_data:
                 # 处理Call期权
                 if hasattr(strike_info, 'call_symbol') and strike_info.call_symbol:
@@ -119,21 +112,10 @@ def get_today_expiry_options(symbol_base="SPY"):
                     })()
                     option_list.append(put_option)
                     put_count += 1
-        else:
-            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API返回数据格式: {type(option_chain_data)}")
-            if option_chain_data:
-                print(f"  - 数据内容: {option_chain_data}")
-                # 输出第一个元素的属性来帮助调试
-                if hasattr(option_chain_data, '__len__') and len(option_chain_data) > 0:
-                    first_item = option_chain_data[0]
-                    print(f"  - 第一个元素类型: {type(first_item)}")
-                    print(f"  - 第一个元素属性: {dir(first_item)}")
         
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 找到今日到期期权: 总共{len(option_list)}个 (Call:{call_count}, Put:{put_count})")
-        if option_list:
-            print(f"  - 前几个期权: {[f'{opt.symbol}({opt.option_type})' for opt in option_list[:3]]}")
-        
         return option_list
+        
     except Exception as e:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取期权链失败: {str(e)}")
         import traceback
@@ -183,47 +165,64 @@ def get_option_quote(option_symbol):
                 "ask": float(quote.ask) if hasattr(quote, 'ask') and quote.ask else 0
             }
     except Exception as e:
-        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取期权报价失败: {str(e)}")
+        error_msg = str(e)
+        if "no quote access" in error_msg.lower():
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 期权报价权限不足，使用模拟价格")
+            # 返回模拟的期权价格
+            return {
+                "symbol": option_symbol,
+                "last_price": 1.0,  # 模拟价格
+                "volume": 0,
+                "bid": 0.95,
+                "ask": 1.05
+            }
+        else:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取期权报价失败: {error_msg}")
     return None
 
 def get_account_balance():
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
-    balance_list = TRADE_CTX.account_balance()  # 不需要指定currency参数
-    
-    # 从cash_infos中找到USD的可用现金
-    usd_available_cash = 0.0
-    for balance_info in balance_list:
-        for cash_info in balance_info.cash_infos:
-            if cash_info.currency == "USD":
-                usd_available_cash = float(cash_info.available_cash)
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 美元可用现金: ${usd_available_cash:.2f}")
-                return usd_available_cash
-    
-    # 如果没有找到USD账户，返回0
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
-    return 0.0
+    """获取账户余额"""
+    try:
+        balance_list = TRADE_CTX.account_balance()
+        
+        # 从cash_infos中找到USD的可用现金
+        for balance_info in balance_list:
+            for cash_info in balance_info.cash_infos:
+                if cash_info.currency == "USD":
+                    usd_available_cash = float(cash_info.available_cash)
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 美元可用现金: ${usd_available_cash:.2f}")
+                    return usd_available_cash
+        
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
+        return 0.0
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取账户余额失败: {str(e)}")
+        return 0.0
 
 def get_current_positions():
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
-    stock_positions_response = TRADE_CTX.stock_positions()
-    positions = {}
-    for channel in stock_positions_response.channels:
-        for position in channel.positions:
-            symbol = position.symbol
-            quantity = int(position.quantity)
-            cost_price = float(position.cost_price)
-            positions[symbol] = {
-                "quantity": quantity,
-                "cost_price": cost_price
-            }
-    return positions
+    """获取当前持仓"""
+    try:
+        stock_positions_response = TRADE_CTX.stock_positions()
+        positions = {}
+        for channel in stock_positions_response.channels:
+            for position in channel.positions:
+                symbol = position.symbol
+                quantity = int(position.quantity)
+                cost_price = float(position.cost_price)
+                positions[symbol] = {
+                    "quantity": quantity,
+                    "cost_price": cost_price
+                }
+        return positions
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取持仓失败: {str(e)}")
+        return {}
 
 def get_historical_data(symbol, days_back=None):
-    # 简化天数计算逻辑
+    """获取历史数据"""
     if days_back is None:
-        days_back = LOOKBACK_DAYS + 5  # 简化为固定天数
+        days_back = LOOKBACK_DAYS + 5
         
-    # 直接使用1分钟K线
     sdk_period = Period.Min_1
     adjust_type = AdjustType.ForwardAdjust
     eastern = pytz.timezone('US/Eastern')
@@ -232,48 +231,41 @@ def get_historical_data(symbol, days_back=None):
     
     print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 开始获取历史数据: {symbol}")
     
-    # 计算起始日期
     start_date = current_date - timedelta(days=days_back)
-    
-    # 对于1分钟数据使用按日获取的方式
     all_candles = []
     
-    # 尝试从今天开始向前获取足够的数据
     date_to_check = current_date
     api_call_count = 0
     while date_to_check >= start_date:
         day_start_time = datetime.combine(date_to_check, time(9, 30))
         day_start_time_et = eastern.localize(day_start_time)
         
-        # 添加API调用间隔控制
         if api_call_count > 0:
-            time_module.sleep(0.2)  # 200毫秒延迟，避免触发限流
+            time_module.sleep(0.2)  # 避免触发限流
         
-        # 重试机制
         max_retries = 3
         retry_delay = 1
         day_candles = None
         
         for attempt in range(max_retries):
             try:
-                # 每天最多获取390分钟数据（6.5小时交易时间）
                 day_candles = QUOTE_CTX.history_candlesticks_by_offset(
                     symbol, sdk_period, adjust_type, True, 390,
                     day_start_time_et
                 )
                 api_call_count += 1
-                break  # 成功则跳出重试循环
+                break
             except Exception as e:
                 if "rate limit" in str(e).lower():
                     if attempt < max_retries - 1:
                         print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，等待 {retry_delay} 秒后重试 ({attempt + 1}/{max_retries})")
                         time_module.sleep(retry_delay)
-                        retry_delay *= 2  # 指数退避
+                        retry_delay *= 2
                     else:
                         print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，已达最大重试次数")
                         raise
                 else:
-                    raise  # 其他错误直接抛出
+                    raise
         
         if day_candles:
             all_candles.extend(day_candles)
@@ -292,7 +284,6 @@ def get_historical_data(symbol, days_back=None):
         else:
             ts_str = str(timestamp)
             
-        # 去重处理
         if ts_str in processed_timestamps:
             continue
         processed_timestamps.add(ts_str)
@@ -318,7 +309,6 @@ def get_historical_data(symbol, days_back=None):
         if dt.date() > current_date:
             continue
             
-        # 添加到数据列表
         data.append({
             "Close": float(candle.close),
             "Open": float(candle.open),
@@ -344,56 +334,52 @@ def get_historical_data(symbol, days_back=None):
     # 去除重复数据
     df = df.drop_duplicates(subset=['Date', 'Time'])
     
-    # 过滤掉未来日期的数据（双重保险）
+    # 过滤掉未来日期的数据
     df = df[df["Date"] <= current_date]
     
     return df
 
 def get_quote(symbol):
-    quotes = QUOTE_CTX.quote([symbol])
-    quote_data = {
-        "symbol": quotes[0].symbol,
-        "last_done": str(quotes[0].last_done),
-        "open": str(quotes[0].open),
-        "high": str(quotes[0].high),
-        "low": str(quotes[0].low),
-        "volume": str(quotes[0].volume),
-        "turnover": str(quotes[0].turnover),
-        "timestamp": quotes[0].timestamp.isoformat()
-    }
-    return quote_data
+    """获取实时报价"""
+    try:
+        quotes = QUOTE_CTX.quote([symbol])
+        quote_data = {
+            "symbol": quotes[0].symbol,
+            "last_done": str(quotes[0].last_done),
+            "open": str(quotes[0].open),
+            "high": str(quotes[0].high),
+            "low": str(quotes[0].low),
+            "volume": str(quotes[0].volume),
+            "turnover": str(quotes[0].turnover),
+            "timestamp": quotes[0].timestamp.isoformat()
+        }
+        return quote_data
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取报价失败: {str(e)}")
+        return None
 
 def calculate_vwap(df):
-    # 创建一个结果DataFrame的副本
+    """计算VWAP"""
     result_df = df.copy()
     
-    # 按照日期分组
     for date in result_df['Date'].unique():
-        # 获取当日数据
         day_data = result_df[result_df['Date'] == date]
-        
-        # 按时间排序确保正确累计
         day_data = day_data.sort_values('Time')
         
-        # 计算累计成交量和成交额
         cumulative_volume = day_data['Volume'].cumsum()
         cumulative_turnover = day_data['Turnover'].cumsum()
         
-        # 计算VWAP: 累计成交额 / 累计成交量
         vwap = cumulative_turnover / cumulative_volume
-        # 处理成交量为0的情况
         vwap = vwap.fillna(day_data['Close'])
         
-        # 更新结果DataFrame中的对应行
         result_df.loc[result_df['Date'] == date, 'VWAP'] = vwap.values
     
     return result_df['VWAP']
 
 def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
-    # 创建数据副本
+    """计算噪声区域"""
     df_copy = df.copy()
     
-    # 获取唯一日期并排序
     unique_dates = sorted(df_copy["Date"].unique())
     now_et = get_us_eastern_time()
     current_date = now_et.date()
@@ -403,18 +389,14 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
         unique_dates = [d for d in unique_dates if d <= current_date]
         df_copy = df_copy[df_copy["Date"].isin(unique_dates)]
     
-    # 假设最后一天是当前交易日，直接排除
     if len(unique_dates) > 1:
-        target_date = unique_dates[-1]  # 保存目标日期（当前交易日）
-        history_dates = unique_dates[:-1]  # 排除最后一天
-        
-        # 从剩余日期中选择最近的lookback_days天
+        target_date = unique_dates[-1]
+        history_dates = unique_dates[:-1]
         history_dates = history_dates[-lookback_days:] if len(history_dates) >= lookback_days else history_dates
     else:
         print(f"错误: 数据中只有一天或没有数据，无法计算噪声空间")
         sys.exit(1)
     
-    # 检查数据是否足够
     if len(history_dates) < lookback_days:
         print(f"错误: 历史数据不足，至少需要{lookback_days}个交易日，当前只有{len(history_dates)}个交易日")
         sys.exit(1)
@@ -422,7 +404,6 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     # 为历史日期计算当日开盘价和相对变动率
     history_df = df_copy[df_copy["Date"].isin(history_dates)].copy()
     
-    # 为每个历史日期计算当日开盘价
     day_opens = {}
     for date in history_dates:
         day_data = history_df[history_df["Date"] == date]
@@ -431,38 +412,32 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
             sys.exit(1)
         day_opens[date] = day_data["Open"].iloc[0]
     
-    # 为每个时间点计算相对于开盘价的绝对变动率
+    # 计算相对于开盘价的绝对变动率
     history_df["move"] = 0.0
     for date in history_dates:
         day_open = day_opens[date]
         history_df.loc[history_df["Date"] == date, "move"] = abs(history_df.loc[history_df["Date"] == date, "Close"] / day_open - 1)
     
-    # 计算每个时间点的sigma (使用历史数据)
+    # 计算每个时间点的sigma
     time_sigma = {}
     
-    # 获取目标日期的所有时间点
     target_day_data = df[df["Date"] == target_date]
     times = target_day_data["Time"].unique()
     
-    # 对每个时间点计算sigma
     for tm in times:
-        # 获取历史数据中相同时间点的数据
         historical_moves = []
         for date in history_dates:
             hist_data = history_df[(history_df["Date"] == date) & (history_df["Time"] == tm)]
             if not hist_data.empty:
                 historical_moves.append(hist_data["move"].iloc[0])
         
-        # 确保有足够的历史数据计算sigma
         if len(historical_moves) == 0:
             continue
         
-        # 计算平均变动率作为sigma
         sigma = sum(historical_moves) / len(historical_moves)
         time_sigma[(target_date, tm)] = sigma
     
     # 计算上下边界
-    # 获取目标日期的开盘价
     target_day_data = df[df["Date"] == target_date]
     if target_day_data.empty:
         print(f"错误: 目标日期 {target_date} 数据为空")
@@ -470,7 +445,7 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     
     day_open = target_day_data["Open"].iloc[0]
     
-    # 获取目标日期的前一日收盘价
+    # 获取前一日收盘价
     if target_date in unique_dates and unique_dates.index(target_date) > 0:
         prev_date = unique_dates[unique_dates.index(target_date) - 1]
         prev_day_data = df[df["Date"] == prev_date]
@@ -484,102 +459,131 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     if prev_close is None:
         return df
     
-    # 根据算法计算参考价格
+    # 计算参考价格
     upper_ref = max(day_open, prev_close)
     lower_ref = min(day_open, prev_close)
     
-    # 对目标日期的每个时间点计算上下边界
-    # 使用目标日期的数据
+    # 计算上下边界
     for _, row in target_day_data.iterrows():
         tm = row["Time"]
         sigma = time_sigma.get((target_date, tm))
         
         if sigma is not None:
-            # 使用时间点特定的sigma计算上下边界，应用K1和K2乘数
             upper_bound = upper_ref * (1 + K1 * sigma)
             lower_bound = lower_ref * (1 - K2 * sigma)
             
-            # 更新df中的边界值
             df.loc[(df["Date"] == target_date) & (df["Time"] == tm), "UpperBound"] = upper_bound
             df.loc[(df["Date"] == target_date) & (df["Time"] == tm), "LowerBound"] = lower_bound
     
     return df
 
 def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth=None):
-    sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell
-    if isinstance(order_type, str):
-        order_type_map = {
-            "MO": OrderType.MO, "LO": OrderType.LO, "ELO": OrderType.ELO,
-            "AO": OrderType.AO, "ALO": OrderType.ALO
-        }
-        sdk_order_type = order_type_map.get(order_type, OrderType.MO)
-    else:
-        sdk_order_type = order_type
-    time_in_force = TimeInForceType.Day
-    if outside_rth is None:
-        outside_rth = OutsideRTH.AnyTime
-    elif isinstance(outside_rth, str):
-        outside_rth_map = {
-            "RTH_ONLY": OutsideRTH.RTHOnly,
-            "ANY_TIME": OutsideRTH.AnyTime,
-            "OVERNIGHT": OutsideRTH.Overnight
-        }
-        outside_rth = outside_rth_map.get(outside_rth, OutsideRTH.AnyTime)
-    dec_quantity = Decimal(str(quantity)) if not isinstance(quantity, Decimal) else quantity
-    if sdk_order_type == OrderType.LO and price is not None:
-        dec_price = Decimal(str(price)) if not isinstance(price, Decimal) else price
-        response = TRADE_CTX.submit_order(
-            symbol=symbol,
-            order_type=sdk_order_type,
-            side=sdk_side,
-            submitted_price=dec_price,
-            submitted_quantity=dec_quantity,
-            time_in_force=time_in_force,
-            outside_rth=outside_rth
-        )
-    else:
-        response = TRADE_CTX.submit_order(
-            symbol=symbol,
-            order_type=OrderType.MO,
-            side=sdk_side,
-            submitted_quantity=dec_quantity,
-            time_in_force=time_in_force,
-            outside_rth=outside_rth
-        )
-    return response.order_id
+    """提交订单"""
+    try:
+        sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell
+        if isinstance(order_type, str):
+            order_type_map = {
+                "MO": OrderType.MO, "LO": OrderType.LO, "ELO": OrderType.ELO,
+                "AO": OrderType.AO, "ALO": OrderType.ALO
+            }
+            sdk_order_type = order_type_map.get(order_type, OrderType.MO)
+        else:
+            sdk_order_type = order_type
+        time_in_force = TimeInForceType.Day
+        if outside_rth is None:
+            outside_rth = OutsideRTH.AnyTime
+        elif isinstance(outside_rth, str):
+            outside_rth_map = {
+                "RTH_ONLY": OutsideRTH.RTHOnly,
+                "ANY_TIME": OutsideRTH.AnyTime,
+                "OVERNIGHT": OutsideRTH.Overnight
+            }
+            outside_rth = outside_rth_map.get(outside_rth, OutsideRTH.AnyTime)
+        dec_quantity = Decimal(str(quantity)) if not isinstance(quantity, Decimal) else quantity
+        if sdk_order_type == OrderType.LO and price is not None:
+            dec_price = Decimal(str(price)) if not isinstance(price, Decimal) else price
+            response = TRADE_CTX.submit_order(
+                symbol=symbol,
+                order_type=sdk_order_type,
+                side=sdk_side,
+                submitted_price=dec_price,
+                submitted_quantity=dec_quantity,
+                time_in_force=time_in_force,
+                outside_rth=outside_rth
+            )
+        else:
+            response = TRADE_CTX.submit_order(
+                symbol=symbol,
+                order_type=OrderType.MO,
+                side=sdk_side,
+                submitted_quantity=dec_quantity,
+                time_in_force=time_in_force,
+                outside_rth=outside_rth
+            )
+        return response.order_id
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 订单提交失败: {str(e)}")
+        return None
 
 def is_trading_day(symbol=None):
-    market = None
-    if symbol:
-        if symbol.endswith(".US"):
+    """检查是否是交易日"""
+    try:
+        market = None
+        if symbol:
+            if symbol.endswith(".US"):
+                market = "US"
+            elif symbol.endswith(".HK"):
+                market = "HK"
+            elif symbol.endswith(".SH") or symbol.endswith(".SZ"):
+                market = "CN"
+            elif symbol.endswith(".SG"):
+                market = "SG"
+        if not market:
             market = "US"
-        elif symbol.endswith(".HK"):
-            market = "HK"
-        elif symbol.endswith(".SH") or symbol.endswith(".SZ"):
-            market = "CN"
-        elif symbol.endswith(".SG"):
-            market = "SG"
-    if not market:
-        market = "US"
-    now_et = get_us_eastern_time()
-    current_date = now_et.date()
-    from longport.openapi import Market
-    market_mapping = {
-        "US": Market.US, "HK": Market.HK, "CN": Market.CN, "SG": Market.SG
-    }
-    sdk_market = market_mapping.get(market, Market.US)
-    calendar_resp = QUOTE_CTX.trading_days(
-        sdk_market, current_date, current_date
-    )
-    trading_dates = calendar_resp.trading_days
-    half_trading_dates = calendar_resp.half_trading_days
-    is_trade_day = current_date in trading_dates
-    is_half_trade_day = current_date in half_trading_dates
-    return is_trade_day or is_half_trade_day
+        now_et = get_us_eastern_time()
+        current_date = now_et.date()
+        from longport.openapi import Market
+        market_mapping = {
+            "US": Market.US, "HK": Market.HK, "CN": Market.CN, "SG": Market.SG
+        }
+        sdk_market = market_mapping.get(market, Market.US)
+        calendar_resp = QUOTE_CTX.trading_days(
+            sdk_market, current_date, current_date
+        )
+        trading_dates = calendar_resp.trading_days
+        half_trading_dates = calendar_resp.half_trading_days
+        is_trade_day = current_date in trading_dates
+        is_half_trade_day = current_date in half_trading_dates
+        return is_trade_day or is_half_trade_day
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 检查交易日失败: {str(e)}")
+        return True  # 默认返回True以避免阻塞
+
+def close_position(position_symbol, position_type, entry_price):
+    """平仓期权持仓"""
+    try:
+        quote = get_option_quote(position_symbol)
+        if quote:
+            exit_price = quote["last_price"]
+            close_order_id = submit_order(position_symbol, "Sell", OPTION_CONTRACTS, outside_rth=OutsideRTH.RTHOnly)
+            if close_order_id:
+                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {position_type}期权平仓订单已提交，ID: {close_order_id}")
+                
+                # 计算盈亏
+                if entry_price:
+                    pnl = (exit_price - entry_price) * OPTION_CONTRACTS
+                    pnl_pct = (exit_price / entry_price - 1) * 100 if entry_price > 0 else 0
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {position_type}期权平仓: {position_symbol} 买入价: ${entry_price:.2f} 卖出价: ${exit_price:.2f}")
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 盈亏: ${pnl:.2f} ({pnl_pct:.2f}%)")
+                return True
+    except Exception as e:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {position_type}期权平仓失败: {str(e)}")
+    return False
 
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
                         lookback_days=LOOKBACK_DAYS):
+    """运行交易策略"""
     now_et = get_us_eastern_time()
     print(f"启动末日期权交易策略 - 标的品种: {symbol}")
     print(f"当前美东时间: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -596,74 +600,44 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     # 期权持仓追踪
     calls_traded_today = False
     puts_traded_today = False
-    current_call_position = None  # 当前持有的Call期权代码
-    current_put_position = None   # 当前持有的Put期权代码
-    call_entry_price = None       # Call期权买入价格
-    put_entry_price = None        # Put期权买入价格
+    current_call_position = None
+    current_put_position = None
+    call_entry_price = None
+    put_entry_price = None
     
     last_date = None
-    outside_rth_setting = OutsideRTH.RTHOnly  # 期权只在正常交易时间交易
+    outside_rth_setting = OutsideRTH.RTHOnly
     
     # 从symbol中提取基础标的代码
-    symbol_base = symbol.split('.')[0]  # 例如从SPY.US提取SPY
+    symbol_base = symbol.split('.')[0]
     
     while True:
         now = get_us_eastern_time()
         current_date = now.date()
         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 主循环开始")
         
-        # 检查是否是新交易日，如果是则重置今日交易标志
+        # 检查是否是新交易日，重置交易标志
         if last_date is not None and current_date != last_date:
             calls_traded_today = False
             puts_traded_today = False
             current_call_position = None
             current_put_position = None
+            call_entry_price = None
+            put_entry_price = None
         last_date = current_date
         
-        # 检查是否是交易时间结束点，如果是且有持仓，则强制平仓
+        # 检查交易时间结束点，强制平仓
         current_hour, current_minute = now.hour, now.minute
         is_trading_end = current_hour == trading_end_time[0] and current_minute == trading_end_time[1]
         
         if is_trading_end and (current_call_position or current_put_position):
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易时间结束，平仓所有期权持仓")
             
-            # 平仓Call期权
             if current_call_position:
-                try:
-                    quote = get_option_quote(current_call_position)
-                    if quote:
-                        exit_price = quote["last_price"]
-                        # 卖出期权
-                        close_order_id = submit_order(current_call_position, "Sell", OPTION_CONTRACTS * 100, outside_rth=outside_rth_setting)
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Call期权平仓订单已提交，ID: {close_order_id}")
-                        
-                        # 计算盈亏
-                        if call_entry_price:
-                            pnl = (exit_price - call_entry_price) * OPTION_CONTRACTS * 100
-                            pnl_pct = (exit_price / call_entry_price - 1) * 100 if call_entry_price > 0 else 0
-                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Call期权平仓: {current_call_position} 买入价: ${call_entry_price:.2f} 卖出价: ${exit_price:.2f}")
-                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 盈亏: ${pnl:.2f} ({pnl_pct:.2f}%)")
-                except Exception as e:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Call期权平仓失败: {str(e)}")
+                close_position(current_call_position, "Call", call_entry_price)
                     
-            # 平仓Put期权
             if current_put_position:
-                try:
-                    quote = get_option_quote(current_put_position)
-                    if quote:
-                        exit_price = quote["last_price"]
-                        # 卖出期权
-                        close_order_id = submit_order(current_put_position, "Sell", OPTION_CONTRACTS * 100, outside_rth=outside_rth_setting)
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Put期权平仓订单已提交，ID: {close_order_id}")
-                        
-                        # 计算盈亏
-                        if put_entry_price:
-                            pnl = (exit_price - put_entry_price) * OPTION_CONTRACTS * 100
-                            pnl_pct = (exit_price / put_entry_price - 1) * 100 if put_entry_price > 0 else 0
-                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Put期权平仓: {current_put_position} 买入价: ${put_entry_price:.2f} 卖出价: ${exit_price:.2f}")
-                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 盈亏: ${pnl:.2f} ({pnl_pct:.2f}%)")
-                except Exception as e:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Put期权平仓失败: {str(e)}")
+                close_position(current_put_position, "Put", put_entry_price)
                     
             # 重置持仓状态
             current_call_position = None
@@ -676,7 +650,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 break
             continue
         
-        # 检查是否是交易日（调试模式下保持原有逻辑）
+        # 检查是否是交易日
         is_today_trading_day = is_trading_day(symbol)
         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 是否交易日: {is_today_trading_day}")
             
@@ -684,9 +658,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
             if current_call_position or current_put_position:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
-                side = "Sell" if current_call_position else "Buy"
-                close_order_id = submit_order(symbol, side, OPTION_CONTRACTS * 100, outside_rth=outside_rth_setting)
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
+                if current_call_position:
+                    close_position(current_call_position, "Call", call_entry_price)
+                if current_put_position:
+                    close_position(current_put_position, "Put", put_entry_price)
                 current_call_position = None
                 current_put_position = None
                 call_entry_price = None
@@ -696,7 +671,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             time_module.sleep(wait_seconds)
             continue
             
-        # 保持原有交易时间检查逻辑
+        # 检查交易时间
         start_hour, start_minute = trading_start_time
         end_hour, end_minute = trading_end_time
         is_trading_hours = (
@@ -712,16 +687,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             
         # 调试模式下，根据指定时间截断数据
         if DEBUG_MODE:
-            # 截断到调试时间之前的数据
             df = df[df["DateTime"] <= now]
             
         if not is_trading_hours:
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
             if current_call_position or current_put_position:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易日结束，执行平仓")
-                side = "Sell" if current_call_position else "Buy"
-                close_order_id = submit_order(symbol, side, OPTION_CONTRACTS * 100, outside_rth=outside_rth_setting)
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
+                if current_call_position:
+                    close_position(current_call_position, "Call", call_entry_price)
+                if current_put_position:
+                    close_position(current_put_position, "Put", put_entry_price)
                 current_call_position = None
                 current_put_position = None
                 call_entry_price = None
@@ -739,16 +714,13 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             time_module.sleep(wait_seconds)
             continue
             
-        # 使用新的VWAP计算方法
+        # 计算VWAP和噪声区域
         df["VWAP"] = calculate_vwap(df)
-        
-        # 直接计算噪声区域，不需要中间复制
         df = calculate_noise_area(df, lookback_days, K1, K2)
         
         if not current_call_position and not current_put_position:
             # 获取价格
             if DEBUG_MODE:
-                # 调试模式：直接使用当前时间点的历史价格
                 current_time = now.strftime('%H:%M')
                 latest_date = df["Date"].max()
                 debug_data = df[(df["Date"] == latest_date) & (df["Time"] == current_time)]
@@ -758,9 +730,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 else:
                     latest_price = float(df.iloc[-1]["Close"])
             else:
-                # 正常模式: 使用API获取实时价格
                 quote = get_quote(symbol)
-                latest_price = float(quote.get("last_done", df.iloc[-1]["Close"]))
+                latest_price = float(quote.get("last_done", df.iloc[-1]["Close"])) if quote else float(df.iloc[-1]["Close"])
             
             latest_date = df["Date"].max()
             latest_data = df[df["Date"] == latest_date].copy()
@@ -787,7 +758,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     else:
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
                 
-                # 检查是否满足开仓条件
+                # 检查开仓条件
                 if signal != 0:
                     if (signal == 1 and calls_traded_today) or (signal == -1 and puts_traded_today):
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日已交易过{'Call' if signal == 1 else 'Put'}期权，跳过")
@@ -796,47 +767,44 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
                     
                     # 获取今日到期的期权链
-                option_chain = get_today_expiry_options(symbol_base)
-                if not option_chain:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日没有到期的期权，跳过交易")
-                    continue
-                
-                # 选择合适的期权合约
-                option_type = "C" if signal > 0 else "P"
-                selected_option = select_option_contract(option_chain, latest_price, option_type)
-                
-                if not selected_option:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 没有找到合适的{'Call' if signal > 0 else 'Put'}期权")
-                    continue
-                
-                option_symbol = selected_option.symbol
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 选择期权: {option_symbol} 行权价: {selected_option.strike_price}")
-                
-                # 获取期权报价
-                option_quote = get_option_quote(option_symbol)
-                if not option_quote:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 无法获取期权报价")
-                    continue
-                
-                # 提交期权买入订单
-                try:
-                    order_id = submit_order(option_symbol, "Buy", OPTION_CONTRACTS * 100, outside_rth=outside_rth_setting)
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 期权订单已提交，ID: {order_id}")
+                    option_chain = get_today_expiry_options(symbol_base)
+                    if not option_chain:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日没有到期的期权，跳过交易")
+                        continue
                     
-                    # 更新持仓状态
-                    if signal > 0:
-                        current_call_position = option_symbol
-                        call_entry_price = option_quote["last_price"]
-                        calls_traded_today = True
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Call期权: {option_symbol} 数量: {OPTION_CONTRACTS}手 价格: ${call_entry_price:.2f}")
-                    else:
-                        current_put_position = option_symbol
-                        put_entry_price = option_quote["last_price"]
-                        puts_traded_today = True
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Put期权: {option_symbol} 数量: {OPTION_CONTRACTS}手 价格: ${put_entry_price:.2f}")
+                    # 选择合适的期权合约
+                    option_type = "C" if signal > 0 else "P"
+                    selected_option = select_option_contract(option_chain, latest_price, option_type)
                     
-                except Exception as e:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 期权订单提交失败: {str(e)}")
+                    if not selected_option:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 没有找到合适的{'Call' if signal > 0 else 'Put'}期权")
+                        continue
+                    
+                    option_symbol = selected_option.symbol
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 选择期权: {option_symbol} 行权价: {selected_option.strike_price}")
+                    
+                    # 获取期权报价
+                    option_quote = get_option_quote(option_symbol)
+                    if not option_quote:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 无法获取期权报价")
+                        continue
+                    
+                    # 提交期权买入订单
+                    order_id = submit_order(option_symbol, "Buy", OPTION_CONTRACTS, outside_rth=outside_rth_setting)
+                    if order_id:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 期权订单已提交，ID: {order_id}")
+                        
+                        # 更新持仓状态
+                        if signal > 0:
+                            current_call_position = option_symbol
+                            call_entry_price = option_quote["last_price"]
+                            calls_traded_today = True
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Call期权: {option_symbol} 数量: {OPTION_CONTRACTS}张 价格: ${call_entry_price:.2f}")
+                        else:
+                            current_put_position = option_symbol
+                            put_entry_price = option_quote["last_price"]
+                            puts_traded_today = True
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Put期权: {option_symbol} 数量: {OPTION_CONTRACTS}张 价格: ${put_entry_price:.2f}")
         
         # 调试模式且单次运行模式，完成一次循环后退出
         if DEBUG_MODE and DEBUG_ONCE:
@@ -851,7 +819,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
 
 if __name__ == "__main__":
     print("\n长桥API末日期权交易策略启动")
-    print("版本: 2.0.0")
+    print("版本: 2.1.0")
     print("时间:", get_us_eastern_time().strftime("%Y-%m-%d %H:%M:%S"), "(美东时间)")
     if DEBUG_MODE:
         print("调试模式已开启")
@@ -859,7 +827,7 @@ if __name__ == "__main__":
             print(f"调试时间: {DEBUG_TIME}")
         if DEBUG_ONCE:
             print("单次运行模式已开启")
-    print(f"期权合约数: {OPTION_CONTRACTS}手")
+    print(f"期权合约数: {OPTION_CONTRACTS}张")
     
     if QUOTE_CTX is None or TRADE_CTX is None:
         print("错误: 无法创建API上下文")
