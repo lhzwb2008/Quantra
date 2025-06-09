@@ -28,7 +28,7 @@ SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
 # 调试模式配置
 DEBUG_MODE = False   # 设置为True开启调试模式
 DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
-DEBUG_ONCE = True  # 是否只运行一次就退出
+DEBUG_ONCE = False  # 是否只运行一次就退出
 
 def get_us_eastern_time():
     if DEBUG_MODE and DEBUG_TIME:
@@ -72,32 +72,72 @@ def get_today_expiry_options(symbol_base="SPY"):
         # 获取所有到期日
         expiry_dates = QUOTE_CTX.option_chain_expiry_date_list(f"{symbol_base}.US")
         
-        # 获取今日日期（YYMMDD格式）
-        today = get_us_eastern_time().strftime("%y%m%d")
+        # 获取今日日期作为 date 对象
+        today_date = get_us_eastern_time().date()
         
         # 检查今日是否有到期期权
-        if today not in expiry_dates:
-            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 今日没有到期的期权")
+        if today_date not in expiry_dates:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 今日({today_date})不在到期日列表中")
             return None
             
-        # 获取今日到期的期权链
-        from longport.openapi import OptionDirection
-        option_chain_data = QUOTE_CTX.option_chain_info_by_date(f"{symbol_base}.US", today)
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 找到今日到期期权日期: {today_date}")
+        
+        # 获取今日到期的期权链 - 需要转换为字符串格式
+        # 直接使用date对象
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 使用日期对象 {today_date} 获取期权链")
+        
+        option_chain_data = QUOTE_CTX.option_chain_info_by_date(f"{symbol_base}.US", today_date)
         
         # 转换为列表格式
         option_list = []
-        if hasattr(option_chain_data, 'call_options'):
-            for opt in option_chain_data.call_options:
-                opt.option_type = "C"
-                option_list.append(opt)
-        if hasattr(option_chain_data, 'put_options'):
-            for opt in option_chain_data.put_options:
-                opt.option_type = "P"
-                option_list.append(opt)
+        call_count = 0
+        put_count = 0
+        
+        # 修复: API返回的是List[StrikePriceInfo]，每个item包含call_symbol和put_symbol
+        if option_chain_data and isinstance(option_chain_data, list):
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API返回 {len(option_chain_data)} 个执行价格")
+            
+            for strike_info in option_chain_data:
+                # 处理Call期权
+                if hasattr(strike_info, 'call_symbol') and strike_info.call_symbol:
+                    call_option = type('Option', (), {
+                        'symbol': strike_info.call_symbol,
+                        'strike_price': strike_info.price,
+                        'option_type': 'C',
+                        'standard': getattr(strike_info, 'standard', True)
+                    })()
+                    option_list.append(call_option)
+                    call_count += 1
                 
+                # 处理Put期权
+                if hasattr(strike_info, 'put_symbol') and strike_info.put_symbol:
+                    put_option = type('Option', (), {
+                        'symbol': strike_info.put_symbol,
+                        'strike_price': strike_info.price,
+                        'option_type': 'P',
+                        'standard': getattr(strike_info, 'standard', True)
+                    })()
+                    option_list.append(put_option)
+                    put_count += 1
+        else:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API返回数据格式: {type(option_chain_data)}")
+            if option_chain_data:
+                print(f"  - 数据内容: {option_chain_data}")
+                # 输出第一个元素的属性来帮助调试
+                if hasattr(option_chain_data, '__len__') and len(option_chain_data) > 0:
+                    first_item = option_chain_data[0]
+                    print(f"  - 第一个元素类型: {type(first_item)}")
+                    print(f"  - 第一个元素属性: {dir(first_item)}")
+        
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 找到今日到期期权: 总共{len(option_list)}个 (Call:{call_count}, Put:{put_count})")
+        if option_list:
+            print(f"  - 前几个期权: {[f'{opt.symbol}({opt.option_type})' for opt in option_list[:3]]}")
+        
         return option_list
     except Exception as e:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取期权链失败: {str(e)}")
+        import traceback
+        print(f"  - 详细错误: {traceback.format_exc()}")
         return None
 
 def select_option_contract(option_chain, current_price, option_type="C"):
