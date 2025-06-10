@@ -564,8 +564,9 @@ def close_position(position_symbol, position_type, entry_price):
     try:
         quote = get_option_quote(position_symbol)
         if quote:
-            exit_price = quote["last_price"]
-            close_order_id = submit_order(position_symbol, "Sell", OPTION_CONTRACTS, outside_rth=OutsideRTH.RTHOnly)
+            # 对价成交：卖出时使用买价
+            exit_price = quote["bid"] if quote["bid"] > 0 else quote["last_price"]
+            close_order_id = submit_order(position_symbol, "Sell", OPTION_CONTRACTS, order_type="LO", price=exit_price, outside_rth=OutsideRTH.RTHOnly)
             if close_order_id:
                 print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {position_type}期权平仓订单已提交，ID: {close_order_id}")
                 
@@ -789,20 +790,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 无法获取期权报价")
                         continue
                     
-                    # 提交期权买入订单
-                    order_id = submit_order(option_symbol, "Buy", OPTION_CONTRACTS, outside_rth=outside_rth_setting)
+                    # 提交期权买入订单（对价成交：使用卖价）
+                    buy_price = option_quote["ask"] if option_quote["ask"] > 0 else option_quote["last_price"]
+                    order_id = submit_order(option_symbol, "Buy", OPTION_CONTRACTS, order_type="LO", price=buy_price, outside_rth=outside_rth_setting)
                     if order_id:
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 期权订单已提交，ID: {order_id}")
                         
                         # 更新持仓状态
                         if signal > 0:
                             current_call_position = option_symbol
-                            call_entry_price = option_quote["last_price"]
+                            call_entry_price = buy_price
                             calls_traded_today = True
                             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Call期权: {option_symbol} 数量: {OPTION_CONTRACTS}张 价格: ${call_entry_price:.2f}")
                         else:
                             current_put_position = option_symbol
-                            put_entry_price = option_quote["last_price"]
+                            put_entry_price = buy_price
                             puts_traded_today = True
                             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 买入Put期权: {option_symbol} 数量: {OPTION_CONTRACTS}张 价格: ${put_entry_price:.2f}")
         
