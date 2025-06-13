@@ -148,11 +148,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
                         print(f"  价格: {price:.2f} < 追踪止损: {trailing_stop:.2f}")
                         print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                        print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓多头
                     exit_time = row['DateTime']
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
                     pnl = position_size * (price - entry_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -163,7 +164,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'entry_price': entry_price,
                         'exit_price': price,
                         'pnl': pnl,
-                        'exit_reason': exit_reason
+                        'exit_reason': exit_reason,
+                        'position_size': position_size,
+                        'transaction_fees': transaction_fees
                     })
                     
                     position = 0
@@ -186,11 +189,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
                         print(f"  价格: {price:.2f} > 追踪止损: {trailing_stop:.2f}")
                         print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                        print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓空头
                     exit_time = row['DateTime']
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
                     pnl = position_size * (entry_price - price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -201,7 +205,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'entry_price': entry_price,
                         'exit_price': price,
                         'pnl': pnl,
-                        'exit_reason': exit_reason
+                        'exit_reason': exit_reason,
+                        'position_size': position_size,
+                        'transaction_fees': transaction_fees
                     })
                     
                     position = 0
@@ -224,10 +230,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             if print_details:
                 date_str = exit_time.strftime('%Y-%m-%d')
                 print(f"\n交易点位详情 [{date_str} {end_time_str}] - 多头收盘平仓:")
-                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (close_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -236,7 +242,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'entry_price': entry_price,
                 'exit_price': close_price,
                 'pnl': pnl,
-                'exit_reason': 'Intraday Close'
+                'exit_reason': 'Intraday Close',
+                'position_size': position_size,
+                'transaction_fees': transaction_fees
             })
             
             position = 0
@@ -247,10 +255,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             if print_details:
                 date_str = exit_time.strftime('%Y-%m-%d')
                 print(f"\n交易点位详情 [{date_str} {end_time_str}] - 空头收盘平仓:")
-                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (entry_price - close_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -259,7 +267,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'entry_price': entry_price,
                 'exit_price': close_price,
                 'pnl': pnl,
-                'exit_reason': 'Intraday Close'
+                'exit_reason': 'Intraday Close',
+                'position_size': position_size,
+                'transaction_fees': transaction_fees
             })
             
             position = 0
@@ -276,10 +286,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             if print_details:
                 date_str = exit_time.strftime('%Y-%m-%d')
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 多头市场收盘平仓:")
-                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (last_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -288,7 +298,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'entry_price': entry_price,
                 'exit_price': last_price,
                 'pnl': pnl,
-                'exit_reason': 'Market Close'
+                'exit_reason': 'Market Close',
+                'position_size': position_size,
+                'transaction_fees': transaction_fees
             })
                 
         else:  # 空头仓位
@@ -296,10 +308,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             if print_details:
                 date_str = exit_time.strftime('%Y-%m-%d')
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 空头市场收盘平仓:")
-                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}")
+                print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (entry_price - last_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -308,7 +320,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'entry_price': entry_price,
                 'exit_price': last_price,
                 'pnl': pnl,
-                'exit_reason': 'Market Close'
+                'exit_reason': 'Market Close',
+                'position_size': position_size,
+                'transaction_fees': transaction_fees
             })
     
     return trades 
@@ -626,8 +640,10 @@ def run_backtest(config):
                 entry_time = trade['entry_time'].strftime('%H:%M')
                 exit_time = trade['exit_time'].strftime('%H:%M')
                 pnl = trade['pnl']
-                # 添加简要信息: 方向(入场时间->出场时间) 盈亏
-                trade_summary.append(f"{direction}({entry_time}->{exit_time}) ${pnl:.2f}")
+                entry_price = trade['entry_price']
+                exit_price = trade['exit_price']
+                size = trade.get('position_size', position_size)
+                trade_summary.append(f"{direction}({entry_time}->{exit_time}) 买:{entry_price:.2f} 卖:{exit_price:.2f} 股数:{size} 盈亏:${pnl:.2f}")
             
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
@@ -660,7 +676,7 @@ def run_backtest(config):
             # 从每笔交易中提取交易费用
             if 'transaction_fees' not in trade:
                 # 如果交易数据中没有交易费用，则计算
-                trade['transaction_fees'] = position_size * transaction_fee_per_share * 2  # 买入和卖出费用
+                trade['transaction_fees'] = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             day_transaction_fees += trade['transaction_fees']
         
         # 添加到总交易费用
@@ -1139,10 +1155,12 @@ if __name__ == "__main__":
         'ticker': 'TQQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 6, 1),
+        'start_date': date(2025, 6, 9),
         'end_date': date(2025, 6, 30),
         'check_interval_minutes': 15 ,
-        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.008166,
+        'transaction_fee_per_share': 0.013166,
+
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 45),
         'max_positions_per_day': 10,

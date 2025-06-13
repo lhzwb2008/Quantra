@@ -25,7 +25,7 @@ all_candles = []
 current = start_date
 while current <= end_date:
     resp = ctx.history_candlesticks_by_date(
-        "QQQ.US",
+        "TQQQ.US",
         Period.Min_1,
         AdjustType.NoAdjust,
         current,
