@@ -6,7 +6,7 @@ import multiprocessing as mp
 from functools import partial
 import sys
 import io
-from backtest_old import run_backtest
+from backtest import run_backtest
 
 def suppress_output(func):
     """装饰器：抑制函数的标准输出"""

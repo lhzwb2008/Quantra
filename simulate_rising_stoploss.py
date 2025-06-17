@@ -429,7 +429,7 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rt
         )
     return response.order_id
 
-def check_exit_conditions(df, position_quantity, current_stop):
+def check_exit_conditions(df, position_quantity, trailing_stop):
     # 获取当前时间点
     now = get_us_eastern_time()
     current_time = now.strftime('%H:%M')
@@ -453,38 +453,40 @@ def check_exit_conditions(df, position_quantity, current_stop):
     
     # 检查数据是否为空值
     if price is None:
-        return False, current_stop
+        return False, trailing_stop
     
     if position_quantity > 0:
         # 检查上边界或VWAP是否为None
         if upper is None or vwap is None:
-            # 如果已有止损，继续使用
-            if current_stop is not None:
-                new_stop = current_stop
+            # 如果已有追踪止损，继续使用
+            if trailing_stop is not None:
+                new_stop = trailing_stop
                 exit_signal = price < new_stop
                 return exit_signal, new_stop
             else:
-                return False, current_stop
+                return False, trailing_stop
         else:
-            # 直接使用当前时刻的止损水平，不考虑历史止损
             new_stop = max(upper, vwap)
             
+        if trailing_stop is not None:
+            new_stop = max(trailing_stop, new_stop)
         exit_signal = price < new_stop
         return exit_signal, new_stop
     elif position_quantity < 0:
         # 检查下边界或VWAP是否为None
         if lower is None or vwap is None:
-            # 如果已有止损，继续使用
-            if current_stop is not None:
-                new_stop = current_stop
+            # 如果已有追踪止损，继续使用
+            if trailing_stop is not None:
+                new_stop = trailing_stop
                 exit_signal = price > new_stop
                 return exit_signal, new_stop
             else:
-                return False, current_stop
+                return False, trailing_stop
         else:
-            # 直接使用当前时刻的止损水平，不考虑历史止损
             new_stop = min(lower, vwap)
             
+        if trailing_stop is not None:
+            new_stop = min(trailing_stop, new_stop)
         exit_signal = price > new_stop
         return exit_signal, new_stop
     return False, None
@@ -542,7 +544,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     # 初始化入场价格为None，后续由交易操作更新
     entry_price = None
     
-    current_stop = None
+    trailing_stop = None
     positions_opened_today = 0
     last_date = None
     outside_rth_setting = OutsideRTH.AnyTime
@@ -702,9 +704,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         df = calculate_noise_area(df, lookback_days, K1, K2)
         
         if position_quantity != 0:
-            exit_signal, new_stop = check_exit_conditions(df, position_quantity, current_stop)
-            current_stop = new_stop
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
+            exit_signal, new_stop = check_exit_conditions(df, position_quantity, trailing_stop)
+            trailing_stop = new_stop
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 止损={trailing_stop}")
             if exit_signal:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发退出信号!")
                 

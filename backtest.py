@@ -98,7 +98,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 追踪止损设为上边界和VWAP的最大值
+                # 初始止损设为上边界和VWAP的最大值
                 trailing_stop = max(upper, vwap)
                     
             # 检查潜在空头入场 - 加入VWAP条件
@@ -126,18 +126,16 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 追踪止损设为下边界和VWAP的最小值
+                # 初始止损设为下边界和VWAP的最小值
                 trailing_stop = min(lower, vwap)
         
-        # 更新追踪止损并检查出场信号
+        # 更新止损并检查出场信号
         if position != 0:
             if position == 1:  # 多头仓位
-                # 计算止损水平（使用上边界和VWAP的最大值）
-                new_stop = max(upper, vwap)
-                # 只在有利方向更新（提高止损）
-                trailing_stop = max(trailing_stop, new_stop)
+                # 计算当前时刻的止损水平（使用上边界和VWAP的最大值）
+                trailing_stop = max(upper, vwap)
                 
-                # 如果价格跌破追踪止损，则平仓
+                # 如果价格跌破当前止损，则平仓
                 exit_condition = price < trailing_stop
                 
                 # 检查是否出场
@@ -146,8 +144,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
-                        print(f"  价格: {price:.2f} < 追踪止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                        print(f"  价格: {price:.2f} < 当前止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
                         print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓多头
@@ -173,12 +171,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     trailing_stop = np.nan
                     
             elif position == -1:  # 空头仓位
-                # 计算止损水平（使用下边界和VWAP的最小值）
-                new_stop = min(lower, vwap)
-                # 只在有利方向更新（降低止损）
-                trailing_stop = min(trailing_stop, new_stop)
+                # 计算当前时刻的止损水平（使用下边界和VWAP的最小值）
+                trailing_stop = min(lower, vwap)
                 
-                # 如果价格涨破追踪止损，则平仓
+                # 如果价格涨破当前止损，则平仓
                 exit_condition = price > trailing_stop
                 
                 # 检查是否出场
@@ -187,9 +183,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
-                        print(f"  价格: {price:.2f} > 追踪止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
-                        print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
+                        print(f"  价格: {price:.2f} > 当前止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
+                        print(f"  卖出价: {entry_price:.2f}, 买入价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓空头
                     exit_time = row['DateTime']
@@ -1150,12 +1146,12 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
         'data_path': 'tqqq_longport.csv',
         'ticker': 'TQQQ',
-        'initial_capital': 10000,
+        'initial_capital': 13000,
         'lookback_days':1,
-        'start_date': date(2020, 1, 1),
+        'start_date': date(2025, 1, 1),
         'end_date': date(2025, 6, 30),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.008166,
@@ -1166,7 +1162,7 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数

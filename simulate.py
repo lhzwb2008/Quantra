@@ -31,6 +31,11 @@ DEBUG_MODE = False   # 设置为True开启调试模式
 DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = True  # 是否只运行一次就退出
 
+# 收益统计全局变量
+TOTAL_PNL = 0.0  # 总收益
+DAILY_PNL = 0.0  # 当日收益
+LAST_STATS_DATE = None  # 上次统计日期
+
 def get_us_eastern_time():
     if DEBUG_MODE and DEBUG_TIME:
         # 如果处于调试模式且指定了时间，返回指定的时间
@@ -429,7 +434,7 @@ def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rt
         )
     return response.order_id
 
-def check_exit_conditions(df, position_quantity, trailing_stop):
+def check_exit_conditions(df, position_quantity, current_stop):
     # 获取当前时间点
     now = get_us_eastern_time()
     current_time = now.strftime('%H:%M')
@@ -453,40 +458,38 @@ def check_exit_conditions(df, position_quantity, trailing_stop):
     
     # 检查数据是否为空值
     if price is None:
-        return False, trailing_stop
+        return False, current_stop
     
     if position_quantity > 0:
         # 检查上边界或VWAP是否为None
         if upper is None or vwap is None:
-            # 如果已有追踪止损，继续使用
-            if trailing_stop is not None:
-                new_stop = trailing_stop
+            # 如果已有止损，继续使用
+            if current_stop is not None:
+                new_stop = current_stop
                 exit_signal = price < new_stop
                 return exit_signal, new_stop
             else:
-                return False, trailing_stop
+                return False, current_stop
         else:
+            # 直接使用当前时刻的止损水平，不考虑历史止损
             new_stop = max(upper, vwap)
             
-        if trailing_stop is not None:
-            new_stop = max(trailing_stop, new_stop)
         exit_signal = price < new_stop
         return exit_signal, new_stop
     elif position_quantity < 0:
         # 检查下边界或VWAP是否为None
         if lower is None or vwap is None:
-            # 如果已有追踪止损，继续使用
-            if trailing_stop is not None:
-                new_stop = trailing_stop
+            # 如果已有止损，继续使用
+            if current_stop is not None:
+                new_stop = current_stop
                 exit_signal = price > new_stop
                 return exit_signal, new_stop
             else:
-                return False, trailing_stop
+                return False, current_stop
         else:
+            # 直接使用当前时刻的止损水平，不考虑历史止损
             new_stop = min(lower, vwap)
             
-        if trailing_stop is not None:
-            new_stop = min(trailing_stop, new_stop)
         exit_signal = price > new_stop
         return exit_signal, new_stop
     return False, None
@@ -523,6 +526,8 @@ def is_trading_day(symbol=None):
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
                         max_positions_per_day=MAX_POSITIONS_PER_DAY, lookback_days=LOOKBACK_DAYS):
+    global TOTAL_PNL, DAILY_PNL, LAST_STATS_DATE
+    
     now_et = get_us_eastern_time()
     print(f"启动交易策略 - 交易品种: {symbol}")
     print(f"当前美东时间: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -544,7 +549,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     # 初始化入场价格为None，后续由交易操作更新
     entry_price = None
     
-    trailing_stop = None
+    current_stop = None
     positions_opened_today = 0
     last_date = None
     outside_rth_setting = OutsideRTH.AnyTime
@@ -623,6 +628,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 pnl_pct = (current_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                # 更新收益统计
+                DAILY_PNL += pnl
+                TOTAL_PNL += pnl
             else:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
                 
@@ -630,6 +638,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             entry_price = None
             if DEBUG_MODE and DEBUG_ONCE:
                 print("\n调试模式单次运行完成，程序退出")
+                # 输出最终收益统计
+                if DAILY_PNL != 0 or TOTAL_PNL != 0:
+                    print(f"=== 最终收益统计 ===")
+                    print(f"当日盈亏: ${DAILY_PNL:+.2f}")
+                    print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
                 break
             continue
         
@@ -641,9 +654,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
             if position_quantity != 0:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
+                
+                # 获取当前价格用于计算盈亏
+                quote = get_quote(symbol)
+                current_price = float(quote.get("last_done", 0))
+                
                 side = "Sell" if position_quantity > 0 else "Buy"
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
+                
+                # 计算盈亏
+                if entry_price and current_price > 0:
+                    pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                    DAILY_PNL += pnl
+                    TOTAL_PNL += pnl
+                    
                 position_quantity = 0
                 entry_price = None
             next_check_time = now + timedelta(hours=12)
@@ -654,7 +679,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         # 检查是否是新交易日，如果是则重置今日开仓计数
         if last_date is not None and current_date != last_date:
             positions_opened_today = 0
+            # 输出前一日收益统计
+            if LAST_STATS_DATE is not None and DAILY_PNL != 0:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] === 收益统计 ===")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 昨日盈亏: ${DAILY_PNL:+.2f}")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 累计盈亏: ${TOTAL_PNL:+.2f}")
+            DAILY_PNL = 0.0  # 重置当日收益
         last_date = current_date
+        LAST_STATS_DATE = current_date
         
         # 保持原有交易时间检查逻辑
         start_hour, start_minute = trading_start_time
@@ -679,9 +711,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
             if position_quantity != 0:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易日结束，执行平仓")
+                
+                # 获取当前价格用于计算盈亏
+                quote = get_quote(symbol)
+                current_price = float(quote.get("last_done", 0))
+                
                 side = "Sell" if position_quantity > 0 else "Buy"
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
+                
+                # 计算盈亏
+                if entry_price and current_price > 0:
+                    pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                    DAILY_PNL += pnl
+                    TOTAL_PNL += pnl
+                    
                 position_quantity = 0
                 entry_price = None
             now = get_us_eastern_time()
@@ -704,9 +748,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         df = calculate_noise_area(df, lookback_days, K1, K2)
         
         if position_quantity != 0:
-            exit_signal, new_stop = check_exit_conditions(df, position_quantity, trailing_stop)
-            trailing_stop = new_stop
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 止损={trailing_stop}")
+            exit_signal, new_stop = check_exit_conditions(df, position_quantity, current_stop)
+            current_stop = new_stop
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
             if exit_signal:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发退出信号!")
                 
@@ -754,6 +798,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
+                    # 更新收益统计
+                    DAILY_PNL += pnl
+                    TOTAL_PNL += pnl
                 
                 # 平仓后增加交易次数计数器
                 positions_opened_today += 1
@@ -834,6 +881,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         # 调试模式且单次运行模式，完成一次循环后退出
         if DEBUG_MODE and DEBUG_ONCE:
             print("\n调试模式单次运行完成，程序退出")
+            # 输出最终收益统计
+            if DAILY_PNL != 0 or TOTAL_PNL != 0:
+                print(f"=== 最终收益统计 ===")
+                print(f"当日盈亏: ${DAILY_PNL:+.2f}")
+                print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
             break
             
         next_check_time = now + timedelta(minutes=check_interval_minutes)

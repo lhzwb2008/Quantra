@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from itertools import product
 import calendar
-from backtest import run_backtest
+from backtest_rising_stoploss import run_backtest
 import sys
 import io
 import multiprocessing as mp
