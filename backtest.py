@@ -1151,7 +1151,7 @@ if __name__ == "__main__":
         'ticker': 'TQQQ',
         'initial_capital': 13000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
+        'start_date': date(2025, 6, 1),
         'end_date': date(2025, 6, 30),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.008166,

@@ -35,6 +35,7 @@ DEBUG_ONCE = True  # 是否只运行一次就退出
 TOTAL_PNL = 0.0  # 总收益
 DAILY_PNL = 0.0  # 当日收益
 LAST_STATS_DATE = None  # 上次统计日期
+DAILY_TRADES = []  # 当日交易记录
 
 def get_us_eastern_time():
     if DEBUG_MODE and DEBUG_TIME:
@@ -526,7 +527,7 @@ def is_trading_day(symbol=None):
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
                         max_positions_per_day=MAX_POSITIONS_PER_DAY, lookback_days=LOOKBACK_DAYS):
-    global TOTAL_PNL, DAILY_PNL, LAST_STATS_DATE
+    global TOTAL_PNL, DAILY_PNL, LAST_STATS_DATE, DAILY_TRADES
     
     now_et = get_us_eastern_time()
     print(f"启动交易策略 - 交易品种: {symbol}")
@@ -631,16 +632,80 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 # 更新收益统计
                 DAILY_PNL += pnl
                 TOTAL_PNL += pnl
+                # 记录平仓交易
+                DAILY_TRADES.append({
+                    "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                    "action": "平仓",
+                    "side": side,
+                    "quantity": abs(position_quantity),
+                    "price": current_price,
+                    "pnl": pnl
+                })
             else:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
                 
             position_quantity = 0
             entry_price = None
+            
+            # 在交易日结束时打印当日所有交易记录
+            if DAILY_TRADES:
+                print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] ===== 当日交易记录 =====")
+                for i, trade in enumerate(DAILY_TRADES, 1):
+                    print(f"交易 #{i}:")
+                    print(f"  时间: {trade['time']}")
+                    print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
+                    print(f"  价格: ${trade['price']:.2f}")
+                    if trade['pnl'] is not None:
+                        print(f"  盈亏: ${trade['pnl']:+.2f}")
+                
+                # 计算当日统计
+                total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
+                winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
+                losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
+                
+                print(f"\n当日交易统计:")
+                print(f"  总交易次数: {total_trades}")
+                print(f"  盈利次数: {winning_trades}")
+                print(f"  亏损次数: {losing_trades}")
+                if total_trades > 0:
+                    print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
+                print(f"  当日盈亏: ${DAILY_PNL:+.2f}")
+                print(f"  累计盈亏: ${TOTAL_PNL:+.2f}")
+                print("=" * 50)
+                
+                # 清空当日交易记录，为下一个交易日准备
+                DAILY_TRADES.clear()
+            
             if DEBUG_MODE and DEBUG_ONCE:
                 print("\n调试模式单次运行完成，程序退出")
+                
+                # 打印当日交易记录（如果有）
+                if DAILY_TRADES:
+                    print(f"\n===== 当日交易记录 =====")
+                    for i, trade in enumerate(DAILY_TRADES, 1):
+                        print(f"交易 #{i}:")
+                        print(f"  时间: {trade['time']}")
+                        print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
+                        print(f"  价格: ${trade['price']:.2f}")
+                        if trade['pnl'] is not None:
+                            print(f"  盈亏: ${trade['pnl']:+.2f}")
+                    
+                    # 计算当日统计
+                    total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
+                    winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
+                    losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
+                    
+                    print(f"\n当日交易统计:")
+                    print(f"  总交易次数: {total_trades}")
+                    print(f"  盈利次数: {winning_trades}")
+                    print(f"  亏损次数: {losing_trades}")
+                    if total_trades > 0:
+                        print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
+                    print("=" * 50)
+                
                 # 输出最终收益统计
                 if DAILY_PNL != 0 or TOTAL_PNL != 0:
-                    print(f"=== 最终收益统计 ===")
+                    print(f"\n=== 最终收益统计 ===")
                     print(f"当日盈亏: ${DAILY_PNL:+.2f}")
                     print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
                 break
@@ -668,6 +733,15 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
                     DAILY_PNL += pnl
                     TOTAL_PNL += pnl
+                    # 记录平仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "平仓",
+                        "side": side,
+                        "quantity": abs(position_quantity),
+                        "price": current_price,
+                        "pnl": pnl
+                    })
                     
                 position_quantity = 0
                 entry_price = None
@@ -679,11 +753,40 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         # 检查是否是新交易日，如果是则重置今日开仓计数
         if last_date is not None and current_date != last_date:
             positions_opened_today = 0
+            
+            # 打印前一日交易记录
+            if DAILY_TRADES:
+                print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] ===== 前一日交易记录 ({last_date}) =====")
+                for i, trade in enumerate(DAILY_TRADES, 1):
+                    print(f"交易 #{i}:")
+                    print(f"  时间: {trade['time']}")
+                    print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
+                    print(f"  价格: ${trade['price']:.2f}")
+                    if trade['pnl'] is not None:
+                        print(f"  盈亏: ${trade['pnl']:+.2f}")
+                
+                # 计算前一日统计
+                total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
+                winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
+                losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
+                
+                print(f"\n前一日交易统计:")
+                print(f"  总交易次数: {total_trades}")
+                print(f"  盈利次数: {winning_trades}")
+                print(f"  亏损次数: {losing_trades}")
+                if total_trades > 0:
+                    print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
+                    
+                # 清空交易记录，为新交易日准备
+                DAILY_TRADES.clear()
+            
             # 输出前一日收益统计
             if LAST_STATS_DATE is not None and DAILY_PNL != 0:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] === 收益统计 ===")
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 昨日盈亏: ${DAILY_PNL:+.2f}")
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 累计盈亏: ${TOTAL_PNL:+.2f}")
+                print("=" * 50)
+                
             DAILY_PNL = 0.0  # 重置当日收益
         last_date = current_date
         LAST_STATS_DATE = current_date
@@ -725,6 +828,15 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
                     DAILY_PNL += pnl
                     TOTAL_PNL += pnl
+                    # 记录平仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "平仓",
+                        "side": side,
+                        "quantity": abs(position_quantity),
+                        "price": current_price,
+                        "pnl": pnl
+                    })
                     
                 position_quantity = 0
                 entry_price = None
@@ -801,6 +913,15 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     # 更新收益统计
                     DAILY_PNL += pnl
                     TOTAL_PNL += pnl
+                    # 记录平仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "平仓",
+                        "side": side,
+                        "quantity": abs(position_quantity),
+                        "price": exit_price,
+                        "pnl": pnl
+                    })
                 
                 # 平仓后增加交易次数计数器
                 positions_opened_today += 1
@@ -877,13 +998,48 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     position_quantity = position_size if signal > 0 else -position_size
                     entry_price = latest_price
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
+                    
+                    # 记录开仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "开仓",
+                        "side": side,
+                        "quantity": position_size,
+                        "price": entry_price,
+                        "pnl": None  # 开仓时还没有盈亏
+                    })
         
         # 调试模式且单次运行模式，完成一次循环后退出
         if DEBUG_MODE and DEBUG_ONCE:
             print("\n调试模式单次运行完成，程序退出")
+            
+            # 打印当日交易记录（如果有）
+            if DAILY_TRADES:
+                print(f"\n===== 当日交易记录 =====")
+                for i, trade in enumerate(DAILY_TRADES, 1):
+                    print(f"交易 #{i}:")
+                    print(f"  时间: {trade['time']}")
+                    print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
+                    print(f"  价格: ${trade['price']:.2f}")
+                    if trade['pnl'] is not None:
+                        print(f"  盈亏: ${trade['pnl']:+.2f}")
+                
+                # 计算当日统计
+                total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
+                winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
+                losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
+                
+                print(f"\n当日交易统计:")
+                print(f"  总交易次数: {total_trades}")
+                print(f"  盈利次数: {winning_trades}")
+                print(f"  亏损次数: {losing_trades}")
+                if total_trades > 0:
+                    print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
+                print("=" * 50)
+            
             # 输出最终收益统计
             if DAILY_PNL != 0 or TOTAL_PNL != 0:
-                print(f"=== 最终收益统计 ===")
+                print(f"\n=== 最终收益统计 ===")
                 print(f"当日盈亏: ${DAILY_PNL:+.2f}")
                 print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
             break
