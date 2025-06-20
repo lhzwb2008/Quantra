@@ -11,7 +11,7 @@ import numpy as np
 
 from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH
 
-load_dotenv()
+load_dotenv(override=True)
 
 # 固定配置参数
 CHECK_INTERVAL_MINUTES = 15
