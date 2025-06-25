@@ -19,7 +19,7 @@ TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 45)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 10
 LOOKBACK_DAYS = 1
-LEVERAGE = 1 # 杠杆倍数，默认为1倍
+LEVERAGE = 0.4 # 杠杆倍数，默认为1倍
 K1 = 1 # 上边界sigma乘数
 K2 = 1 # 下边界sigma乘数
 
@@ -60,12 +60,14 @@ def create_contexts():
             config = Config.from_env()
             quote_ctx = QuoteContext(config)
             trade_ctx = TradeContext(config)
-            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API连接成功")
+            if DEBUG_MODE:
+                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API连接成功")
             return quote_ctx, trade_ctx
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API连接失败 ({attempt + 1}/{max_retries}): {str(e)}")
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {retry_delay}秒后重试...")
+                if DEBUG_MODE:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API连接失败 ({attempt + 1}/{max_retries}): {str(e)}")
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {retry_delay}秒后重试...")
                 time_module.sleep(retry_delay)
             else:
                 print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] API连接失败，已达最大重试次数")
@@ -74,7 +76,8 @@ def create_contexts():
 QUOTE_CTX, TRADE_CTX = create_contexts()
 
 def get_account_balance():
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
+    if DEBUG_MODE:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
     balance_list = TRADE_CTX.account_balance()  # 不需要指定currency参数
     
     # 从cash_infos中找到USD的可用现金
@@ -83,15 +86,18 @@ def get_account_balance():
         for cash_info in balance_info.cash_infos:
             if cash_info.currency == "USD":
                 usd_available_cash = float(cash_info.available_cash)
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 美元可用现金: ${usd_available_cash:.2f}")
+                if DEBUG_MODE:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 美元可用现金: ${usd_available_cash:.2f}")
                 return usd_available_cash
     
     # 如果没有找到USD账户，返回0
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
+    if DEBUG_MODE:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
     return 0.0
 
 def get_current_positions():
-    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
+    if DEBUG_MODE:
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
     stock_positions_response = TRADE_CTX.stock_positions()
     positions = {}
     for channel in stock_positions_response.channels:
@@ -117,7 +123,8 @@ def get_historical_data(symbol, days_back=None):
     now_et = get_us_eastern_time()
     current_date = now_et.date()
     
-    print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 开始获取历史数据: {symbol}")
+    if DEBUG_MODE:
+        print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 开始获取历史数据: {symbol}")
     
     # 计算起始日期
     start_date = current_date - timedelta(days=days_back)
@@ -153,18 +160,21 @@ def get_historical_data(symbol, days_back=None):
             except Exception as e:
                 if "rate limit" in str(e).lower():
                     if attempt < max_retries - 1:
-                        print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，等待 {retry_delay} 秒后重试 ({attempt + 1}/{max_retries})")
+                        if DEBUG_MODE:
+                            print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，等待 {retry_delay} 秒后重试 ({attempt + 1}/{max_retries})")
                         time_module.sleep(retry_delay)
                         retry_delay *= 2  # 指数退避
                     else:
-                        print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，已达最大重试次数")
+                        if DEBUG_MODE:
+                            print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] API限流，已达最大重试次数")
                         raise
                 else:
                     raise  # 其他错误直接抛出
         
         if day_candles:
             all_candles.extend(day_candles)
-            print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 获取 {date_to_check} 数据: {len(day_candles)} 条")
+            if DEBUG_MODE:
+                print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 获取 {date_to_check} 数据: {len(day_candles)} 条")
             
         date_to_check -= timedelta(days=1)
     
@@ -558,7 +568,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     while True:
         now = get_us_eastern_time()
         current_date = now.date()
-        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 主循环开始")
+        if DEBUG_MODE:
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 主循环开始")
         
         # 每次循环都更新当前持仓状态和账户余额
         current_positions = get_current_positions()
@@ -576,10 +587,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         current_hour, current_minute = now.hour, now.minute
         is_trading_end = current_hour == trading_end_time[0] and current_minute == trading_end_time[1]
         if is_trading_end and position_quantity != 0:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前时间为交易结束时间 {trading_end_time[0]}:{trading_end_time[1]}，执行平仓")
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前时间为交易结束时间 {trading_end_time[0]}:{trading_end_time[1]}，执行平仓")
             
             # 获取历史数据
-            print("获取历史数据")
+            if DEBUG_MODE:
+                print("获取历史数据")
             df = get_historical_data(symbol)
             if df.empty:
                 print("错误: 获取历史数据为空")
@@ -587,7 +600,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 
             if DEBUG_MODE:
                 df = df[df["DateTime"] <= now]
-                
+            
             # 获取当前时间点的价格数据
             current_time = now.strftime('%H:%M')
             
@@ -607,7 +620,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 else:
                     retry_count += 1
                     if retry_count < max_retries:
-                        print(f"警告: 当前时间点 {current_time} 没有数据，等待{retry_interval}秒后重试 ({retry_count}/{max_retries})")
+                        if DEBUG_MODE:
+                            print(f"警告: 当前时间点 {current_time} 没有数据，等待{retry_interval}秒后重试 ({retry_count}/{max_retries})")
                         time_module.sleep(retry_interval)
                         # 重新获取数据
                         df = get_historical_data(symbol)
@@ -713,12 +727,15 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         
         # 检查是否是交易日（调试模式下保持原有逻辑）
         is_today_trading_day = is_trading_day(symbol)
-        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 是否交易日: {is_today_trading_day}")
+        if DEBUG_MODE:
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 是否交易日: {is_today_trading_day}")
             
         if not is_today_trading_day:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
             if position_quantity != 0:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
                 
                 # 获取当前价格用于计算盈亏
                 quote = get_quote(symbol)
@@ -803,7 +820,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         if df.empty:
             print("Error: Could not get historical data")
             sys.exit(1)
-        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 历史数据获取完成: {len(df)} 条")
+        if DEBUG_MODE:
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 历史数据获取完成: {len(df)} 条")
             
         # 调试模式下，根据指定时间截断数据
         if DEBUG_MODE:
@@ -811,9 +829,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             df = df[df["DateTime"] <= now]
             
         if not is_trading_hours:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前不在交易时间内 ({trading_start_time[0]:02d}:{trading_start_time[1]:02d} - {trading_end_time[0]:02d}:{trading_end_time[1]:02d})")
             if position_quantity != 0:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易日结束，执行平仓")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易日结束，执行平仓")
                 
                 # 获取当前价格用于计算盈亏
                 quote = get_quote(symbol)
@@ -862,9 +882,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         if position_quantity != 0:
             exit_signal, new_stop = check_exit_conditions(df, position_quantity, current_stop)
             current_stop = new_stop
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
             if exit_signal:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发退出信号!")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发退出信号!")
                 
                 # 确保使用当前时间点的价格数据
                 current_time = now.strftime('%H:%M')
@@ -885,7 +907,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     else:
                         retry_count += 1
                         if retry_count < max_retries:
-                            print(f"警告: 当前时间点 {current_time} 没有数据，等待{retry_interval}秒后重试 ({retry_count}/{max_retries})")
+                            if DEBUG_MODE:
+                                print(f"警告: 当前时间点 {current_time} 没有数据，等待{retry_interval}秒后重试 ({retry_count}/{max_retries})")
                             time_module.sleep(retry_interval)
                             # 重新获取数据
                             df = get_historical_data(symbol)
@@ -931,12 +954,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         else:
             # 检查是否已有持仓，如果有则不再开仓
             if position_quantity != 0:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 已有持仓，跳过开仓检查")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 已有持仓，跳过开仓检查")
                 continue
                 
             # 检查今日是否达到最大持仓数
             if positions_opened_today >= max_positions_per_day:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日已开仓 {positions_opened_today} 次，达到上限")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日已开仓 {positions_opened_today} 次，达到上限")
                 continue
             
             # 获取价格
@@ -962,24 +987,29 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 latest_row["Close"] = latest_price
                 long_price_above_upper = latest_price > latest_row["UpperBound"]
                 long_price_above_vwap = latest_price > latest_row["VWAP"]
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 价格={latest_price:.2f}, 上界={latest_row['UpperBound']:.2f}, VWAP={latest_row['VWAP']:.2f}, 下界={latest_row['LowerBound']:.2f}")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 价格={latest_price:.2f}, 上界={latest_row['UpperBound']:.2f}, VWAP={latest_row['VWAP']:.2f}, 下界={latest_row['LowerBound']:.2f}")
                 signal = 0
                 price = latest_price
                 stop = None
                 if long_price_above_upper and long_price_above_vwap:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足多头入场条件!")
+                    if DEBUG_MODE:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足多头入场条件!")
                     signal = 1
                     stop = max(latest_row["UpperBound"], latest_row["VWAP"])
                 else:
                     short_price_below_lower = latest_price < latest_row["LowerBound"]
                     short_price_below_vwap = latest_price < latest_row["VWAP"]
                     if short_price_below_lower and short_price_below_vwap:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足空头入场条件!")
+                        if DEBUG_MODE:
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足空头入场条件!")
                         signal = -1
                         stop = min(latest_row["LowerBound"], latest_row["VWAP"])
                     else:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
+                        if DEBUG_MODE:
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
                 if signal != 0:
+                    # 保留交易信号日志
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
                     available_capital = get_account_balance()
                     # 应用杠杆比例
@@ -1047,7 +1077,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         next_check_time = now + timedelta(minutes=check_interval_minutes)
         sleep_seconds = (next_check_time - now).total_seconds()
         if sleep_seconds > 0:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {sleep_seconds:.0f} 秒")
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {sleep_seconds:.0f} 秒")
             time_module.sleep(sleep_seconds)
 
 if __name__ == "__main__":

@@ -30,6 +30,12 @@ DEBUG_MODE = False   # 设置为True开启调试模式
 DEBUG_TIME = "2025-05-15 12:36:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
 DEBUG_ONCE = False  # 是否只运行一次就退出
 
+# 收益统计全局变量
+TOTAL_PNL = 0.0  # 总收益
+DAILY_PNL = 0.0  # 当日收益
+LAST_STATS_DATE = None  # 上次统计日期
+DAILY_TRADES = []  # 当日交易记录
+
 def get_us_eastern_time():
     """获取美东时间"""
     if DEBUG_MODE and DEBUG_TIME:
