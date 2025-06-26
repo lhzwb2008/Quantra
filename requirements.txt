@@ -14,3 +14,7 @@ longport>=1.0.0
 
 # 系统工具
 python-dotenv==1.0.0  # 用于管理环境变量 
+
+# Interactive Brokers API
+ib_insync>=0.9.86  # IBKR异步API包装器，更易用
+# 或者使用官方API: ibapi>=10.19.0 

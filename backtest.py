@@ -354,6 +354,7 @@ def run_backtest(config):
     print_daily_trades = config.get('print_daily_trades', True)
     print_trade_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time')
+    leverage = config.get('leverage', 1)  # 资金杠杆倍数，默认为1
     # 如果未提供ticker，从文件名中提取
     if ticker is None:
         # 从文件名中提取ticker
@@ -600,8 +601,9 @@ def run_backtest(config):
         # 获取当天的开盘价
         day_open_price = day_data['day_open'].iloc[0]
         
-        # 计算仓位大小
-        position_size = floor(capital / day_open_price)
+        # 计算仓位大小（应用杠杆）
+        leveraged_capital = capital * leverage  # 应用杠杆倍数
+        position_size = floor(leveraged_capital / day_open_price)
         
         # 如果资金不足，跳过当天
         if position_size <= 0:
@@ -643,7 +645,8 @@ def run_backtest(config):
             
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
-            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f} | {trade_info}")
+            leverage_info = f" [杠杆{leverage}x]" if leverage != 1 else ""
+            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f}{leverage_info} | {trade_info}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -790,7 +793,8 @@ def run_backtest(config):
     
     # 打印简化的性能指标
     print(f"\n策略性能指标:")
-    strategy_name = f"{ticker} Curr.Band + VWAP"
+    leverage_text = f" (杠杆{leverage}x)" if leverage != 1 else ""
+    strategy_name = f"{ticker} Curr.Band + VWAP{leverage_text}"
     print(f"策略: {strategy_name}")
     
     # 创建表格格式对比策略与买入持有的指标
@@ -857,6 +861,13 @@ def run_backtest(config):
     print(f"\n" + "="*50)
     print(f"策略回测总结 - {strategy_name}")
     print(f"="*50)
+    
+    # 打印杠杆信息
+    if leverage != 1:
+        print(f"💰 资金杠杆倍数: {leverage}x")
+        print(f"💵 初始资金: ${initial_capital:,.0f}")
+        print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
+        print(f"-"*50)
     
     # 核心表现指标
     print(f"📈 总回报率: {metrics['total_return']*100:.1f}%")
@@ -1146,16 +1157,16 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'tqqq_longport.csv',
-        'ticker': 'TQQQ',
-        'initial_capital': 5000,
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_longport.csv',
+        'ticker': 'QQQ',
+        'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 6, 1),
+        'start_date': date(2025, 1, 1),
         'end_date': date(2025, 6, 30),
         'check_interval_minutes': 15 ,
-        # 'transaction_fee_per_share': 0.008166,
-        'transaction_fee_per_share': 0.013166,
+        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.013166,
 
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 45),
@@ -1166,7 +1177,8 @@ if __name__ == "__main__":
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
-        'K2': 1   # 下边界sigma乘数
+        'K2': 1,  # 下边界sigma乘数
+        'leverage': 1  # 资金杠杆倍数，默认为1
     }
     
     # 运行回测
