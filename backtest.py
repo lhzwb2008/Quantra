@@ -1158,11 +1158,12 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',
+        # 'data_path': 'qqq_longport.csv',
+        'data_path': 'qqq_cfd_data.csv',
         'ticker': 'QQQ',
         'initial_capital': 13000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
+        'start_date': date(2025, 6, 11),
         'end_date': date(2025, 6, 30),
         'check_interval_minutes': 15 ,
         'transaction_fee_per_share': 0.008166,

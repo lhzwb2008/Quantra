@@ -176,6 +176,12 @@ class IBKRTest:
     def get_market_data(self, contract):
         """获取合约的市场数据"""
         try:
+            # 获取实时价格数据
+            print(f"\n📊 获取延迟价格数据...")
+            
+            # 设置为延迟数据模式
+            self.ib.reqMarketDataType(3)  # 3 = 延迟数据
+            
             # 请求市场数据
             self.ib.reqMktData(contract, '', False, False)
             
@@ -230,19 +236,171 @@ class IBKRTest:
             self.ib.disconnect()
             print("\n✅ 已断开连接")
             
+    def get_qqq_cfd_price(self):
+        """专门获取QQQ CFD的当前价格"""
+        print("\n=== 获取QQQ CFD当前价格 ===")
+        
+        try:
+            # 直接创建QQQ CFD合约
+            print("🔍 创建QQQ CFD合约...")
+            cfd_contract = CFD('QQQ', 'SMART', 'USD')
+            
+            # 完善合约信息
+            qualified = self.ib.qualifyContracts(cfd_contract)
+            
+            if not qualified:
+                print("❌ 无法创建QQQ CFD合约")
+                return None
+                
+            contract = qualified[0]
+            print(f"✅ QQQ CFD合约创建成功:")
+            print(f"   合约ID: {contract.conId}")
+            print(f"   本地符号: {contract.localSymbol}")
+            print(f"   交易类别: {contract.tradingClass}")
+            print(f"   交易所: {contract.exchange}")
+            print(f"   货币: {contract.currency}")
+            
+            # 获取实时价格数据
+            print(f"\n📊 获取实时价格数据...")
+            
+            # 请求市场数据
+            self.ib.reqMktData(contract, '', False, False)
+            
+            # 等待数据更新
+            print("⏳ 等待价格数据...")
+            time.sleep(3)
+            
+            # 获取ticker数据
+            ticker = self.ib.ticker(contract)
+            
+            print(f"\n💰 QQQ CFD 价格信息:")
+            if ticker.last and ticker.last > 0:
+                print(f"   最新价格: ${ticker.last:.2f}")
+            else:
+                print(f"   最新价格: N/A")
+                
+            if ticker.bid and ticker.bid > 0:
+                print(f"   买一价格: ${ticker.bid:.2f}")
+            else:
+                print(f"   买一价格: N/A")
+                
+            if ticker.ask and ticker.ask > 0:
+                print(f"   卖一价格: ${ticker.ask:.2f}")
+            else:
+                print(f"   卖一价格: N/A")
+                
+            if ticker.bidSize:
+                print(f"   买一数量: {ticker.bidSize}")
+            if ticker.askSize:
+                print(f"   卖一数量: {ticker.askSize}")
+                
+            if ticker.volume and ticker.volume > 0:
+                print(f"   成交量: {ticker.volume:,.0f}")
+            else:
+                print(f"   成交量: N/A")
+                
+            if ticker.time:
+                print(f"   更新时间: {ticker.time}")
+                
+            # 计算买卖价差
+            if ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                spread = ticker.ask - ticker.bid
+                spread_pct = (spread / ticker.ask) * 100
+                print(f"   买卖价差: ${spread:.2f} ({spread_pct:.3f}%)")
+            
+            # 取消市场数据订阅
+            self.ib.cancelMktData(contract)
+            
+            return ticker
+            
+        except Exception as e:
+            print(f"❌ 获取QQQ CFD价格失败: {e}")
+            return None
+            
+    def get_qqq_stock_price(self):
+        """获取QQQ股票价格作为对比"""
+        print("\n=== 获取QQQ股票当前价格（对比） ===")
+        
+        try:
+            # 创建QQQ股票合约
+            print("🔍 创建QQQ股票合约...")
+            stock_contract = Stock('QQQ', 'SMART', 'USD')
+            
+            # 完善合约信息
+            qualified = self.ib.qualifyContracts(stock_contract)
+            
+            if not qualified:
+                print("❌ 无法创建QQQ股票合约")
+                return None
+                
+            contract = qualified[0]
+            print(f"✅ QQQ股票合约创建成功:")
+            print(f"   合约ID: {contract.conId}")
+            print(f"   交易所: {contract.exchange}")
+            print(f"   货币: {contract.currency}")
+            
+            # 获取实时价格数据
+            print(f"\n📊 获取股票延迟价格数据...")
+            
+            # 设置为延迟数据模式
+            self.ib.reqMarketDataType(3)  # 3 = 延迟数据
+            
+            # 请求市场数据
+            self.ib.reqMktData(contract, '', False, False)
+            
+            # 等待数据更新
+            print("⏳ 等待价格数据...")
+            time.sleep(3)
+            
+            # 获取ticker数据
+            ticker = self.ib.ticker(contract)
+            
+            print(f"\n💰 QQQ股票 价格信息:")
+            if ticker.last and ticker.last > 0:
+                print(f"   最新价格: ${ticker.last:.2f}")
+            else:
+                print(f"   最新价格: N/A")
+                
+            if ticker.bid and ticker.bid > 0:
+                print(f"   买一价格: ${ticker.bid:.2f}")
+            else:
+                print(f"   买一价格: N/A")
+                
+            if ticker.ask and ticker.ask > 0:
+                print(f"   卖一价格: ${ticker.ask:.2f}")
+            else:
+                print(f"   卖一价格: N/A")
+                
+            if ticker.volume and ticker.volume > 0:
+                print(f"   成交量: {ticker.volume:,.0f}")
+            else:
+                print(f"   成交量: N/A")
+                
+            if ticker.time:
+                print(f"   更新时间: {ticker.time}")
+            
+            # 取消市场数据订阅
+            self.ib.cancelMktData(contract)
+            
+            return ticker
+            
+        except Exception as e:
+            print(f"❌ 获取QQQ股票价格失败: {e}")
+            return None
+            
 
 def main():
     """主测试函数"""
     print("=== IBKR API 测试程序 ===")
     print("确保IB Gateway已启动并配置正确")
-    print("默认连接到: 127.0.0.1:4001 (IB Gateway实盘)")
+    print("默认连接到: 127.0.0.1:4002 (IB Gateway模拟)")
     
     # 创建测试实例
     tester = IBKRTest()
     
     try:
-        # 1. 连接测试
-        if not tester.connect():
+        # 1. 连接测试 - 使用Paper Trading端口4002
+        if not tester.connect(port=4002):
             print("\n请检查:")
             print("1. IB Gateway是否已启动")
             print("2. API连接是否已在IB Gateway中启用")
@@ -255,10 +413,16 @@ def main():
         # 3. 获取账户信息
         tester.get_account_info()
         
-        # 4. 搜索QQQ CFD
+        # 4. 专门获取QQQ CFD当前价格
+        tester.get_qqq_cfd_price()
+        
+        # 4.5. 获取QQQ股票价格作为对比
+        tester.get_qqq_stock_price()
+        
+        # 5. 搜索QQQ CFD（更详细的搜索）
         tester.search_qqq_cfd()
         
-        # 5. 测试下单功能
+        # 6. 测试下单功能
         tester.test_order_capabilities()
         
     except KeyboardInterrupt:
