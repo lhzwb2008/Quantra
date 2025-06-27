@@ -857,6 +857,31 @@ def run_backtest(config):
     
     print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
     
+    # 打印最大单笔收益和亏损统计
+    print(f"\n单笔交易统计:")
+    print(f"最大单笔收益: ${metrics.get('max_single_gain', 0):.2f}")
+    print(f"最大单笔亏损: ${metrics.get('max_single_loss', 0):.2f}")
+    
+    # 打印前10笔最大收益
+    if metrics.get('top_10_gains'):
+        print(f"\n前10笔最大收益:")
+        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
+        print("-" * 85)
+        for i, trade in enumerate(metrics['top_10_gains'], 1):
+            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
+            side = '多' if trade['side'] == 'Long' else '空'
+            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
+    
+    # 打印前10笔最大亏损
+    if metrics.get('top_10_losses'):
+        print(f"\n前10笔最大亏损:")
+        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
+        print("-" * 85)
+        for i, trade in enumerate(metrics['top_10_losses'], 1):
+            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
+            side = '多' if trade['side'] == 'Long' else '空'
+            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
+    
     # 打印策略总结
     print(f"\n" + "="*50)
     print(f"策略回测总结 - {strategy_name}")
@@ -979,6 +1004,19 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
         daily_pnl = trades_df.groupby('Date')['pnl'].sum()
         metrics['max_daily_loss'] = daily_pnl.min() if len(daily_pnl) > 0 and daily_pnl.min() < 0 else 0
         metrics['max_daily_gain'] = daily_pnl.max() if len(daily_pnl) > 0 else 0
+        
+        # 计算最大单笔收益和最大单笔亏损
+        # 按盈亏排序，获取前10笔最大收益
+        top_gains = trades_df.nlargest(10, 'pnl')[['Date', 'side', 'entry_price', 'exit_price', 'pnl', 'exit_reason']]
+        metrics['top_10_gains'] = top_gains.to_dict('records')
+        
+        # 获取前10笔最大亏损
+        top_losses = trades_df.nsmallest(10, 'pnl')[['Date', 'side', 'entry_price', 'exit_price', 'pnl', 'exit_reason']]
+        metrics['top_10_losses'] = top_losses.to_dict('records')
+        
+        # 最大单笔收益和亏损
+        metrics['max_single_gain'] = trades_df['pnl'].max()
+        metrics['max_single_loss'] = trades_df['pnl'].min()
     else:
         metrics['hit_ratio'] = 0
         metrics['profit_loss_ratio'] = 0
@@ -987,6 +1025,10 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
         metrics['max_daily_trades'] = 0
         metrics['max_daily_loss'] = 0
         metrics['max_daily_gain'] = 0
+        metrics['top_10_gains'] = []
+        metrics['top_10_losses'] = []
+        metrics['max_single_gain'] = 0
+        metrics['max_single_loss'] = 0
     
     # 6. 最大回撤 (MDD - Maximum Drawdown)
     # 计算每日资金的累计最大值
@@ -1162,8 +1204,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 13000,
         'lookback_days':1,
-        'start_date': date(2025, 6, 11),
-        'end_date': date(2025, 6, 30),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 1, 1),
         'check_interval_minutes': 15 ,
         'transaction_fee_per_share': 0.008166,
         # 'transaction_fee_per_share': 0.013166,
@@ -1173,12 +1215,12 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 1.8  # 资金杠杆倍数，默认为1
+        'leverage': 5  # 资金杠杆倍数，默认为1
     }
     
     # 运行回测
