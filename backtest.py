@@ -1158,8 +1158,7 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
-        'data_path': 'qqq_cfd_data.csv',
+        'data_path': 'qqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 13000,
         'lookback_days':1,
@@ -1174,7 +1173,7 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数

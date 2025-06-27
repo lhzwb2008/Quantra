@@ -16,7 +16,7 @@ TZ_ET = ZoneInfo('US/Eastern')
 
 # ———— 用户参数：美东起止日期（inclusive） ————
 # 注意：history_candlesticks_by_date 接口接受 date 类型
-start_date = date(2024, 1, 1)
+start_date = date(2025, 6, 1)
 end_date   = date(2025, 6, 30)
 
 all_candles = []
@@ -25,7 +25,7 @@ all_candles = []
 current = start_date
 while current <= end_date:
     resp = ctx.history_candlesticks_by_date(
-        "TQQQ.US",
+        "QQQ.US",
         Period.Min_1,
         AdjustType.NoAdjust,
         current,
@@ -52,5 +52,5 @@ for c in all_candles:
     })
 
 df = pd.DataFrame(rows)
-df.to_csv('tqqq_longport.csv', index=False)
-print(f"✔️ 已保存 tqqq_longport.csv，共 {len(df)} 条记录（所有时间均为美东本地时间）。")
+df.to_csv('qqq_longport.csv', index=False)
+print(f"✔️ 已保存 qqq_longport.csv，共 {len(df)} 条记录（所有时间均为美东本地时间）。")
