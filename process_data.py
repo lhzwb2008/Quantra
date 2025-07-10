@@ -1,3 +1,80 @@
+"""
+=============================================================================
+股票数据处理工具 - 使用说明
+=============================================================================
+
+本脚本用于处理原始股票数据，将其转换为适合回测系统使用的格式。
+
+🎯 主要功能：
+-----------
+1. 过滤市场交易时间数据（9:30 AM - 4:00 PM）
+2. 计算每日开盘价和收盘价
+3. 添加MACD技术指标
+4. 生成适合回测系统使用的CSV文件
+
+📊 数据转换：
+-----------
+输入格式（原始CSV）：
+    DateTime,Open,High,Low,Close,Volume
+    2000-01-03 09:31:00,192.375,192.375,191.5,192.0,376100
+
+输出格式（处理后CSV）：
+    DateTime,Open,High,Low,Close,Volume,Year,DayOpen,DayClose,Date,Time,EMA_fast,EMA_slow,MACD,MACD_signal,MACD_histogram
+
+🚀 使用方法：
+-----------
+方法1：命令行使用
+    python process_data.py qqq.csv
+    # 输出：qqq_market_hours_with_indicators.csv
+
+方法2：指定输出文件
+    python process_data.py qqq.csv --output my_output.csv
+
+方法3：自定义MACD参数
+    python process_data.py qqq.csv --fast 12 --slow 26 --signal 9
+
+📋 命令行参数：
+-------------
+- input_file: 输入CSV文件路径（必需）
+- --output, -o: 输出CSV文件路径（可选，默认自动生成）
+- --fast: MACD快速EMA周期（默认：12）
+- --slow: MACD慢速EMA周期（默认：26）
+- --signal: MACD信号线EMA周期（默认：9）
+
+💡 使用示例：
+-----------
+# 基本用法 - 处理QQQ数据
+python process_data.py qqq.csv
+
+# 处理SPY数据并指定输出文件
+python process_data.py spy.csv --output spy_processed.csv
+
+# 使用自定义MACD参数
+python process_data.py qqq.csv --fast 10 --slow 20 --signal 5
+
+📁 文件说明：
+-----------
+- qqq.csv: 原始QQQ数据文件（包含盘前盘后数据）
+- qqq_market_hours_with_indicators.csv: 处理后的文件（仅市场时间+指标）
+
+⚠️ 注意事项：
+-----------
+1. 输入文件必须包含DateTime, Open, High, Low, Close, Volume列
+2. DateTime格式应为 'YYYY-MM-DD HH:MM:SS'
+3. 处理后的文件会过滤掉盘前盘后数据，只保留9:30-16:00的数据
+4. 如果某些交易日缺少9:30或16:00的数据点，会在处理过程中显示警告
+
+🔧 处理流程：
+-----------
+1. 读取原始CSV文件
+2. 过滤市场交易时间（9:30 AM - 4:00 PM）
+3. 计算每日开盘价（9:30 AM）和收盘价（4:00 PM）
+4. 按日期分组计算MACD指标
+5. 保存处理后的数据到新文件
+
+=============================================================================
+"""
+
 import pandas as pd
 import numpy as np
 import os
