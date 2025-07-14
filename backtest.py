@@ -1205,8 +1205,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 13000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 7, 10),
+        'start_date': date(2025, 6, 1),
+        'end_date': date(2025, 7, 15),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
         'transaction_fee_per_share': 0.008166,
@@ -1217,7 +1217,7 @@ if __name__ == "__main__":
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
         'print_daily_trades': False,
-        'print_trade_details': False,
+        'print_trade_details': True,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
