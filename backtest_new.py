@@ -1231,7 +1231,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 6, 1),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 7, 15),
         'check_interval_minutes': 15 ,
         'transaction_fee_per_share': 0.01,
@@ -1242,12 +1242,12 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 2,  # 资金杠杆倍数，默认为1
+        'leverage': 3,  # 资金杠杆倍数，默认为1
         'volume_lookback': 8,  # 历史成交量回看期，默认20分钟
         'volume_recent': 1,  # 近期成交量回看期，默认5分钟
         'volume_threshold': 1.2,  # 成交量阈值，默认1.2倍
