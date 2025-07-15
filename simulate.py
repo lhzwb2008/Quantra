@@ -589,87 +589,87 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         current_hour, current_minute = now.hour, now.minute
         current_second = now.second
         
-        # 生成今天的检查时间点列表
-        check_times = []
+        # 生成今天所有的检查时间点（这些是K线时间，不是触发时间）
+        k_line_check_times = []
         h, m = trading_start_time
         while h < trading_end_time[0] or (h == trading_end_time[0] and m <= trading_end_time[1]):
-            check_times.append((h, m))
+            k_line_check_times.append((h, m))
             m += check_interval_minutes
             if m >= 60:
                 h += 1
                 m = m % 60
         
         # 始终添加结束时间
-        if (trading_end_time[0], trading_end_time[1]) not in check_times:
-            check_times.append((trading_end_time[0], trading_end_time[1]))
+        if (trading_end_time[0], trading_end_time[1]) not in k_line_check_times:
+            k_line_check_times.append((trading_end_time[0], trading_end_time[1]))
         
-        # 判断当前是否刚好在检查时间点
-        is_check_time = (current_hour, current_minute) in check_times
+        # 生成实际的触发时间点（K线时间的下一分钟）
+        trigger_times = []
+        for k_h, k_m in k_line_check_times:
+            # 计算下一分钟作为触发时间
+            trigger_m = k_m + 1
+            trigger_h = k_h
+            if trigger_m >= 60:
+                trigger_h += 1
+                trigger_m = 0
+            # 跳过超出交易时间的触发点
+            if trigger_h < 16:  # 假设市场在16:00关闭
+                trigger_times.append((trigger_h, trigger_m))
         
-        # 如果当前时间是检查时间点，但还在这一分钟内（秒数小于59），则等待这一分钟走完
-        if is_check_time and current_second < 59:
-            wait_seconds = 60 - current_second  # 等待到下一分钟的第0秒
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待当前K线走完，{wait_seconds}秒后继续...")
-            time_module.sleep(wait_seconds)
+        # 判断当前是否是触发时间点
+        is_trigger_time = (current_hour, current_minute) in trigger_times
+        
+        if is_trigger_time:
+            # 找到对应的K线时间
+            trigger_index = trigger_times.index((current_hour, current_minute))
+            k_h, k_m = k_line_check_times[trigger_index]
+            check_time_str = f"{k_h:02d}:{k_m:02d}"
             
-            # 重新获取时间，确保已经进入下一分钟
-            now = get_us_eastern_time()
-            current_hour, current_minute = now.hour, now.minute
-            
-            # 如果等待后时间已经超过了原定的检查时间，则使用原定的检查时间
-            # 例如：9:40:50等待10秒后变成9:41:00，我们仍然要检查9:40的数据
-            if is_check_time:
-                # 找到原来的检查时间
-                for check_h, check_m in check_times:
-                    if check_h == current_hour and check_m == current_minute - 1:
-                        # 使用上一分钟的时间作为检查时间
-                        check_time_str = f"{check_h:02d}:{check_m:02d}"
-                        break
-                    elif check_h == current_hour - 1 and check_m == 59 and current_minute == 0:
-                        # 跨小时的情况
-                        check_time_str = f"{check_h:02d}:{check_m:02d}"
-                        break
-                else:
-                    # 默认使用当前时间的前一分钟
-                    if current_minute > 0:
-                        check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
-                    else:
-                        check_time_str = f"{current_hour-1:02d}:59"
-                
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开始处理 {check_time_str} 的K线数据")
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发检查，使用 {check_time_str} 的K线数据")
         else:
-            # 如果不是检查时间点，计算下一个检查时间
-            if not is_check_time:
-                # 找到下一个检查时间
-                next_check_time = None
-                for check_h, check_m in check_times:
-                    if check_h > current_hour or (check_h == current_hour and check_m > current_minute):
-                        next_check_time = datetime.combine(current_date, time(check_h, check_m), tzinfo=now.tzinfo)
-                        break
-                
-                if next_check_time is None:
-                    # 今天没有更多检查时间，等到明天
-                    tomorrow = current_date + timedelta(days=1)
-                    next_check_time = datetime.combine(tomorrow, time(trading_start_time[0], trading_start_time[1]), tzinfo=now.tzinfo)
-                
-                wait_seconds = (next_check_time - now).total_seconds()
-                if wait_seconds > 0:
-                    wait_seconds = min(wait_seconds, 300)  # 最多等待5分钟
-                    if DEBUG_MODE:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间")
-                    time_module.sleep(wait_seconds)
-                    continue
-            else:
-                # 是检查时间且已经过了59秒，使用当前时间的前一分钟
-                if current_minute > 0:
-                    check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
+            # 如果不是触发时间点，计算下一个触发时间
+            next_trigger_time = None
+            for trigger_h, trigger_m in trigger_times:
+                if trigger_h > current_hour or (trigger_h == current_hour and trigger_m > current_minute):
+                    next_trigger_time = datetime.combine(current_date, time(trigger_h, trigger_m), tzinfo=now.tzinfo)
+                    break
+            
+            if next_trigger_time is None:
+                # 今天没有更多触发时间，等到明天
+                tomorrow = current_date + timedelta(days=1)
+                if trigger_times:
+                    next_trigger_time = datetime.combine(tomorrow, time(trigger_times[0][0], trigger_times[0][1]), tzinfo=now.tzinfo)
                 else:
-                    check_time_str = f"{current_hour-1:02d}:59"
+                    # 如果没有触发时间，使用默认的开始时间
+                    next_trigger_time = datetime.combine(tomorrow, time(trading_start_time[0], trading_start_time[1] + 1), tzinfo=now.tzinfo)
+            
+            wait_seconds = (next_trigger_time - now).total_seconds()
+            if wait_seconds > 0:
+                wait_seconds = min(wait_seconds, 300)  # 最多等待5分钟
+                if DEBUG_MODE:
+                    # 找到下一个K线检查时间用于显示
+                    next_trigger_idx = None
+                    for i, (t_h, t_m) in enumerate(trigger_times):
+                        if t_h > current_hour or (t_h == current_hour and t_m > current_minute):
+                            next_trigger_idx = i
+                            break
+                    if next_trigger_idx is not None:
+                        next_k_h, next_k_m = k_line_check_times[next_trigger_idx]
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间 {next_k_h:02d}:{next_k_m:02d}")
+                    else:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间")
+                time_module.sleep(wait_seconds)
+                continue
         
         # 更新当前时间信息
         now = get_us_eastern_time()
         current_date = now.date()
         
+        # 只在触发时间点进行交易检查
+        if not is_trigger_time:
+            # 如果不是触发时间，跳过本次循环
+            continue
+            
         # 检查是否是交易时间结束点，如果是且有持仓，则强制平仓
         is_trading_end = (current_hour, current_minute) == (trading_end_time[0], trading_end_time[1])
         if is_trading_end and position_quantity != 0:
