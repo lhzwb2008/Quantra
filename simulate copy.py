@@ -585,93 +585,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         if position_quantity == 0:
             entry_price = None
         
-        # 检查是否到达检查时间点
-        current_hour, current_minute = now.hour, now.minute
-        current_second = now.second
-        
-        # 生成今天的检查时间点列表
-        check_times = []
-        h, m = trading_start_time
-        while h < trading_end_time[0] or (h == trading_end_time[0] and m <= trading_end_time[1]):
-            check_times.append((h, m))
-            m += check_interval_minutes
-            if m >= 60:
-                h += 1
-                m = m % 60
-        
-        # 始终添加结束时间
-        if (trading_end_time[0], trading_end_time[1]) not in check_times:
-            check_times.append((trading_end_time[0], trading_end_time[1]))
-        
-        # 判断当前是否刚好在检查时间点
-        is_check_time = (current_hour, current_minute) in check_times
-        
-        # 如果当前时间是检查时间点，但还在这一分钟内（秒数小于59），则等待这一分钟走完
-        if is_check_time and current_second < 59:
-            wait_seconds = 60 - current_second  # 等待到下一分钟的第0秒
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待当前K线走完，{wait_seconds}秒后继续...")
-            time_module.sleep(wait_seconds)
-            
-            # 重新获取时间，确保已经进入下一分钟
-            now = get_us_eastern_time()
-            current_hour, current_minute = now.hour, now.minute
-            
-            # 如果等待后时间已经超过了原定的检查时间，则使用原定的检查时间
-            # 例如：9:40:50等待10秒后变成9:41:00，我们仍然要检查9:40的数据
-            if is_check_time:
-                # 找到原来的检查时间
-                for check_h, check_m in check_times:
-                    if check_h == current_hour and check_m == current_minute - 1:
-                        # 使用上一分钟的时间作为检查时间
-                        check_time_str = f"{check_h:02d}:{check_m:02d}"
-                        break
-                    elif check_h == current_hour - 1 and check_m == 59 and current_minute == 0:
-                        # 跨小时的情况
-                        check_time_str = f"{check_h:02d}:{check_m:02d}"
-                        break
-                else:
-                    # 默认使用当前时间的前一分钟
-                    if current_minute > 0:
-                        check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
-                    else:
-                        check_time_str = f"{current_hour-1:02d}:59"
-                
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开始处理 {check_time_str} 的K线数据")
-        else:
-            # 如果不是检查时间点，计算下一个检查时间
-            if not is_check_time:
-                # 找到下一个检查时间
-                next_check_time = None
-                for check_h, check_m in check_times:
-                    if check_h > current_hour or (check_h == current_hour and check_m > current_minute):
-                        next_check_time = datetime.combine(current_date, time(check_h, check_m), tzinfo=now.tzinfo)
-                        break
-                
-                if next_check_time is None:
-                    # 今天没有更多检查时间，等到明天
-                    tomorrow = current_date + timedelta(days=1)
-                    next_check_time = datetime.combine(tomorrow, time(trading_start_time[0], trading_start_time[1]), tzinfo=now.tzinfo)
-                
-                wait_seconds = (next_check_time - now).total_seconds()
-                if wait_seconds > 0:
-                    wait_seconds = min(wait_seconds, 300)  # 最多等待5分钟
-                    if DEBUG_MODE:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间")
-                    time_module.sleep(wait_seconds)
-                    continue
-            else:
-                # 是检查时间且已经过了59秒，使用当前时间的前一分钟
-                if current_minute > 0:
-                    check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
-                else:
-                    check_time_str = f"{current_hour-1:02d}:59"
-        
-        # 更新当前时间信息
-        now = get_us_eastern_time()
-        current_date = now.date()
-        
         # 检查是否是交易时间结束点，如果是且有持仓，则强制平仓
-        is_trading_end = (current_hour, current_minute) == (trading_end_time[0], trading_end_time[1])
+        current_hour, current_minute = now.hour, now.minute
+        is_trading_end = current_hour == trading_end_time[0] and current_minute == trading_end_time[1]
         if is_trading_end and position_quantity != 0:
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前时间为交易结束时间 {trading_end_time[0]}:{trading_end_time[1]}，执行平仓")
             
@@ -962,46 +878,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         df = calculate_noise_area(df, lookback_days, K1, K2)
         
         if position_quantity != 0:
-            # 使用检查时间点的数据进行止损检查
-            if 'check_time_str' not in locals():
-                # 如果没有设置check_time_str，使用当前时间的前一分钟
-                if current_minute > 0:
-                    check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
-                else:
-                    check_time_str = f"{current_hour-1:02d}:59"
-            
-            # 获取检查时间点的数据
-            latest_date = df["Date"].max()
-            check_data = df[(df["Date"] == latest_date) & (df["Time"] == check_time_str)]
-            
-            if not check_data.empty:
-                check_row = check_data.iloc[0]
-                check_price = float(check_row["Close"])
-                check_upper = check_row["UpperBound"]
-                check_lower = check_row["LowerBound"]
-                check_vwap = check_row["VWAP"]
-                
-                # 根据持仓方向检查退出条件
-                exit_signal = False
-                if position_quantity > 0:  # 多头持仓
-                    # 使用检查时间点的上边界和VWAP作为止损
-                    new_stop = max(check_upper, check_vwap)
-                    exit_signal = check_price < new_stop
-                    current_stop = new_stop
-                elif position_quantity < 0:  # 空头持仓
-                    # 使用检查时间点的下边界和VWAP作为止损
-                    new_stop = min(check_lower, check_vwap)
-                    exit_signal = check_price > new_stop
-                    current_stop = new_stop
-                
-                if DEBUG_MODE:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查 {check_time_str}: 数量={position_quantity}, 价格={check_price:.2f}, 止损={current_stop:.2f}, 退出信号={exit_signal}")
-            else:
-                # 如果没有检查时间点的数据，使用原有逻辑
-                exit_signal, new_stop = check_exit_conditions(df, position_quantity, current_stop)
-                current_stop = new_stop
-                if DEBUG_MODE:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
+            exit_signal, new_stop = check_exit_conditions(df, position_quantity, current_stop)
+            current_stop = new_stop
+            if DEBUG_MODE:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 持仓检查: 数量={position_quantity}, 退出信号={exit_signal}, 当前止损={current_stop}")
             if exit_signal:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发退出信号!")
                 
@@ -1080,84 +960,80 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今日已开仓 {positions_opened_today} 次，达到上限")
                 continue
             
-            # 使用检查时间点的完整K线数据
-            # check_time_str 在前面已经设置为要检查的时间（如 "09:40"）
-            if 'check_time_str' not in locals():
-                # 如果没有设置check_time_str，使用当前时间的前一分钟
-                if current_minute > 0:
-                    check_time_str = f"{current_hour:02d}:{current_minute-1:02d}"
-                else:
-                    check_time_str = f"{current_hour-1:02d}:59"
-            
-            # 获取检查时间点的数据
-            latest_date = df["Date"].max()
-            check_data = df[(df["Date"] == latest_date) & (df["Time"] == check_time_str)]
-            
-            if check_data.empty:
-                if DEBUG_MODE:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 警告: 没有找到 {check_time_str} 的数据，跳过本次检查")
-                continue
-            
-            # 使用检查时间点的完整K线数据
-            latest_row = check_data.iloc[0].copy()
-            latest_price = float(latest_row["Close"])
-            long_price_above_upper = latest_price > latest_row["UpperBound"]
-            long_price_above_vwap = latest_price > latest_row["VWAP"]
-            
+            # 获取价格
             if DEBUG_MODE:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 检查 {check_time_str} 的数据:")
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 价格={latest_price:.2f}, 上界={latest_row['UpperBound']:.2f}, VWAP={latest_row['VWAP']:.2f}, 下界={latest_row['LowerBound']:.2f}")
-            
-            signal = 0
-            price = latest_price
-            stop = None
-            
-            if long_price_above_upper and long_price_above_vwap:
-                if DEBUG_MODE:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足多头入场条件!")
-                signal = 1
-                stop = max(latest_row["UpperBound"], latest_row["VWAP"])
-            else:
-                short_price_below_lower = latest_price < latest_row["LowerBound"]
-                short_price_below_vwap = latest_price < latest_row["VWAP"]
-                if short_price_below_lower and short_price_below_vwap:
-                    if DEBUG_MODE:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足空头入场条件!")
-                    signal = -1
-                    stop = min(latest_row["LowerBound"], latest_row["VWAP"])
+                # 调试模式：直接使用当前时间点的历史价格
+                current_time = now.strftime('%H:%M')
+                latest_date = df["Date"].max()
+                debug_data = df[(df["Date"] == latest_date) & (df["Time"] == current_time)]
+                
+                if not debug_data.empty:
+                    latest_price = float(debug_data["Close"].iloc[0])
                 else:
+                    latest_price = float(df.iloc[-1]["Close"])
+            else:
+                # 正常模式: 使用API获取实时价格
+                quote = get_quote(symbol)
+                latest_price = float(quote.get("last_done", df.iloc[-1]["Close"]))
+            
+            latest_date = df["Date"].max()
+            latest_data = df[df["Date"] == latest_date].copy()
+            if not latest_data.empty:
+                latest_row = latest_data.iloc[-1].copy()
+                latest_row["Close"] = latest_price
+                long_price_above_upper = latest_price > latest_row["UpperBound"]
+                long_price_above_vwap = latest_price > latest_row["VWAP"]
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 价格={latest_price:.2f}, 上界={latest_row['UpperBound']:.2f}, VWAP={latest_row['VWAP']:.2f}, 下界={latest_row['LowerBound']:.2f}")
+                signal = 0
+                price = latest_price
+                stop = None
+                if long_price_above_upper and long_price_above_vwap:
                     if DEBUG_MODE:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
-            if signal != 0:
-                # 保留交易信号日志
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
-                available_capital = get_account_balance()
-                # 应用杠杆比例
-                adjusted_capital = available_capital * LEVERAGE
-                position_size = floor(adjusted_capital / latest_price)
-                if position_size <= 0:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Warning: Insufficient capital for position")
-                    sys.exit(1)
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 可用资金: ${available_capital:.2f}, 杠杆比例: {LEVERAGE}倍, 调整后资金: ${adjusted_capital:.2f}")
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓数量: {position_size} 股")
-                side = "Buy" if signal > 0 else "Sell"
-                order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 订单已提交，ID: {order_id}")
-                
-                # 删除订单状态检查代码，直接更新持仓状态
-                position_quantity = position_size if signal > 0 else -position_size
-                entry_price = latest_price
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
-                
-                # 记录开仓交易
-                DAILY_TRADES.append({
-                    "time": now.strftime('%Y-%m-%d %H:%M:%S'),
-                    "action": "开仓",
-                    "side": side,
-                    "quantity": position_size,
-                    "price": entry_price,
-                    "pnl": None  # 开仓时还没有盈亏
-                })
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足多头入场条件!")
+                    signal = 1
+                    stop = max(latest_row["UpperBound"], latest_row["VWAP"])
+                else:
+                    short_price_below_lower = latest_price < latest_row["LowerBound"]
+                    short_price_below_vwap = latest_price < latest_row["VWAP"]
+                    if short_price_below_lower and short_price_below_vwap:
+                        if DEBUG_MODE:
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 满足空头入场条件!")
+                        signal = -1
+                        stop = min(latest_row["LowerBound"], latest_row["VWAP"])
+                    else:
+                        if DEBUG_MODE:
+                            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
+                if signal != 0:
+                    # 保留交易信号日志
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
+                    available_capital = get_account_balance()
+                    # 应用杠杆比例
+                    adjusted_capital = available_capital * LEVERAGE
+                    position_size = floor(adjusted_capital / latest_price)
+                    if position_size <= 0:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Warning: Insufficient capital for position")
+                        sys.exit(1)
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 可用资金: ${available_capital:.2f}, 杠杆比例: {LEVERAGE}倍, 调整后资金: ${adjusted_capital:.2f}")
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓数量: {position_size} 股")
+                    side = "Buy" if signal > 0 else "Sell"
+                    order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 订单已提交，ID: {order_id}")
+                    
+                    # 删除订单状态检查代码，直接更新持仓状态
+                    position_quantity = position_size if signal > 0 else -position_size
+                    entry_price = latest_price
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
+                    
+                    # 记录开仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "开仓",
+                        "side": side,
+                        "quantity": position_size,
+                        "price": entry_price,
+                        "pnl": None  # 开仓时还没有盈亏
+                    })
         
         # 调试模式且单次运行模式，完成一次循环后退出
         if DEBUG_MODE and DEBUG_ONCE:
