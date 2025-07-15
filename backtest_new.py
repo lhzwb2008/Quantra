@@ -1258,8 +1258,8 @@ if __name__ == "__main__":
         'start_date': date(2024, 1, 1),
         'end_date': date(2025, 7, 15),
         'check_interval_minutes': 15 ,
-        'transaction_fee_per_share': 0.01,
-        # 'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.01,
+        'transaction_fee_per_share': 0.008166,
         # 'transaction_fee_per_share': 0.013166,
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 45),
@@ -1271,11 +1271,11 @@ if __name__ == "__main__":
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 3,  # 资金杠杆倍数，默认为1
+        'leverage': 2,  # 资金杠杆倍数，默认为1
         'volume_lookback': 5,  # 历史成交量回看期，默认5分钟
         'volume_recent': 1,  # 近期成交量回看期，默认1分钟
         'volume_threshold': 1.2,  # 成交量阈值，默认1.2倍
-        'use_volume_confirmation': True # 成交量确认开关
+        'use_volume_confirmation': False # 成交量确认开关
     }
     
     # 运行回测
