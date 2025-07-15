@@ -76,16 +76,32 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         vwap = calculate_vwap(prices, volumes)
         
         # 计算近期成交量平均值（用于成交量确认）
-        if len(volumes) >= volume_recent:
-            avg_volume_recent = np.mean(volumes[-volume_recent:])
+        # 实盘中当前K线未完成，所以使用上一根K线的成交量数据
+        if len(volumes) >= volume_lookback + volume_recent + 1:  # +1 是为了排除当前未完成的K线
+            # 排除当前K线后的数据
+            completed_volumes = volumes[:-1]
+            # 近期：最近的 volume_recent 根已完成K线
+            avg_volume_recent = np.mean(completed_volumes[-volume_recent:])
+            # 历史：近期之前的 volume_lookback 根已完成K线（不重叠）
+            avg_volume_history = np.mean(completed_volumes[-(volume_lookback + volume_recent):-volume_recent])
         else:
-            avg_volume_recent = np.mean(volumes) if len(volumes) > 0 else volume
-        
-        # 计算历史成交量平均值（用于成交量确认）
-        if len(volumes) >= volume_lookback:
-            avg_volume_history = np.mean(volumes[-volume_lookback:])
-        else:
-            avg_volume_history = np.mean(volumes) if len(volumes) > 0 else volume
+            # 如果历史数据不足，使用简化的逻辑
+            if len(volumes) > 1:
+                completed_volumes = volumes[:-1]
+                # 如果数据足够分割
+                if len(completed_volumes) >= volume_recent + 1:
+                    avg_volume_recent = np.mean(completed_volumes[-volume_recent:])
+                    # 剩余的作为历史
+                    remaining = completed_volumes[:-volume_recent]
+                    avg_volume_history = np.mean(remaining) if len(remaining) > 0 else avg_volume_recent
+                else:
+                    # 数据太少，近期和历史使用相同值
+                    avg_volume_recent = np.mean(completed_volumes)
+                    avg_volume_history = avg_volume_recent
+            else:
+                # 只有一根K线时使用当前值
+                avg_volume_recent = volume
+                avg_volume_history = volume
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
@@ -103,7 +119,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     print(f"\n交易点位详情 [{date_str} {current_time}] - 多头入场:")
                     print(f"  价格: {price:.2f} > 上边界: {upper:.2f} 且 > VWAP: {vwap:.2f}")
                     if use_volume_confirmation:
-                        print(f"  成交量: {volume:,.0f} > 近期平均({avg_volume_recent:,.0f}) > 历史平均({avg_volume_history:,.0f}) × {volume_threshold} = {avg_volume_history * volume_threshold:,.0f}")
+                        print(f"  成交量确认 (使用已完成K线数据):")
+                        print(f"    - 近期平均({volume_recent}根): {avg_volume_recent:,.0f}")
+                        print(f"    - 历史平均({volume_lookback}根): {avg_volume_history:,.0f}")
+                        print(f"    - 阈值: {avg_volume_history * volume_threshold:,.0f} (历史平均 × {volume_threshold})")
+                        print(f"    - 满足条件: {avg_volume_recent:,.0f} > {avg_volume_history * volume_threshold:,.0f}")
                     else:
                         print(f"  成交量确认: 已关闭")
                     print(f"  边界计算详情:")
@@ -136,7 +156,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     print(f"\n交易点位详情 [{date_str} {current_time}] - 空头入场:")
                     print(f"  价格: {price:.2f} < 下边界: {lower:.2f} 且 < VWAP: {vwap:.2f}")
                     if use_volume_confirmation:
-                        print(f"  成交量: {volume:,.0f} > 近期平均({avg_volume_recent:,.0f}) > 历史平均({avg_volume_history:,.0f}) × {volume_threshold} = {avg_volume_history * volume_threshold:,.0f}")
+                        print(f"  成交量确认 (使用已完成K线数据):")
+                        print(f"    - 近期平均({volume_recent}根): {avg_volume_recent:,.0f}")
+                        print(f"    - 历史平均({volume_lookback}根): {avg_volume_history:,.0f}")
+                        print(f"    - 阈值: {avg_volume_history * volume_threshold:,.0f} (历史平均 × {volume_threshold})")
+                        print(f"    - 满足条件: {avg_volume_recent:,.0f} > {avg_volume_history * volume_threshold:,.0f}")
                     else:
                         print(f"  成交量确认: 已关闭")
                     print(f"  边界计算详情:")
@@ -1248,8 +1272,8 @@ if __name__ == "__main__":
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
         'leverage': 3,  # 资金杠杆倍数，默认为1
-        'volume_lookback': 8,  # 历史成交量回看期，默认20分钟
-        'volume_recent': 1,  # 近期成交量回看期，默认5分钟
+        'volume_lookback': 5,  # 历史成交量回看期，默认5分钟
+        'volume_recent': 1,  # 近期成交量回看期，默认1分钟
         'volume_threshold': 1.2,  # 成交量阈值，默认1.2倍
         'use_volume_confirmation': True # 成交量确认开关
     }
