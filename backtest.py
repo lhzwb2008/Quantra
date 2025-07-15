@@ -1212,7 +1212,7 @@ if __name__ == "__main__":
         # 'transaction_fee_per_share': 0.008166,
         # 'transaction_fee_per_share': 0.013166,
         'trading_start_time': (9, 40),
-        'trading_end_time': (15, 45),
+        'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
