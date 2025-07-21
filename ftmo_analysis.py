@@ -361,7 +361,7 @@ if __name__ == "__main__":
         # 'data_path': 'qqq_longport.csv',
         # 'data_path': 'spy_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 10000,
+        'initial_capital': 100000,
         'lookback_days': 1,
         'start_date': date(2020, 1, 1),
         'end_date': date(2025, 1, 1),
@@ -385,7 +385,7 @@ if __name__ == "__main__":
     NUM_SIMULATIONS = 50  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [4, 5]
+    LEVERAGE_RANGE = [2,3]
     
     print("="*60)
     print("🚀 FTMO挑战通过率分析")
