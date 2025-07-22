@@ -580,14 +580,14 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 10  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 30  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [4,5,6,7,8]
+    LEVERAGE_RANGE = [3,4,5]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
-    DAILY_STOP_LOSS_THRESHOLD = 0.035 # 日内止损阈值
+    DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值
     
     print("="*60)
     print("🚀 FTMO挑战通过率分析")

@@ -81,15 +81,21 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
         # 计算当前VWAP
         vwap = calculate_vwap(prices, volumes)
         
-        # 实时检查日内损益（每分钟检查一次，因为数据是分钟级别的）
-        # 重要：基于初始资金计算4%止损，而不是当日开始资金
+        # 实时检查日内损益（使用High/Low进行严格撞线判定）
+        # 重要：基于初始资金计算止损，而不是当日开始资金
         if initial_capital is not None and not daily_stop_triggered:
-            # 计算当前持仓的浮动盈亏
+            # 计算当前持仓的浮动盈亏（使用最不利价格）
             unrealized_pnl = 0
-            if position == 1:  # 多头
-                unrealized_pnl = (price - entry_price) * position_size
-            elif position == -1:  # 空头
-                unrealized_pnl = (entry_price - price) * position_size
+            worst_case_price = price  # 默认使用收盘价
+            
+            if position == 1:  # 多头持仓
+                # 对于多头，最不利的是最低价
+                worst_case_price = row['Low']
+                unrealized_pnl = (worst_case_price - entry_price) * position_size
+            elif position == -1:  # 空头持仓
+                # 对于空头，最不利的是最高价
+                worst_case_price = row['High']
+                unrealized_pnl = (entry_price - worst_case_price) * position_size
             # 如果position == 0，unrealized_pnl保持为0
             
             # 计算总损益（已实现 + 未实现）
@@ -116,10 +122,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     if position != 0:
                         print(f"  持仓价格: ${entry_price:.2f}")
                     print(f"  当前价格: ${price:.2f}")
+                    print(f"  最不利价格: ${worst_case_price:.2f}")
                 
-                # 如果有持仓，立即强制平仓
+                # 如果有持仓，使用最不利价格强制平仓
                 if position != 0:
-                    exit_price = price
+                    exit_price = worst_case_price  # 使用触发止损的最不利价格
                     if position == 1:  # 平仓多头
                         pnl = (exit_price - entry_price) * position_size
                     else:  # 平仓空头
@@ -135,7 +142,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         'entry_price': entry_price,
                         'exit_price': exit_price,
                         'pnl': net_pnl,
-                        'exit_reason': 'Daily Stop Loss',
+                        'exit_reason': 'Daily Stop Loss (High/Low)',
                         'position_size': position_size,
                         'transaction_fees': fee
                     })
@@ -143,7 +150,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         side_str = '多头' if position == 1 else '空头'
-                        print(f"\n[日内止损] [{date_str} {current_time}] - {side_str}强制平仓:")
+                        price_type = '最低价' if position == 1 else '最高价'
+                        print(f"\n[严格止损] [{date_str} {current_time}] - {side_str}强制平仓:")
+                        print(f"  触发价格: {price_type} {worst_case_price:.2f}")
                         print(f"  相对初始资金损失: {(total_current_pnl / initial_capital * 100):.2f}% 触发 {daily_stop_loss*100:.1f}% 止损")
                         print(f"  入场价: {entry_price:.2f}, 出场价: {exit_price:.2f}")
                         print(f"  盈亏: ${net_pnl:.2f}")
@@ -160,7 +169,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     # 没有持仓但触发止损（纯粹基于已实现损失）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
-                        print(f"\n[日内止损] [{date_str} {current_time}] - 基于已实现损失触发:")
+                        print(f"\n[严格止损] [{date_str} {current_time}] - 基于已实现损失触发:")
                         print(f"  相对初始资金损失: {(total_current_pnl / initial_capital * 100):.2f}% 触发 {daily_stop_loss*100:.1f}% 止损")
                         print(f"  已实现损失: ${daily_pnl:.2f}")
                         print(f"  停止当日所有交易")
