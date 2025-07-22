@@ -1,12 +1,197 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
-from backtest import run_backtest
+from backtest_ftmo import run_backtest_ftmo, run_backtest
 import warnings
 import random
 import sys
 import os
 warnings.filterwarnings('ignore')
+
+def run_backtest_with_daily_stop_loss_old(config, daily_stop_loss=0.045):
+    """
+    运行带有日内止损的回测
+    当日亏损达到4.5%时强制平仓并停止当日交易
+    
+    参数:
+        config: 配置字典
+        daily_stop_loss: 日内止损阈值（默认4.5%）
+    
+    返回:
+        与run_backtest相同的返回值
+    """
+    # 先运行正常的回测获取所有交易数据
+    daily_results, monthly_results, trades_df, metrics = run_backtest(config)
+    
+    if trades_df.empty:
+        return daily_results, monthly_results, trades_df, metrics
+    
+    # 确保trades_df的Date列是datetime类型
+    if not isinstance(trades_df['Date'].iloc[0], pd.Timestamp):
+        trades_df['Date'] = pd.to_datetime(trades_df['Date'])
+    
+    # 添加时间戳列（如果没有的话）
+    if 'entry_time' not in trades_df.columns:
+        trades_df['entry_time'] = trades_df['Date']
+    if 'exit_time' not in trades_df.columns:
+        trades_df['exit_time'] = trades_df['Date']
+    
+    # 按日期分组处理交易
+    initial_capital = config['initial_capital']
+    leverage = config.get('leverage', 1)
+    
+    # 创建新的交易列表，过滤掉触发日内止损后的交易
+    filtered_trades = []
+    daily_stopped = {}  # 记录已触发止损的日期和时间
+    
+    # 按日期和时间排序
+    trades_df_sorted = trades_df.sort_values(['Date', 'entry_time'])
+    
+    # 按日期分组处理
+    for date, day_trades in trades_df_sorted.groupby(trades_df_sorted['Date'].dt.date):
+        # 获取前一天的收盘资金（如果有的话）
+        date_idx = daily_results.index.get_loc(pd.Timestamp(date))
+        if date_idx > 0:
+            day_start_capital = daily_results['capital'].iloc[date_idx - 1]
+        else:
+            day_start_capital = initial_capital
+            
+        # 追踪当日的累计损益
+        cumulative_pnl = 0
+        day_filtered_trades = []
+        stop_triggered = False
+        
+        for idx, trade in day_trades.iterrows():
+            # 计算当前损益百分比（相对于当日开始资金）
+            current_loss_pct = cumulative_pnl / day_start_capital
+            
+            # 如果已经触发止损，跳过后续交易
+            if stop_triggered:
+                continue
+                
+            # 检查这笔交易是否会触发止损
+            # 注意：我们需要考虑交易过程中的损失
+            trade_pnl = trade['pnl']
+            
+            # 模拟交易过程中的最大损失（假设最大损失可能是pnl的1.5倍）
+            max_potential_loss = min(trade_pnl, trade_pnl * 1.5 if trade_pnl < 0 else 0)
+            potential_loss_pct = (cumulative_pnl + max_potential_loss) / day_start_capital
+            
+            if potential_loss_pct <= -daily_stop_loss:
+                # 触发止损
+                stop_triggered = True
+                daily_stopped[date] = trade.get('entry_time', trade['Date'])
+                
+                # 修改这笔交易，假设在触发止损时立即平仓
+                # 计算止损时的损失
+                stop_loss_pnl = -daily_stop_loss * day_start_capital - cumulative_pnl
+                
+                # 创建一个修改后的交易记录
+                modified_trade = trade.copy()
+                modified_trade['pnl'] = stop_loss_pnl
+                modified_trade['exit_time'] = modified_trade.get('entry_time', modified_trade['Date'])
+                modified_trade['stopped'] = True
+                
+                day_filtered_trades.append(modified_trade)
+                cumulative_pnl += stop_loss_pnl
+                break
+            else:
+                # 未触发止损，正常记录交易
+                cumulative_pnl += trade_pnl
+                day_filtered_trades.append(trade)
+        
+        # 添加当日的交易到总列表
+        filtered_trades.extend(day_filtered_trades)
+    
+    # 如果没有任何交易被修改，返回原始结果
+    if len(daily_stopped) == 0:
+        return daily_results, monthly_results, trades_df, metrics
+    
+    # 创建新的交易DataFrame
+    filtered_trades_df = pd.DataFrame(filtered_trades)
+    
+    # 重新计算每日资金
+    new_daily_results = []
+    current_capital = initial_capital
+    
+    # 获取所有交易日期
+    all_dates = pd.date_range(start=daily_results.index[0], end=daily_results.index[-1], freq='D')
+    
+    for date in all_dates:
+        date_only = date.date()
+        
+        # 计算当日损益
+        if not filtered_trades_df.empty:
+            # 获取当日的所有交易
+            mask = filtered_trades_df['Date'].dt.date == date_only
+            if mask.any():
+                day_trades = filtered_trades_df[mask]
+                day_pnl = day_trades['pnl'].sum()
+            else:
+                day_pnl = 0
+        else:
+            day_pnl = 0
+            
+        current_capital += day_pnl
+        
+        new_daily_results.append({
+            'Date': date,
+            'capital': current_capital,
+            'daily_pnl': day_pnl
+        })
+    
+    new_daily_df = pd.DataFrame(new_daily_results)
+    new_daily_df.set_index('Date', inplace=True)
+    
+    # 重新计算月度结果
+    new_monthly_results = new_daily_df.resample('M').agg({
+        'capital': 'last',
+        'daily_pnl': 'sum'
+    })
+    
+    # 重新计算指标
+    new_metrics = calculate_metrics(new_daily_df, filtered_trades_df, initial_capital)
+    
+    # 添加止损统计
+    new_metrics['daily_stops_triggered'] = len(daily_stopped)
+    new_metrics['stop_loss_days'] = list(daily_stopped.keys())
+    
+    return new_daily_df, new_monthly_results, filtered_trades_df, new_metrics
+
+def calculate_metrics(daily_results, trades_df, initial_capital):
+    """计算性能指标"""
+    # 计算收益率
+    final_capital = daily_results['capital'].iloc[-1]
+    total_return = (final_capital - initial_capital) / initial_capital
+    
+    # 计算年化收益率
+    num_days = len(daily_results)
+    years = num_days / 252
+    irr = (final_capital / initial_capital) ** (1 / years) - 1 if years > 0 else 0
+    
+    # 计算最大回撤
+    running_max = daily_results['capital'].cummax()
+    drawdown = (daily_results['capital'] - running_max) / running_max
+    mdd = drawdown.min()
+    
+    # 计算夏普比率
+    daily_returns = daily_results['capital'].pct_change().dropna()
+    sharpe_ratio = np.sqrt(252) * daily_returns.mean() / daily_returns.std() if daily_returns.std() > 0 else 0
+    
+    # 计算交易统计
+    total_trades = len(trades_df) if not trades_df.empty else 0
+    winning_trades = len(trades_df[trades_df['pnl'] > 0]) if not trades_df.empty else 0
+    win_rate = winning_trades / total_trades if total_trades > 0 else 0
+    
+    return {
+        'total_return': total_return,
+        'irr': irr,
+        'mdd': mdd,
+        'sharpe_ratio': sharpe_ratio,
+        'total_trades': total_trades,
+        'winning_trades': winning_trades,
+        'win_rate': win_rate
+    }
 
 def analyze_ftmo_compliance(daily_results, trades_df, initial_capital, max_daily_loss=0.05, max_total_loss=0.10):
     """
@@ -67,7 +252,7 @@ def analyze_ftmo_compliance(daily_results, trades_df, initial_capital, max_daily
     
     return results, daily_results
 
-def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_loss=0.05, max_total_loss=0.10):
+def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_loss=0.05, max_total_loss=0.10, daily_stop_loss=0.048):
     """
     模拟单次FTMO挑战（无时间限制）
     
@@ -77,6 +262,7 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         profit_target: 盈利目标 (10%)
         max_daily_loss: 最大日损失 (5%)
         max_total_loss: 最大总损失 (10%)
+        daily_stop_loss: 日内止损阈值 (4.5%)
     
     返回:
         (是否通过, 结束原因, 持续天数, 最终收益率)
@@ -97,7 +283,11 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         original_stdout = sys.stdout
         sys.stdout = open(os.devnull, 'w')
         
-        daily_results, _, trades_df, _ = run_backtest(challenge_config)
+        # 根据是否提供daily_stop_loss来决定使用哪个回测函数
+        if daily_stop_loss is not None:
+            daily_results, _, trades_df, _ = run_backtest_ftmo(challenge_config, daily_stop_loss)
+        else:
+            daily_results, _, trades_df, _ = run_backtest(challenge_config)
         
         # 恢复stdout
         sys.stdout.close()
@@ -158,7 +348,7 @@ def save_intermediate_results(results_summary, filename='ftmo_intermediate_resul
         return df
     return None
 
-def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None):
+def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, use_daily_stop_loss=True, daily_stop_loss=0.048):
     """
     使用蒙特卡洛方法分析FTMO挑战通过率
     
@@ -201,7 +391,8 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None):
             # 模拟挑战
             passed, reason, days, final_return = simulate_ftmo_challenge(
                 test_config, 
-                sim_start_date
+                sim_start_date,
+                daily_stop_loss=daily_stop_loss if use_daily_stop_loss else None
             )
             
             simulation_results.append({
@@ -305,15 +496,19 @@ def rolling_window_analysis(config, window_days=30, leverage_range=None):
     """
     return monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=leverage_range)
 
-def analyze_single_leverage(config, leverage):
+def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_stop_loss=0.048):
     """
     详细分析单个杠杆率的表现
     
     参数:
         config: 基础配置字典
         leverage: 杠杆率
+        use_daily_stop_loss: 是否使用日内止损
+        daily_stop_loss: 日内止损阈值
     """
     print(f"\n详细分析杠杆率: {leverage}x")
+    if use_daily_stop_loss:
+        print(f"  使用日内止损: {daily_stop_loss*100:.1f}%")
     
     # 更新配置
     test_config = config.copy()
@@ -321,7 +516,10 @@ def analyze_single_leverage(config, leverage):
     test_config['print_daily_trades'] = False
     
     # 运行回测
-    daily_results, monthly_results, trades_df, metrics = run_backtest(test_config)
+    if use_daily_stop_loss:
+        daily_results, monthly_results, trades_df, metrics = run_backtest_ftmo(test_config, daily_stop_loss)
+    else:
+        daily_results, monthly_results, trades_df, metrics = run_backtest(test_config)
     
     # 全局分析
     analysis, daily_with_metrics = analyze_ftmo_compliance(
@@ -357,14 +555,14 @@ def analyze_single_leverage(config, leverage):
 if __name__ == "__main__":
     # 创建与backtest.py相同的配置
     base_config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_longport.csv',
         # 'data_path': 'spy_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days': 1,
-        'start_date': date(2020, 1, 1),
-        'end_date': date(2025, 1, 1),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 7, 20),
         'check_interval_minutes': 15,
         'transaction_fee_per_share': 0.008166,
         'trading_start_time': (9, 40),
@@ -382,10 +580,14 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 50  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 10  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [2,3]
+    LEVERAGE_RANGE = [4,5,6,7,8]
+    
+    # 日内止损设置
+    USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
+    DAILY_STOP_LOSS_THRESHOLD = 0.035 # 日内止损阈值
     
     print("="*60)
     print("🚀 FTMO挑战通过率分析")
@@ -395,6 +597,10 @@ if __name__ == "__main__":
     print(f"📅 数据范围: {base_config['start_date']} 至 {base_config['end_date']}")
     print(f"🔄 模拟次数: {NUM_SIMULATIONS}次/杠杆率")
     print(f"⚡ 杠杆率范围: {LEVERAGE_RANGE}")
+    if USE_DAILY_STOP_LOSS:
+        print(f"🛡️ 日内止损: 启用 ({DAILY_STOP_LOSS_THRESHOLD*100:.1f}%)")
+    else:
+        print(f"🛡️ 日内止损: 禁用")
     print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
     print(f"💡 提示: 如需修改数据，请直接修改上面的base_config")
     print("="*60)
@@ -410,7 +616,9 @@ if __name__ == "__main__":
         results_df = monte_carlo_ftmo_analysis(
             base_config, 
             num_simulations=NUM_SIMULATIONS,
-            leverage_range=LEVERAGE_RANGE
+            leverage_range=LEVERAGE_RANGE,
+            use_daily_stop_loss=USE_DAILY_STOP_LOSS,
+            daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
         )
         
         if results_df is not None:
@@ -448,4 +656,4 @@ if __name__ == "__main__":
     
     # 4. 分析特定杠杆率（可选）
     # 如果想深入分析特定杠杆率，取消下面的注释
-    analyze_single_leverage(base_config, leverage=4) 
+    # analyze_single_leverage(base_config, leverage=4, use_daily_stop_loss=USE_DAILY_STOP_LOSS, daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD) 

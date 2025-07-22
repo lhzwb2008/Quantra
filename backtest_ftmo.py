@@ -13,9 +13,9 @@ def calculate_vwap(prices, volumes):
     """
     return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, config):
+def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_start_capital=None, initial_capital=None, daily_stop_loss=0.048):
     """
-    模拟单日交易，使用噪声空间策略 + VWAP
+    模拟单日交易，使用噪声空间策略 + VWAP + 日内止损
     
     参数:
         day_df: 包含日内数据的DataFrame
@@ -23,6 +23,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         allowed_times: 允许交易的时间列表
         position_size: 仓位大小
         config: 配置字典，包含所有交易参数
+        day_start_capital: 当日开始资金（用于计算日内止损）
+        initial_capital: 初始资金（用于计算基于初始资金的日内止损）
+        daily_stop_loss: 日内止损阈值（默认4.8%）
     """
     # 从配置中提取参数
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
@@ -30,12 +33,19 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
     print_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time', None)
+    leverage = config.get('leverage', 1)  # 获取杠杆倍数
+    
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
     trailing_stop = np.nan
     trade_entry_time = None
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
+    
+    # 日内损益追踪
+    daily_pnl = 0  # 当日累计损益
+    daily_stop_triggered = False  # 是否触发日内止损
+    stop_trigger_time = None  # 触发止损的时间
     
     # 存储用于计算VWAP的数据
     prices = []
@@ -70,6 +80,97 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         
         # 计算当前VWAP
         vwap = calculate_vwap(prices, volumes)
+        
+        # 实时检查日内损益（每分钟检查一次，因为数据是分钟级别的）
+        # 重要：基于初始资金计算4%止损，而不是当日开始资金
+        if initial_capital is not None and not daily_stop_triggered:
+            # 计算当前持仓的浮动盈亏
+            unrealized_pnl = 0
+            if position == 1:  # 多头
+                unrealized_pnl = (price - entry_price) * position_size
+            elif position == -1:  # 空头
+                unrealized_pnl = (entry_price - price) * position_size
+            # 如果position == 0，unrealized_pnl保持为0
+            
+            # 计算总损益（已实现 + 未实现）
+            total_current_pnl = daily_pnl + unrealized_pnl
+            
+            # 检查是否触发日内止损（基于初始资金）
+            loss_pct = total_current_pnl / initial_capital
+            if loss_pct <= -daily_stop_loss:
+                daily_stop_triggered = True
+                stop_trigger_time = row['DateTime']
+                
+                # 调试信息（可以设置为False来关闭详细输出）
+                DEBUG_DAILY_STOP = False
+                if DEBUG_DAILY_STOP:
+                    print(f"\n[日内止损检测] {row['DateTime'].strftime('%Y-%m-%d %H:%M')}")
+                    print(f"  初始资金: ${initial_capital:.2f}")
+                    print(f"  当日开始资金: ${day_start_capital:.2f}")
+                    print(f"  已实现损益: ${daily_pnl:.2f}")
+                    print(f"  未实现损益: ${unrealized_pnl:.2f}")
+                    print(f"  总损益: ${total_current_pnl:.2f}")
+                    print(f"  损失百分比: {loss_pct*100:.2f}%")
+                    print(f"  触发阈值: {-daily_stop_loss*100:.1f}%")
+                    print(f"  当前持仓: {'多头' if position == 1 else '空头' if position == -1 else '无持仓'}")
+                    if position != 0:
+                        print(f"  持仓价格: ${entry_price:.2f}")
+                    print(f"  当前价格: ${price:.2f}")
+                
+                # 如果有持仓，立即强制平仓
+                if position != 0:
+                    exit_price = price
+                    if position == 1:  # 平仓多头
+                        pnl = (exit_price - entry_price) * position_size
+                    else:  # 平仓空头
+                        pnl = (entry_price - exit_price) * position_size
+                    
+                    fee = position_size * transaction_fee_per_share * 2
+                    net_pnl = pnl - fee
+                    
+                    trades.append({
+                        'entry_time': trade_entry_time,
+                        'exit_time': row['DateTime'],
+                        'side': 'Long' if position == 1 else 'Short',
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'pnl': net_pnl,
+                        'exit_reason': 'Daily Stop Loss',
+                        'position_size': position_size,
+                        'transaction_fees': fee
+                    })
+                    
+                    if print_details:
+                        date_str = row['DateTime'].strftime('%Y-%m-%d')
+                        side_str = '多头' if position == 1 else '空头'
+                        print(f"\n[日内止损] [{date_str} {current_time}] - {side_str}强制平仓:")
+                        print(f"  相对初始资金损失: {(total_current_pnl / initial_capital * 100):.2f}% 触发 {daily_stop_loss*100:.1f}% 止损")
+                        print(f"  入场价: {entry_price:.2f}, 出场价: {exit_price:.2f}")
+                        print(f"  盈亏: ${net_pnl:.2f}")
+                    
+                    # 更新日内损益
+                    daily_pnl += net_pnl
+                    
+                    # 清空持仓
+                    position = 0
+                    entry_price = np.nan
+                    trailing_stop = np.nan
+                    trade_entry_time = None
+                else:
+                    # 没有持仓但触发止损（纯粹基于已实现损失）
+                    if print_details:
+                        date_str = row['DateTime'].strftime('%Y-%m-%d')
+                        print(f"\n[日内止损] [{date_str} {current_time}] - 基于已实现损失触发:")
+                        print(f"  相对初始资金损失: {(total_current_pnl / initial_capital * 100):.2f}% 触发 {daily_stop_loss*100:.1f}% 止损")
+                        print(f"  已实现损失: ${daily_pnl:.2f}")
+                        print(f"  停止当日所有交易")
+                
+                # 停止后续交易
+                continue
+        
+        # 如果已触发日内止损，跳过所有后续操作
+        if daily_stop_triggered:
+            continue
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
@@ -167,6 +268,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'transaction_fees': transaction_fees
                     })
                     
+                    # 更新日内损益
+                    daily_pnl += pnl
+                    
                     position = 0
                     trailing_stop = np.nan
                     
@@ -206,6 +310,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'transaction_fees': transaction_fees
                     })
                     
+                    # 更新日内损益
+                    daily_pnl += pnl
+                    
                     position = 0
                     trailing_stop = np.nan
     
@@ -242,6 +349,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'position_size': position_size,
                 'transaction_fees': transaction_fees
             })
+            
+            # 更新日内损益
+            daily_pnl += pnl
             
             position = 0
             trailing_stop = np.nan
@@ -298,6 +408,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'position_size': position_size,
                 'transaction_fees': transaction_fees
             })
+            
+            # 更新日内损益
+            daily_pnl += pnl
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -320,10 +433,47 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'position_size': position_size,
                 'transaction_fees': transaction_fees
             })
+            
+            # 更新日内损益
+            daily_pnl += pnl
     
-    return trades 
+    return trades, daily_stop_triggered, stop_trigger_time 
+
+def run_backtest_ftmo(config, daily_stop_loss=0.048):
+    """
+    运行回测 - 噪声空间策略 + VWAP + 日内止损
+    
+    参数:
+        config: 配置字典，包含所有回测参数
+        daily_stop_loss: 日内止损阈值（默认4.5%）
+        
+    返回:
+        日度结果DataFrame
+        月度结果DataFrame
+        交易记录DataFrame
+        性能指标字典
+    """
+    print(f"\n[FTMO模式] 启用日内止损: {daily_stop_loss*100:.1f}%")
+    # 调用原始的run_backtest，但使用修改后的simulate_day
+    return _run_backtest_internal(config, daily_stop_loss=daily_stop_loss)
 
 def run_backtest(config):
+    """
+    运行回测 - 噪声空间策略 + VWAP（无日内止损）
+    
+    参数:
+        config: 配置字典，包含所有回测参数
+        
+    返回:
+        日度结果DataFrame
+        月度结果DataFrame
+        交易记录DataFrame
+        性能指标字典
+    """
+    # 调用内部函数，不使用日内止损
+    return _run_backtest_internal(config, daily_stop_loss=None)
+
+def _run_backtest_internal(config, daily_stop_loss=None):
     """
     运行回测 - 噪声空间策略 + VWAP
     
@@ -512,6 +662,9 @@ def run_backtest(config):
     trading_days = set()       # 有交易的日期集合
     non_trading_days = set()   # 无交易的日期集合
     
+    # 日内止损统计
+    daily_stop_days = []  # 触发日内止损的日期
+    
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
     if random_plots > 0:
@@ -525,11 +678,8 @@ def run_backtest(config):
             if prev_close is None:
                 continue
                 
-            # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config)
-            
-            # 从结果中提取交易
-            trades = simulation_result
+            # 模拟当天交易（这里只是为了统计，不使用日内止损）
+            trades, _, _ = simulate_day(day_data, prev_close, allowed_times, 100, config)
                 
             if trades:  # 如果有交易
                 days_with_trades.append(trade_date)
@@ -615,16 +765,29 @@ def run_backtest(config):
             continue
                 
         # 模拟当天的交易
-        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config)
-        
-        # 从结果中提取交易
-        trades = simulation_result
+        if daily_stop_loss is not None:
+            # 使用日内止损（基于初始资金）
+            trades, daily_stop_triggered, stop_trigger_time = simulate_day(
+                day_data, prev_close, allowed_times, position_size, config, 
+                day_start_capital=capital, initial_capital=initial_capital, daily_stop_loss=daily_stop_loss
+            )
+        else:
+            # 不使用日内止损
+            trades, _, _ = simulate_day(
+                day_data, prev_close, allowed_times, position_size, config
+            )
         
         # 更新交易日期统计
         if trades:  # 有交易的日期
             trading_days.add(trade_date)
         else:  # 无交易的日期
             non_trading_days.add(trade_date)
+        
+        # 如果触发了日内止损，特别标记
+        if daily_stop_loss is not None and 'daily_stop_triggered' in locals() and daily_stop_triggered:
+            daily_stop_days.append(trade_date)
+            # 始终打印日内止损信息（用于调试）
+            print(f"{date_str} | [日内止损触发] | 触发时间: {stop_trigger_time.strftime('%H:%M') if stop_trigger_time else 'N/A'}")
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
@@ -641,7 +804,13 @@ def run_backtest(config):
                 entry_price = trade['entry_price']
                 exit_price = trade['exit_price']
                 size = trade.get('position_size', position_size)
-                trade_summary.append(f"{direction}({entry_time}->{exit_time}) 买:{entry_price:.2f} 卖:{exit_price:.2f} 股数:{size} 盈亏:${pnl:.2f}")
+                # 添加退出原因标记
+                exit_reason = trade.get('exit_reason', '')
+                if exit_reason == 'Daily Stop Loss':
+                    exit_reason_str = " [日内止损]"
+                else:
+                    exit_reason_str = ""
+                trade_summary.append(f"{direction}({entry_time}->{exit_time}) 买:{entry_price:.2f} 卖:{exit_price:.2f} 股数:{size} 盈亏:${pnl:.2f}{exit_reason_str}")
             
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
@@ -894,6 +1063,15 @@ def run_backtest(config):
         print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
         print(f"-"*50)
     
+    # 打印日内止损信息（如果启用）
+    if daily_stop_loss is not None:
+        print(f"🛡️ 日内止损阈值: {daily_stop_loss*100:.1f}%")
+        print(f"🚨 触发日内止损天数: {len(daily_stop_days)}")
+        if len(daily_stop_days) > 0:
+            print(f"   └─ 触发日期: {', '.join([d.strftime('%Y-%m-%d') for d in daily_stop_days[:5]])}" + 
+                  (f"... (共{len(daily_stop_days)}天)" if len(daily_stop_days) > 5 else ""))
+        print(f"-"*50)
+    
     # 核心表现指标
     print(f"📈 总回报率: {metrics['total_return']*100:.1f}%")
     print(f"📊 年化收益率: {metrics['irr']*100:.1f}%")
@@ -914,6 +1092,12 @@ def run_backtest(config):
     print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
     
     print(f"="*50)
+    
+    # 如果使用了日内止损，添加相关统计到metrics
+    if daily_stop_loss is not None:
+        metrics['daily_stops_triggered'] = len(daily_stop_days)
+        metrics['daily_stop_days'] = daily_stop_days
+        metrics['daily_stop_loss_threshold'] = daily_stop_loss
     
     return daily_df, monthly, trades_df, metrics 
 
@@ -1199,13 +1383,13 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_longport.csv',
         # 'data_path': 'spy_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2020, 1, 1),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 7, 20),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
@@ -1224,5 +1408,15 @@ if __name__ == "__main__":
         'leverage': 4  # 资金杠杆倍数，默认为1
     }
     
+    # 配置是否启用日内止损
+    USE_DAILY_STOP_LOSS = True   # 设置为 False 可以禁用日内止损
+    DAILY_STOP_LOSS_THRESHOLD = 0.04  # 4.8% 日内止损阈值
+    
     # 运行回测
-    daily_results, monthly_results, trades, metrics = run_backtest(config)
+    if USE_DAILY_STOP_LOSS:
+        # 使用日内止损
+        daily_results, monthly_results, trades, metrics = run_backtest_ftmo(config, daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD)
+    else:
+        # 不使用日内止损
+        print("\n[标准模式] 未启用日内止损")
+        daily_results, monthly_results, trades, metrics = run_backtest(config)
