@@ -8,6 +8,161 @@ import sys
 import os
 warnings.filterwarnings('ignore')
 
+# 全局数据缓存
+_data_cache = {}
+_processed_data_cache = {}
+
+def load_and_cache_data(data_path):
+    """
+    加载并缓存原始数据，避免重复读取文件
+    
+    参数:
+        data_path: 数据文件路径
+    
+    返回:
+        原始数据DataFrame
+    """
+    if data_path not in _data_cache:
+        print(f"首次加载数据文件: {data_path}")
+        try:
+            price_df = pd.read_csv(data_path, parse_dates=['DateTime'])
+            price_df.sort_values('DateTime', inplace=True)
+            _data_cache[data_path] = price_df.copy()
+            print(f"数据加载完成，共 {len(price_df)} 行数据")
+        except Exception as e:
+            print(f"数据加载失败: {e}")
+            raise
+    else:
+        print(f"使用缓存数据: {data_path}")
+    
+    return _data_cache[data_path].copy()
+
+def get_processed_data(config):
+    """
+    获取处理后的数据，包括指标计算等
+    使用配置的关键参数作为缓存键
+    
+    参数:
+        config: 配置字典
+    
+    返回:
+        处理后的数据DataFrame
+    """
+    # 创建缓存键，包含影响数据处理的关键参数
+    cache_key = (
+        config['data_path'],
+        config.get('start_date'),
+        config.get('end_date'), 
+        config.get('lookback_days', 90),
+        config.get('K1', 1),
+        config.get('K2', 1)
+    )
+    
+    if cache_key not in _processed_data_cache:
+        print(f"首次处理数据，参数: lookback_days={config.get('lookback_days')}, K1={config.get('K1')}, K2={config.get('K2')}")
+        
+        # 加载原始数据
+        price_df = load_and_cache_data(config['data_path'])
+        
+        # 提取日期和时间组件
+        price_df['Date'] = price_df['DateTime'].dt.date
+        price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
+        
+        # 按日期范围过滤数据
+        start_date = config.get('start_date')
+        end_date = config.get('end_date')
+        
+        if start_date is not None:
+            price_df = price_df[price_df['Date'] >= start_date]
+        
+        if end_date is not None:
+            price_df = price_df[price_df['Date'] <= end_date]
+        
+        # 检查并创建DayOpen和DayClose列
+        if 'DayOpen' not in price_df.columns or 'DayClose' not in price_df.columns:
+            opening_prices = price_df.groupby('Date').first().reset_index()
+            opening_prices = opening_prices[['Date', 'Open']].rename(columns={'Open': 'DayOpen'})
+
+            closing_prices = price_df.groupby('Date').last().reset_index()
+            closing_prices = closing_prices[['Date', 'Close']].rename(columns={'Close': 'DayClose'})
+
+            price_df = pd.merge(price_df, opening_prices, on='Date', how='left')
+            price_df = pd.merge(price_df, closing_prices, on='Date', how='left')
+        
+        # 计算前一日收盘价和当日开盘价
+        price_df['prev_close'] = price_df.groupby('Date')['DayClose'].transform('first').shift(1)
+        price_df['day_open'] = price_df.groupby('Date')['DayOpen'].transform('first')
+        
+        # 计算参考价格
+        unique_dates = price_df['Date'].unique()
+        date_refs = []
+        for d in unique_dates:
+            day_data = price_df[price_df['Date'] == d].iloc[0]
+            day_open = day_data['day_open']
+            prev_close = day_data['prev_close']
+            
+            if not pd.isna(prev_close):
+                upper_ref = max(day_open, prev_close)
+                lower_ref = min(day_open, prev_close)
+            else:
+                upper_ref = day_open
+                lower_ref = day_open
+                
+            date_refs.append({
+                'Date': d,
+                'upper_ref': upper_ref,
+                'lower_ref': lower_ref
+            })
+        
+        date_refs_df = pd.DataFrame(date_refs)
+        price_df = price_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
+        price_df = pd.merge(price_df, date_refs_df, on='Date', how='left')
+        
+        # 计算回报
+        price_df['ret'] = price_df['Close'] / price_df['day_open'] - 1 
+        
+        # 计算噪声区域边界
+        print(f"计算噪声区域边界...")
+        pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
+        lookback_days = config.get('lookback_days', 90)
+        sigma = pivot.rolling(window=lookback_days, min_periods=lookback_days).mean().shift(1)
+        sigma = sigma.stack().reset_index(name='sigma')
+        
+        # 合并sigma
+        price_df = pd.merge(price_df, sigma, on=['Date', 'Time'], how='left')
+        
+        # 移除sigma数据不完整的日期
+        incomplete_sigma_dates = set()
+        for date in price_df['Date'].unique():
+            day_data = price_df[price_df['Date'] == date]
+            if day_data['sigma'].isna().any():
+                incomplete_sigma_dates.add(date)
+        
+        price_df = price_df[~price_df['Date'].isin(incomplete_sigma_dates)]
+        
+        # 计算边界
+        K1 = config.get('K1', 1)
+        K2 = config.get('K2', 1)
+        
+        price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
+        price_df['LowerBound'] = price_df['lower_ref'] * (1 - K2 * price_df['sigma'])
+        
+        # 缓存处理后的数据
+        _processed_data_cache[cache_key] = price_df.copy()
+        print(f"数据处理完成，有效数据 {len(price_df)} 行")
+        
+    else:
+        print(f"使用缓存的处理数据")
+    
+    return _processed_data_cache[cache_key].copy()
+
+def clear_data_cache():
+    """清空数据缓存"""
+    global _data_cache, _processed_data_cache
+    _data_cache.clear()
+    _processed_data_cache.clear()
+    print("数据缓存已清空")
+
 def run_backtest_with_daily_stop_loss_old(config, daily_stop_loss=0.045):
     """
     运行带有日内止损的回测
@@ -252,9 +407,170 @@ def analyze_ftmo_compliance(daily_results, trades_df, initial_capital, max_daily
     
     return results, daily_results
 
+def run_backtest_ftmo_cached(config, daily_stop_loss=0.048):
+    """
+    使用缓存数据的优化版回测函数
+    
+    参数:
+        config: 配置字典
+        daily_stop_loss: 日内止损阈值
+    
+    返回:
+        与run_backtest_ftmo相同的返回值
+    """
+    # 获取处理后的数据（使用缓存）
+    price_df = get_processed_data(config)
+    
+    if len(price_df) == 0:
+        print("警告: 没有有效数据")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+    
+    # 从这里开始复制backtest_ftmo.py中的交易逻辑
+    # 但跳过数据加载和处理部分
+    
+    # 获取配置参数
+    initial_capital = config.get('initial_capital', 100000)
+    leverage = config.get('leverage', 1)
+    check_interval_minutes = config.get('check_interval_minutes', 30)
+    trading_start_time = config.get('trading_start_time', (10, 0))
+    trading_end_time = config.get('trading_end_time', (15, 40))
+    max_positions_per_day = config.get('max_positions_per_day', float('inf'))
+    
+    # 生成允许的交易时间
+    allowed_times = []
+    start_hour, start_minute = trading_start_time
+    end_hour, end_minute = trading_end_time
+    
+    current_hour, current_minute = start_hour, start_minute
+    while current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute):
+        allowed_times.append(f"{current_hour:02d}:{current_minute:02d}")
+        current_minute += check_interval_minutes
+        if current_minute >= 60:
+            current_hour += current_minute // 60
+            current_minute = current_minute % 60
+    
+    end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
+    if end_time_str not in allowed_times:
+        allowed_times.append(end_time_str)
+        allowed_times.sort()
+    
+    # 初始化回测变量
+    capital = initial_capital
+    daily_results = []
+    all_trades = []
+    
+    # 获取唯一日期
+    unique_dates = price_df['Date'].unique()
+    
+    # 导入simulate_day函数（这里需要从backtest_ftmo导入）
+    from backtest_ftmo import simulate_day
+    
+    # 处理每个交易日
+    for trade_date in unique_dates:
+        day_data = price_df[price_df['Date'] == trade_date].copy()
+        day_data = day_data.sort_values('DateTime').reset_index(drop=True)
+        
+        if len(day_data) < 10:
+            daily_results.append({
+                'Date': trade_date,
+                'capital': capital,
+                'daily_return': 0
+            })
+            continue
+        
+        prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
+        
+        if prev_close is None:
+            daily_results.append({
+                'Date': trade_date,
+                'capital': capital,
+                'daily_return': 0
+            })
+            continue
+        
+        # 计算仓位大小
+        day_open_price = day_data['day_open'].iloc[0]
+        leveraged_capital = capital * leverage
+        position_size = int(leveraged_capital / day_open_price)
+        
+        if position_size <= 0:
+            daily_results.append({
+                'Date': trade_date,
+                'capital': capital,
+                'daily_return': 0
+            })
+            continue
+        
+        # 模拟当天的交易
+        if daily_stop_loss is not None:
+            trades, daily_stop_triggered, stop_trigger_time = simulate_day(
+                day_data, prev_close, allowed_times, position_size, config, 
+                day_start_capital=capital, initial_capital=initial_capital, daily_stop_loss=daily_stop_loss
+            )
+        else:
+            trades, _, _ = simulate_day(
+                day_data, prev_close, allowed_times, position_size, config
+            )
+        
+        # 计算每日盈亏
+        day_pnl = sum(trade['pnl'] for trade in trades)
+        capital_start = capital
+        capital += day_pnl
+        daily_return = day_pnl / capital_start
+        
+        # 存储每日结果
+        daily_results.append({
+            'Date': trade_date,
+            'capital': capital,
+            'daily_return': daily_return
+        })
+        
+        # 存储交易
+        for trade in trades:
+            trade['Date'] = trade_date
+            all_trades.append(trade)
+    
+    # 创建结果DataFrames
+    daily_df = pd.DataFrame(daily_results)
+    if len(daily_df) > 0:
+        daily_df['Date'] = pd.to_datetime(daily_df['Date'])
+        daily_df.set_index('Date', inplace=True)
+    
+    trades_df = pd.DataFrame(all_trades)
+    
+    # 计算月度结果
+    if len(daily_df) > 0:
+        monthly = daily_df.resample('ME').first()[['capital']].rename(columns={'capital': 'month_start'})
+        monthly['month_end'] = daily_df.resample('ME').last()['capital']
+        monthly['monthly_return'] = monthly['month_end'] / monthly['month_start'] - 1
+    else:
+        monthly = pd.DataFrame()
+    
+    # 计算简化的指标
+    if len(daily_df) > 0 and len(trades_df) > 0:
+        total_return = (daily_df['capital'].iloc[-1] - initial_capital) / initial_capital
+        winning_trades = len(trades_df[trades_df['pnl'] > 0])
+        hit_ratio = winning_trades / len(trades_df) if len(trades_df) > 0 else 0
+        
+        metrics = {
+            'total_return': total_return,
+            'total_trades': len(trades_df),
+            'hit_ratio': hit_ratio
+        }
+    else:
+        metrics = {
+            'total_return': 0,
+            'total_trades': 0,
+            'hit_ratio': 0
+        }
+    
+    return daily_df, monthly, trades_df, metrics
+
 def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_loss=0.05, max_total_loss=0.10, daily_stop_loss=0.048):
     """
     模拟单次FTMO挑战（无时间限制）
+    
+    重要改进：考虑日内实时违规情况，不仅仅是收盘后检查
     
     参数:
         config: 配置字典
@@ -283,11 +599,11 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         original_stdout = sys.stdout
         sys.stdout = open(os.devnull, 'w')
         
-        # 根据是否提供daily_stop_loss来决定使用哪个回测函数
+        # 使用缓存版本的回测函数以提高速度
         if daily_stop_loss is not None:
-            daily_results, _, trades_df, _ = run_backtest_ftmo(challenge_config, daily_stop_loss)
+            daily_results, _, trades_df, _ = run_backtest_ftmo_cached(challenge_config, daily_stop_loss)
         else:
-            daily_results, _, trades_df, _ = run_backtest(challenge_config)
+            daily_results, _, trades_df, _ = run_backtest_ftmo_cached(challenge_config, None)
         
         # 恢复stdout
         sys.stdout.close()
@@ -312,27 +628,58 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
     # 逐日检查是否达到目标或违反规则
     for i in range(len(daily_results)):
         current_day = i + 1
-        day_data = daily_results.iloc[:current_day]
+        current_date = daily_results.index[i]
         
-        # 计算当前资金和收益率
-        current_capital = day_data['capital'].iloc[-1]
+        # 计算当前资金和收益率（收盘时）
+        current_capital = daily_results['capital'].iloc[i]
         current_return = (current_capital - initial_capital) / initial_capital
         
-        # 计算当日损失
+        # 计算当日开始资金
         if i == 0:
-            daily_loss = (current_capital - initial_capital) / initial_capital
+            day_start_capital = initial_capital
         else:
-            daily_loss = (current_capital - daily_results['capital'].iloc[i-1]) / initial_capital
+            day_start_capital = daily_results['capital'].iloc[i-1]
+        
+        # 计算当日损失（基于初始资金，符合FTMO规则）
+        daily_pnl = current_capital - day_start_capital
+        daily_loss = daily_pnl / initial_capital
+        
+        # 重要改进：检查日内是否有违规
+        # 获取当日的所有交易
+        if not trades_df.empty:
+            day_trades = trades_df[trades_df['Date'].dt.date == current_date.date()]
+            
+            if not day_trades.empty:
+                # 模拟日内资金变化
+                intraday_capital = day_start_capital
+                cumulative_daily_pnl = 0
+                
+                for _, trade in day_trades.iterrows():
+                    # 累计当日盈亏
+                    cumulative_daily_pnl += trade['pnl']
+                    intraday_capital += trade['pnl']
+                    
+                    # 检查日内是否违反最大日损失（基于初始资金）
+                    intraday_daily_loss = cumulative_daily_pnl / initial_capital
+                    if intraday_daily_loss < -max_daily_loss:
+                        # 找到违规的具体时间
+                        violation_time = trade.get('exit_time', trade.get('entry_time', current_date))
+                        return False, 'daily_loss_intraday', current_day, (intraday_capital - initial_capital) / initial_capital
+                    
+                    # 检查日内是否违反最大总损失（基于初始资金）
+                    intraday_total_return = (intraday_capital - initial_capital) / initial_capital
+                    if intraday_total_return < -max_total_loss:
+                        return False, 'total_loss_intraday', current_day, intraday_total_return
         
         # 检查是否达到盈利目标
         if current_return >= profit_target:
             return True, 'profit_target', current_day, current_return
         
-        # 检查是否违反日损失规则
+        # 检查收盘时是否违反日损失规则（基于初始资金）
         if daily_loss < -max_daily_loss:
             return False, 'daily_loss', current_day, current_return
         
-        # 检查是否违反总损失规则
+        # 检查收盘时是否违反总损失规则（基于初始资金）
         if current_return < -max_total_loss:
             return False, 'total_loss', current_day, current_return
     
@@ -457,7 +804,9 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
             'avg_days_valid': avg_days_valid,
             'avg_return': avg_return,
             'failure_daily_loss': failure_reasons.get('daily_loss', 0),
+            'failure_daily_loss_intraday': failure_reasons.get('daily_loss_intraday', 0),
             'failure_total_loss': failure_reasons.get('total_loss', 0),
+            'failure_total_loss_intraday': failure_reasons.get('total_loss_intraday', 0),
             'failure_data_exhausted': failure_reasons.get('data_exhausted', 0),
             'failure_error': failure_reasons.get('error', 0),
             'failure_no_data': failure_reasons.get('no_data', 0)
@@ -471,7 +820,10 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         if successful_runs:
             print(f"  ✓ 平均成功天数: {avg_days_to_success:.1f}天")
         print(f"  ✓ 平均有效测试天数: {avg_days_valid:.1f}天")
-        print(f"  ✓ 失败原因: 日损失{failure_reasons.get('daily_loss', 0)}次 | 总损失{failure_reasons.get('total_loss', 0)}次")
+        # 合并日内和收盘的失败次数
+        total_daily_loss_failures = failure_reasons.get('daily_loss', 0) + failure_reasons.get('daily_loss_intraday', 0)
+        total_total_loss_failures = failure_reasons.get('total_loss', 0) + failure_reasons.get('total_loss_intraday', 0)
+        print(f"  ✓ 失败原因: 日损失{total_daily_loss_failures}次 | 总损失{total_total_loss_failures}次")
     
     # 创建结果DataFrame
     results_df = pd.DataFrame(results_summary)
@@ -555,13 +907,13 @@ def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_st
 if __name__ == "__main__":
     # 创建与backtest.py相同的配置
     base_config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',
+        'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path': 'qqq_longport.csv',
         # 'data_path': 'spy_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days': 1,
-        'start_date': date(2024, 1, 1),
+        'start_date': date(2020, 1, 1),
         'end_date': date(2025, 7, 20),
         'check_interval_minutes': 15,
         'transaction_fee_per_share': 0.008166,
@@ -580,17 +932,17 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 30  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 50  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [3,4,5]
+    LEVERAGE_RANGE = [2,3,4,5,6,7,8,9]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
     DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值
     
     print("="*60)
-    print("🚀 FTMO挑战通过率分析")
+    print("🚀 FTMO挑战通过率分析（优化版）")
     print("="*60)
     print(f"📊 数据文件: {base_config['data_path']}")
     print(f"📈 股票代码: {base_config['ticker']}")
@@ -604,6 +956,15 @@ if __name__ == "__main__":
     print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
     print(f"💡 提示: 如需修改数据，请直接修改上面的base_config")
     print("="*60)
+    
+    # 预加载和处理数据（只需要一次）
+    print("\n🔄 预加载数据...")
+    try:
+        get_processed_data(base_config)
+        print("✅ 数据预加载完成，后续测试将使用缓存数据")
+    except Exception as e:
+        print(f"❌ 数据加载失败: {e}")
+        exit(1)
     
     # 估算运行时间
     total_simulations = NUM_SIMULATIONS * len(LEVERAGE_RANGE)
@@ -629,9 +990,12 @@ if __name__ == "__main__":
             print("="*100)
             
             for _, row in results_df.iterrows():
+                # 合并日内和收盘的失败次数
+                total_daily_failures = row['failure_daily_loss'] + row.get('failure_daily_loss_intraday', 0)
+                total_total_failures = row['failure_total_loss'] + row.get('failure_total_loss_intraday', 0)
                 print(f"{row['leverage']:>6}x | {row['pass_rate']*100:>6.1f}% | {row['valid_count']:>8} | {row['passed_count']:>8} | "
                       f"{row['avg_days_to_success']:>9.1f}天 | {row['avg_days_valid']:>9.1f}天 | {row['data_exhausted_count']:>8} | "
-                      f"{row['failure_daily_loss']:>8} | {row['failure_total_loss']:>8}")
+                      f"{total_daily_failures:>8} | {total_total_failures:>8}")
             
             # 3. 推荐配置
             print(f"\n💡 分析结果说明:")
@@ -640,7 +1004,9 @@ if __name__ == "__main__":
             print(f"• 平均成功天数：成功案例达到10%收益的平均天数")
             print(f"• 平均有效天数：所有有效测试的平均持续天数")
             print(f"• 数据用完：因数据不足而无法完成测试的次数（不计入成功率）")
-            print(f"• 日损失失败和总损失失败是需要重点关注的风险指标")
+            print(f"• 日损失：违反5%日损失限制的次数")
+            print(f"• 总损失：违反10%总损失限制的次数")
+            print(f"• 重要：包含日内实时违规检测，更准确反映实际交易风险")
             
     except KeyboardInterrupt:
         print(f"\n\n⏹️  用户中断，显示已完成的结果:")
@@ -654,6 +1020,12 @@ if __name__ == "__main__":
         else:
             print("没有完成任何分析")
     
-    # 4. 分析特定杠杆率（可选）
-    # 如果想深入分析特定杠杆率，取消下面的注释
-    # analyze_single_leverage(base_config, leverage=4, use_daily_stop_loss=USE_DAILY_STOP_LOSS, daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD) 
+    # 程序结束时提供缓存清理选项
+    print(f"\n💾 数据缓存状态:")
+    print(f"  原始数据缓存: {len(_data_cache)} 个文件")
+    print(f"  处理数据缓存: {len(_processed_data_cache)} 个配置")
+    
+    # 如果需要清理缓存，可以取消下面的注释
+    # clear_data_cache()
+    # print("✅ 缓存已清理")
+    
