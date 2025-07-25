@@ -581,7 +581,7 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         daily_stop_loss: 日内止损阈值 (4.5%)
     
     返回:
-        (是否通过, 结束原因, 持续天数, 最终收益率)
+        (是否通过, 结束原因, 持续天数, 最终收益率, 失败详情字典)
     """
     # 设置一个较长的结束日期，让策略自然运行
     end_date = config['end_date']  # 使用配置中的结束日期
@@ -614,10 +614,10 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         if sys.stdout != original_stdout:
             sys.stdout.close()
             sys.stdout = original_stdout
-        return False, 'error', 0, 0
+        return False, 'error', 0, 0, {'error_msg': str(e)}
     
     if len(daily_results) == 0:
-        return False, 'no_data', 0, 0
+        return False, 'no_data', 0, 0, {}
     
     # 确保trades_df['Date']是Timestamp类型
     if not trades_df.empty and not isinstance(trades_df['Date'].iloc[0], pd.Timestamp):
@@ -664,28 +664,68 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
                     if intraday_daily_loss < -max_daily_loss:
                         # 找到违规的具体时间
                         violation_time = trade.get('exit_time', trade.get('entry_time', current_date))
-                        return False, 'daily_loss_intraday', current_day, (intraday_capital - initial_capital) / initial_capital
+                        failure_details = {
+                            'violation_date': current_date.strftime('%Y-%m-%d'),
+                            'violation_time': str(violation_time),
+                            'violation_type': '日内5%损失限制',
+                            'daily_loss_pct': intraday_daily_loss * 100,
+                            'capital_at_violation': intraday_capital,
+                            'total_return_at_violation': (intraday_capital - initial_capital) / initial_capital * 100,
+                            'trade_pnl': trade['pnl'],
+                            'cumulative_daily_pnl': cumulative_daily_pnl
+                        }
+                        return False, 'daily_loss', current_day, (intraday_capital - initial_capital) / initial_capital, failure_details
                     
                     # 检查日内是否违反最大总损失（基于初始资金）
                     intraday_total_return = (intraday_capital - initial_capital) / initial_capital
                     if intraday_total_return < -max_total_loss:
-                        return False, 'total_loss_intraday', current_day, intraday_total_return
+                        violation_time = trade.get('exit_time', trade.get('entry_time', current_date))
+                        failure_details = {
+                            'violation_date': current_date.strftime('%Y-%m-%d'),
+                            'violation_time': str(violation_time),
+                            'violation_type': '日内10%总损失限制',
+                            'total_return_pct': intraday_total_return * 100,
+                            'capital_at_violation': intraday_capital,
+                            'trade_pnl': trade['pnl'],
+                            'cumulative_daily_pnl': cumulative_daily_pnl
+                        }
+                        return False, 'total_loss', current_day, intraday_total_return, failure_details
         
         # 检查是否达到盈利目标
         if current_return >= profit_target:
-            return True, 'profit_target', current_day, current_return
+            success_details = {
+                'success_date': current_date.strftime('%Y-%m-%d'),
+                'final_return_pct': current_return * 100,
+                'final_capital': current_capital
+            }
+            return True, 'profit_target', current_day, current_return, success_details
         
         # 检查收盘时是否违反日损失规则（基于初始资金）
         if daily_loss < -max_daily_loss:
-            return False, 'daily_loss', current_day, current_return
+            failure_details = {
+                'violation_date': current_date.strftime('%Y-%m-%d'),
+                'violation_time': '收盘时',
+                'violation_type': '收盘5%日损失限制',
+                'daily_loss_pct': daily_loss * 100,
+                'capital_at_violation': current_capital,
+                'total_return_at_violation': current_return * 100
+            }
+            return False, 'daily_loss', current_day, current_return, failure_details
         
         # 检查收盘时是否违反总损失规则（基于初始资金）
         if current_return < -max_total_loss:
-            return False, 'total_loss', current_day, current_return
+            failure_details = {
+                'violation_date': current_date.strftime('%Y-%m-%d'),
+                'violation_time': '收盘时',
+                'violation_type': '收盘10%总损失限制',
+                'total_return_pct': current_return * 100,
+                'capital_at_violation': current_capital
+            }
+            return False, 'total_loss', current_day, current_return, failure_details
     
     # 数据用完但未达到目标（这种情况下返回最终收益率）
     final_return = (daily_results['capital'].iloc[-1] - initial_capital) / initial_capital
-    return False, 'data_exhausted', len(daily_results), final_return
+    return False, 'data_exhausted', len(daily_results), final_return, {}
 
 def save_intermediate_results(results_summary, filename='ftmo_intermediate_results.csv'):
     """保存中间结果"""
@@ -728,6 +768,7 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         
         # 运行多次模拟
         simulation_results = []
+        failure_examples = []  # 存储失败案例的详细信息
         
         for sim in range(num_simulations):
             # 随机选择起始日期，确保至少有60天的数据可用
@@ -736,7 +777,7 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
             sim_start_date = start_date + timedelta(days=start_offset)
             
             # 模拟挑战
-            passed, reason, days, final_return = simulate_ftmo_challenge(
+            passed, reason, days, final_return, details = simulate_ftmo_challenge(
                 test_config, 
                 sim_start_date,
                 daily_stop_loss=daily_stop_loss if use_daily_stop_loss else None
@@ -747,8 +788,20 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 'reason': reason,
                 'days': days,
                 'final_return': final_return,
-                'start_date': sim_start_date
+                'start_date': sim_start_date,
+                'details': details
             })
+            
+            # 收集失败案例（只保留前5个典型失败案例）
+            if not passed and reason in ['daily_loss_intraday', 'total_loss_intraday', 'daily_loss', 'total_loss'] and len(failure_examples) < 5:
+                failure_examples.append({
+                    'simulation_id': sim + 1,
+                    'reason': reason,
+                    'details': details,
+                    'start_date': sim_start_date.strftime('%Y-%m-%d'),
+                    'days': days,
+                    'final_return': final_return
+                })
             
             # 显示进度
             if (sim + 1) % 10 == 0:
@@ -809,7 +862,8 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
             'failure_total_loss_intraday': failure_reasons.get('total_loss_intraday', 0),
             'failure_data_exhausted': failure_reasons.get('data_exhausted', 0),
             'failure_error': failure_reasons.get('error', 0),
-            'failure_no_data': failure_reasons.get('no_data', 0)
+            'failure_no_data': failure_reasons.get('no_data', 0),
+            'failure_examples': failure_examples  # 添加失败案例详情
         }
         
         results_summary.append(summary)
@@ -824,6 +878,22 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         total_daily_loss_failures = failure_reasons.get('daily_loss', 0) + failure_reasons.get('daily_loss_intraday', 0)
         total_total_loss_failures = failure_reasons.get('total_loss', 0) + failure_reasons.get('total_loss_intraday', 0)
         print(f"  ✓ 失败原因: 日损失{total_daily_loss_failures}次 | 总损失{total_total_loss_failures}次")
+        
+        # 打印失败案例详情
+        if failure_examples:
+            print(f"  📋 典型失败案例:")
+            for i, example in enumerate(failure_examples, 1):
+                details = example['details']
+                print(f"    案例{i}: 模拟#{example['simulation_id']} | 开始日期: {example['start_date']} | 持续{example['days']}天")
+                print(f"           违规日期: {details.get('violation_date', 'N/A')} {details.get('violation_time', '')}")
+                print(f"           违规类型: {details.get('violation_type', example['reason'])}")
+                if 'daily_loss_pct' in details:
+                    print(f"           当日损失: {details['daily_loss_pct']:.2f}%")
+                if 'total_return_pct' in details:
+                    print(f"           总收益率: {details['total_return_pct']:.2f}%")
+                if 'capital_at_violation' in details:
+                    print(f"           违规时资金: ${details['capital_at_violation']:.2f}")
+                print()
     
     # 创建结果DataFrame
     results_df = pd.DataFrame(results_summary)
@@ -840,6 +910,258 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         print(f"\n⚠️  没有杠杆率能达到80%的通过率")
     
     return results_df
+
+def monte_carlo_multi_timing_analysis(config, num_simulations=100, leverage=4, use_daily_stop_loss=True, daily_stop_loss=0.048):
+    """
+    同时测试多个时间配置的FTMO挑战通过率，用于验证时间错配是否能分散风险
+    
+    参数:
+        config: 基础配置字典
+        num_simulations: 模拟次数
+        leverage: 杠杆率
+        use_daily_stop_loss: 是否使用日内止损
+        daily_stop_loss: 日内止损阈值
+    
+    返回:
+        包含分析结果的DataFrame
+    """
+    # 定义三种时间配置
+    time_configs = [
+        {'name': '账户A (9:40-15:40)', 'start': (9, 40), 'end': (15, 40)},
+        {'name': '账户B (9:39-15:39)', 'start': (9, 39), 'end': (15, 39)},
+        {'name': '账户C (9:41-15:41)', 'start': (9, 41), 'end': (15, 41)}
+    ]
+    
+    # 获取数据的时间范围
+    start_date = config['start_date']
+    end_date = config['end_date']
+    total_days = (end_date - start_date).days
+    
+    if total_days < 60:
+        print(f"警告: 数据时间范围太短，需要至少60天的数据")
+        return None
+    
+    print(f"\n🔄 多账户时间错配分析")
+    print(f"  杠杆率: {leverage}x")
+    print(f"  模拟次数: {num_simulations}")
+    print(f"  测试配置:")
+    for tc in time_configs:
+        print(f"    - {tc['name']}")
+    print()
+    
+    # 存储所有模拟结果
+    all_simulations = []
+    
+    # 运行模拟
+    for sim in range(num_simulations):
+        # 为这次模拟随机选择起始日期（三个账户使用相同的起始日期）
+        max_start_offset = max(0, total_days - 60)
+        start_offset = random.randint(0, max_start_offset)
+        sim_start_date = start_date + timedelta(days=start_offset)
+        
+        # 存储这次模拟中三个账户的结果
+        sim_results = {
+            'simulation_id': sim + 1,
+            'start_date': sim_start_date
+        }
+        
+        # 打印每次模拟的详细信息
+        print(f"\n模拟 #{sim + 1}/{num_simulations} | 开始日期: {sim_start_date.strftime('%Y-%m-%d')}")
+        
+        # 对每个时间配置运行回测
+        for i, tc in enumerate(time_configs):
+            # 创建特定时间配置
+            test_config = config.copy()
+            test_config['leverage'] = leverage
+            test_config['trading_start_time'] = tc['start']
+            test_config['trading_end_time'] = tc['end']
+            
+            # 运行模拟，如果数据不够则重试
+            max_retries = 5
+            for retry in range(max_retries):
+                passed, reason, days, final_return, details = simulate_ftmo_challenge(
+                    test_config, 
+                    sim_start_date,
+                    daily_stop_loss=daily_stop_loss if use_daily_stop_loss else None
+                )
+                
+                # 如果数据不够，重新选择起始日期重试
+                if reason == 'data_exhausted' and retry < max_retries - 1:
+                    # 重新选择起始日期
+                    new_start_offset = random.randint(0, max_start_offset)
+                    sim_start_date = start_date + timedelta(days=new_start_offset)
+                    test_config['start_date'] = sim_start_date
+                    continue
+                else:
+                    break
+            
+            # 存储结果
+            account_key = f'account_{i+1}'
+            sim_results[f'{account_key}_passed'] = passed
+            sim_results[f'{account_key}_reason'] = reason
+            sim_results[f'{account_key}_days'] = days
+            sim_results[f'{account_key}_return'] = final_return
+            sim_results[f'{account_key}_details'] = details
+            sim_results[f'{account_key}_name'] = tc['name']
+            
+            # 打印账户结果
+            status_icon = "✅" if passed else "❌"
+            print(f"  {status_icon} {tc['name']}: ", end="")
+            
+            if passed:
+                print(f"成功 | {days}天达到10%收益")
+            else:
+                if reason in ['daily_loss', 'total_loss']:
+                    violation_date = details.get('violation_date', 'N/A')
+                    violation_time = details.get('violation_time', 'N/A')
+                    
+                    # 统一显示失败原因，不区分日内和收盘
+                    if reason == 'daily_loss':
+                        violation_type = '5%日损失限制'
+                    elif reason == 'total_loss':
+                        violation_type = '10%总损失限制'
+                    else:
+                        violation_type = reason
+                    
+                    # 计算测试区间
+                    end_date_str = (sim_start_date + timedelta(days=days-1)).strftime('%Y-%m-%d') if days > 0 else sim_start_date.strftime('%Y-%m-%d')
+                    
+                    print(f"失败 | 测试区间: {sim_start_date.strftime('%Y-%m-%d')} 至 {end_date_str} | "
+                          f"爆仓时间: {violation_date} {violation_time} | "
+                          f"原因: {violation_type}")
+                    
+                    # 如果有更多详细信息，也打印出来
+                    if 'daily_loss_pct' in details:
+                        print(f"         当日损失: {details['daily_loss_pct']:.2f}%", end="")
+                    if 'total_return_pct' in details:
+                        print(f" | 总损失: {details['total_return_pct']:.2f}%", end="")
+                    print()  # 换行
+                else:
+                    print(f"失败 | 原因: {reason} | 持续{days}天")
+        
+        # 计算组合结果
+        accounts_passed = sum(1 for i in range(1, 4) if sim_results[f'account_{i}_passed'])
+        sim_results['accounts_passed'] = accounts_passed
+        sim_results['all_passed'] = accounts_passed == 3
+        sim_results['all_failed'] = accounts_passed == 0
+        sim_results['at_least_one_passed'] = accounts_passed >= 1
+        sim_results['at_least_two_passed'] = accounts_passed >= 2
+        
+        # 打印组合结果摘要
+        if sim_results['all_failed']:
+            print(f"  ⚠️  三个账户全部失败!")
+        elif sim_results['all_passed']:
+            print(f"  🎉 三个账户全部成功!")
+        else:
+            print(f"  📊 {accounts_passed}/3 个账户成功")
+        
+        all_simulations.append(sim_results)
+        
+        # 显示进度（每10次显示一次汇总）
+        if (sim + 1) % 10 == 0:
+            at_least_one = sum(1 for s in all_simulations if s['at_least_one_passed'])
+            all_failed = sum(1 for s in all_simulations if s['all_failed'])
+            print(f"\n--- 进度汇总: {sim + 1}/{num_simulations} ---")
+            print(f"  至少一个成功: {at_least_one/(sim+1)*100:.1f}% | 全部失败: {all_failed/(sim+1)*100:.1f}%")
+            print("-" * 40)
+    
+    # 统计分析
+    print(f"\n\n📊 统计分析结果:")
+    print("="*80)
+    
+    # 单个账户成功率
+    for i in range(1, 4):
+        account_name = time_configs[i-1]['name']
+        passed_count = sum(1 for s in all_simulations if s[f'account_{i}_passed'])
+        print(f"{account_name} 成功率: {passed_count/num_simulations*100:.1f}% ({passed_count}/{num_simulations})")
+    
+    print("\n组合成功率:")
+    all_passed = sum(1 for s in all_simulations if s['all_passed'])
+    at_least_two = sum(1 for s in all_simulations if s['at_least_two_passed'])
+    at_least_one = sum(1 for s in all_simulations if s['at_least_one_passed'])
+    all_failed = sum(1 for s in all_simulations if s['all_failed'])
+    
+    print(f"  三个账户全部成功: {all_passed/num_simulations*100:.1f}% ({all_passed}/{num_simulations})")
+    print(f"  至少两个账户成功: {at_least_two/num_simulations*100:.1f}% ({at_least_two}/{num_simulations})")
+    print(f"  至少一个账户成功: {at_least_one/num_simulations*100:.1f}% ({at_least_one}/{num_simulations})")
+    print(f"  三个账户全部失败: {all_failed/num_simulations*100:.1f}% ({all_failed}/{num_simulations})")
+    
+    # 分析同时失败的案例
+    print(f"\n💥 同时失败案例分析:")
+    simultaneous_failures = []
+    
+    for sim in all_simulations:
+        if sim['all_failed']:
+            # 检查是否在同一天失败
+            failure_dates = []
+            failure_info = []
+            for i in range(1, 4):
+                details = sim[f'account_{i}_details']
+                if 'violation_date' in details:
+                    failure_dates.append(details['violation_date'])
+                    failure_info.append({
+                        'account': time_configs[i-1]['name'],
+                        'date': details['violation_date'],
+                        'time': details.get('violation_time', 'N/A'),
+                        'type': details.get('violation_type', sim[f'account_{i}_reason'])
+                    })
+            
+            if len(set(failure_dates)) == 1:  # 同一天失败
+                simultaneous_failures.append({
+                    'sim_id': sim['simulation_id'],
+                    'start_date': sim['start_date'].strftime('%Y-%m-%d'),
+                    'failure_date': failure_dates[0],
+                    'reasons': [sim[f'account_{i}_reason'] for i in range(1, 4)],
+                    'failure_info': failure_info
+                })
+    
+    if simultaneous_failures:
+        print(f"  同一天失败的案例: {len(simultaneous_failures)}个")
+        for i, case in enumerate(simultaneous_failures[:5], 1):  # 显示前5个
+            print(f"\n    案例{i}: 模拟#{case['sim_id']} | 开始:{case['start_date']} | 失败日:{case['failure_date']}")
+            for info in case['failure_info']:
+                print(f"      - {info['account']}: {info['time']} | {info['type']}")
+    else:
+        print("  没有发现同一天失败的案例")
+    
+    # 分析失败时间分布
+    print(f"\n📅 失败时间分布分析:")
+    failure_day_gaps = []
+    
+    for sim in all_simulations:
+        if sim['accounts_passed'] > 0 and sim['accounts_passed'] < 3:  # 部分成功部分失败
+            failure_days = []
+            for i in range(1, 4):
+                if not sim[f'account_{i}_passed']:
+                    failure_days.append(sim[f'account_{i}_days'])
+            
+            if len(failure_days) >= 2:
+                failure_day_gaps.append(max(failure_days) - min(failure_days))
+    
+    if failure_day_gaps:
+        avg_gap = np.mean(failure_day_gaps)
+        print(f"  失败时间平均间隔: {avg_gap:.1f}天")
+        print(f"  最大间隔: {max(failure_day_gaps)}天")
+        print(f"  最小间隔: {min(failure_day_gaps)}天")
+    
+    # 创建详细结果DataFrame
+    results_df = pd.DataFrame(all_simulations)
+    
+    # 添加摘要统计
+    summary = {
+        'leverage': leverage,
+        'num_simulations': num_simulations,
+        'account_1_pass_rate': sum(1 for s in all_simulations if s['account_1_passed']) / num_simulations,
+        'account_2_pass_rate': sum(1 for s in all_simulations if s['account_2_passed']) / num_simulations,
+        'account_3_pass_rate': sum(1 for s in all_simulations if s['account_3_passed']) / num_simulations,
+        'all_pass_rate': all_passed / num_simulations,
+        'at_least_two_pass_rate': at_least_two / num_simulations,
+        'at_least_one_pass_rate': at_least_one / num_simulations,
+        'all_fail_rate': all_failed / num_simulations,
+        'simultaneous_failures': len(simultaneous_failures)
+    }
+    
+    return results_df, summary
 
 # 保留原有的函数以便兼容
 def rolling_window_analysis(config, window_days=30, leverage_range=None):
@@ -934,12 +1256,15 @@ if __name__ == "__main__":
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
     NUM_SIMULATIONS = 50  # 每个杠杆率的模拟次数
     
-    # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [2,3,4,5,6,7,8,9]
+    # 杠杆率范围：只测试4倍杠杆
+    LEVERAGE_RANGE = [4]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
     DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值
+    
+    # 分析模式选择
+    ANALYSIS_MODE = "multi_timing"  # "single" 或 "multi_timing"
     
     print("="*60)
     print("🚀 FTMO挑战通过率分析（优化版）")
@@ -954,6 +1279,7 @@ if __name__ == "__main__":
     else:
         print(f"🛡️ 日内止损: 禁用")
     print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
+    print(f"📍 分析模式: {'多账户时间错配分析' if ANALYSIS_MODE == 'multi_timing' else '单一杠杆率分析'}")
     print(f"💡 提示: 如需修改数据，请直接修改上面的base_config")
     print("="*60)
     
@@ -966,59 +1292,92 @@ if __name__ == "__main__":
         print(f"❌ 数据加载失败: {e}")
         exit(1)
     
-    # 估算运行时间
-    total_simulations = NUM_SIMULATIONS * len(LEVERAGE_RANGE)
-    print(f"总计需要运行 {total_simulations} 次回测")
-    print(f"预估运行时间: {total_simulations * 1:.0f}-{total_simulations * 2:.0f} 秒")
-    print("提示: 可以随时按 Ctrl+C 终止\n")
-    
-    try:
-        # 1. 分析不同杠杆率的通过率
-        results_df = monte_carlo_ftmo_analysis(
-            base_config, 
-            num_simulations=NUM_SIMULATIONS,
-            leverage_range=LEVERAGE_RANGE,
-            use_daily_stop_loss=USE_DAILY_STOP_LOSS,
-            daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
-        )
+    if ANALYSIS_MODE == "multi_timing":
+        # 运行多账户时间错配分析
+        print(f"\n开始多账户时间错配分析...")
+        print(f"将同时测试三个账户，使用不同的交易时间:")
+        print(f"  - 账户A: 9:40-15:40 (标准时间)")
+        print(f"  - 账户B: 9:39-15:39 (提前1分钟)")
+        print(f"  - 账户C: 9:41-15:41 (延后1分钟)")
         
-        if results_df is not None:
-            # 2. 打印结果表格
-            print("\n\n📋 杠杆率与通过率关系汇总:")
-            print("="*100)
-            print(f"{'杠杆率':>6} | {'通过率':>7} | {'有效测试':>8} | {'成功次数':>8} | {'平均成功天数':>10} | {'平均有效天数':>10} | {'数据用完':>8} | {'日损失':>8} | {'总损失':>8}")
-            print("="*100)
+        try:
+            results_df, summary = monte_carlo_multi_timing_analysis(
+                base_config,
+                num_simulations=NUM_SIMULATIONS,
+                leverage=LEVERAGE_RANGE[0],  # 使用第一个杠杆率
+                use_daily_stop_loss=USE_DAILY_STOP_LOSS,
+                daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
+            )
             
-            for _, row in results_df.iterrows():
-                # 合并日内和收盘的失败次数
-                total_daily_failures = row['failure_daily_loss'] + row.get('failure_daily_loss_intraday', 0)
-                total_total_failures = row['failure_total_loss'] + row.get('failure_total_loss_intraday', 0)
-                print(f"{row['leverage']:>6}x | {row['pass_rate']*100:>6.1f}% | {row['valid_count']:>8} | {row['passed_count']:>8} | "
-                      f"{row['avg_days_to_success']:>9.1f}天 | {row['avg_days_valid']:>9.1f}天 | {row['data_exhausted_count']:>8} | "
-                      f"{total_daily_failures:>8} | {total_total_failures:>8}")
+            if results_df is not None:
+                print(f"\n\n🎯 多账户时间错配分析总结:")
+                print("="*60)
+                print(f"通过微调交易时间来分散风险的效果:")
+                print(f"  - 单个账户平均成功率: {(summary['account_1_pass_rate'] + summary['account_2_pass_rate'] + summary['account_3_pass_rate'])/3*100:.1f}%")
+                print(f"  - 至少一个账户成功率: {summary['at_least_one_pass_rate']*100:.1f}%")
+                print(f"  - 风险分散效果: {(summary['at_least_one_pass_rate'] - max(summary['account_1_pass_rate'], summary['account_2_pass_rate'], summary['account_3_pass_rate']))*100:.1f}% 提升")
+                
+                # 保存详细结果到CSV（可选）
+                # results_df.to_csv('multi_timing_analysis_results.csv', index=False)
+                # print(f"\n详细结果已保存到: multi_timing_analysis_results.csv")
+                
+        except KeyboardInterrupt:
+            print(f"\n\n⏹️  用户中断")
+    else:
+        # 原有的单一分析模式
+        # 估算运行时间
+        total_simulations = NUM_SIMULATIONS * len(LEVERAGE_RANGE)
+        print(f"总计需要运行 {total_simulations} 次回测")
+        print(f"预估运行时间: {total_simulations * 1:.0f}-{total_simulations * 2:.0f} 秒")
+        print("提示: 可以随时按 Ctrl+C 终止\n")
+        
+        try:
+            # 1. 分析不同杠杆率的通过率
+            results_df = monte_carlo_ftmo_analysis(
+                base_config, 
+                num_simulations=NUM_SIMULATIONS,
+                leverage_range=LEVERAGE_RANGE,
+                use_daily_stop_loss=USE_DAILY_STOP_LOSS,
+                daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
+            )
             
-            # 3. 推荐配置
-            print(f"\n💡 分析结果说明:")
-            print(f"• 通过率基于有效测试计算（排除数据用完的情况）")
-            print(f"• 有效测试 = 总测试 - 数据用完的测试")
-            print(f"• 平均成功天数：成功案例达到10%收益的平均天数")
-            print(f"• 平均有效天数：所有有效测试的平均持续天数")
-            print(f"• 数据用完：因数据不足而无法完成测试的次数（不计入成功率）")
-            print(f"• 日损失：违反5%日损失限制的次数")
-            print(f"• 总损失：违反10%总损失限制的次数")
-            print(f"• 重要：包含日内实时违规检测，更准确反映实际交易风险")
-            
-    except KeyboardInterrupt:
-        print(f"\n\n⏹️  用户中断，显示已完成的结果:")
-        # 显示已完成的结果
-        if 'results_summary' in locals():
-            print(f"\n📊 已完成的结果:")
-            print(f"{'杠杆率':>6} | {'通过率':>7} | {'有效测试':>8} | {'成功次数':>8}")
-            print("-"*40)
-            for summary in results_summary:
-                print(f"{summary['leverage']:>6}x | {summary['pass_rate']*100:>6.1f}% | {summary['valid_count']:>8} | {summary['passed_count']:>8}")
-        else:
-            print("没有完成任何分析")
+            if results_df is not None:
+                # 2. 打印结果表格
+                print("\n\n📋 杠杆率与通过率关系汇总:")
+                print("="*100)
+                print(f"{'杠杆率':>6} | {'通过率':>7} | {'有效测试':>8} | {'成功次数':>8} | {'平均成功天数':>10} | {'平均有效天数':>10} | {'数据用完':>8} | {'日损失':>8} | {'总损失':>8}")
+                print("="*100)
+                
+                for _, row in results_df.iterrows():
+                    # 合并日内和收盘的失败次数
+                    total_daily_failures = row['failure_daily_loss'] + row.get('failure_daily_loss_intraday', 0)
+                    total_total_failures = row['failure_total_loss'] + row.get('failure_total_loss_intraday', 0)
+                    print(f"{row['leverage']:>6}x | {row['pass_rate']*100:>6.1f}% | {row['valid_count']:>8} | {row['passed_count']:>8} | "
+                          f"{row['avg_days_to_success']:>9.1f}天 | {row['avg_days_valid']:>9.1f}天 | {row['data_exhausted_count']:>8} | "
+                          f"{total_daily_failures:>8} | {total_total_failures:>8}")
+                
+                # 3. 推荐配置
+                print(f"\n💡 分析结果说明:")
+                print(f"• 通过率基于有效测试计算（排除数据用完的情况）")
+                print(f"• 有效测试 = 总测试 - 数据用完的测试")
+                print(f"• 平均成功天数：成功案例达到10%收益的平均天数")
+                print(f"• 平均有效天数：所有有效测试的平均持续天数")
+                print(f"• 数据用完：因数据不足而无法完成测试的次数（不计入成功率）")
+                print(f"• 日损失：违反5%日损失限制的次数")
+                print(f"• 总损失：违反10%总损失限制的次数")
+                print(f"• 重要：包含日内实时违规检测，更准确反映实际交易风险")
+                
+        except KeyboardInterrupt:
+            print(f"\n\n⏹️  用户中断，显示已完成的结果:")
+            # 显示已完成的结果
+            if 'results_summary' in locals():
+                print(f"\n📊 已完成的结果:")
+                print(f"{'杠杆率':>6} | {'通过率':>7} | {'有效测试':>8} | {'成功次数':>8}")
+                print("-"*40)
+                for summary in results_summary:
+                    print(f"{summary['leverage']:>6}x | {summary['pass_rate']*100:>6.1f}% | {summary['valid_count']:>8} | {summary['passed_count']:>8}")
+            else:
+                print("没有完成任何分析")
     
     # 程序结束时提供缓存清理选项
     print(f"\n💾 数据缓存状态:")
