@@ -17,6 +17,21 @@ def calculate_vwap(turnovers, volumes, prices):
     else:
         return prices[-1]
 
+def calculate_vwap_with_typical_price(highs, lows, closes, volumes):
+    """
+    使用典型价格计算VWAP的近似值
+    典型价格 = (High + Low + Close) / 3
+    """
+    total_volume = sum(volumes)
+    if total_volume > 0:
+        # 计算每个时间点的典型价格
+        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        # 计算近似成交额
+        turnovers = [tp * v for tp, v in zip(typical_prices, volumes)]
+        return sum(turnovers) / total_volume
+    else:
+        return closes[-1]
+
 def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
@@ -42,8 +57,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     positions_opened_today = 0  # 今日开仓计数器
     
     # 存储用于计算VWAP的数据
-    prices = []
-    turnovers = []
+    highs = []
+    lows = []
+    closes = []
     volumes = []
     
     # 调试时间点标记，确保只打印一次
@@ -52,6 +68,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     for idx, row in day_df.iterrows():
         current_time = row['Time']
         price = row['Close']
+        high = row['High']
+        low = row['Low']
         volume = row['Volume']
         upper = row['UpperBound']
         lower = row['LowerBound']
@@ -70,12 +88,13 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         #     debug_printed = True  # 确保只打印一次
         
         # 更新VWAP计算数据
-        prices.append(price)
-        turnovers.append(price * volume)
+        highs.append(high)
+        lows.append(low)
+        closes.append(price)
         volumes.append(volume)
         
-        # 计算当前VWAP
-        vwap = calculate_vwap(turnovers, volumes, prices)
+        # 计算当前VWAP（使用典型价格）
+        vwap = calculate_vwap_with_typical_price(highs, lows, closes, volumes)
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
@@ -1212,7 +1231,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
+        'start_date': date(2025, 6, 1),
         'end_date': date(2025, 8, 5),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
