@@ -33,6 +33,29 @@ def calculate_vwap_with_hl_average(highs, lows, volumes):
         # 如果没有成交量，返回最后一个时间点的HL平均价
         return (highs[-1] + lows[-1]) / 2 if highs and lows else 0
 
+def calculate_vwap_with_turnover(day_df, current_index):
+    """
+    使用真实的Turnover数据计算VWAP，与simulate.py保持一致
+    """
+    # 获取当天到当前时间点的所有数据
+    current_day_data = day_df.iloc[:current_index + 1].copy()
+    
+    # 按时间排序确保正确累计
+    current_day_data = current_day_data.sort_values('DateTime')
+    
+    # 计算累计成交量和成交额
+    cumulative_volume = current_day_data['Volume'].cumsum()
+    cumulative_turnover = current_day_data['Turnover'].cumsum()
+    
+    # 计算VWAP: 累计成交额 / 累计成交量
+    if cumulative_volume.iloc[-1] > 0:
+        vwap = cumulative_turnover.iloc[-1] / cumulative_volume.iloc[-1]
+    else:
+        # 处理成交量为0的情况，使用当前收盘价
+        vwap = current_day_data['Close'].iloc[-1]
+    
+    return vwap
+
 def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
@@ -57,12 +80,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     trade_entry_time = None
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
-    
-    # 存储用于计算VWAP的数据
-    highs = []
-    lows = []
-    closes = []  # 保留closes用于其他用途
-    volumes = []
     
     # 调试时间点标记，确保只打印一次
     debug_printed = False
@@ -89,14 +106,19 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         #     print("=====================================\n")
         #     debug_printed = True  # 确保只打印一次
         
-        # 更新VWAP计算数据
-        highs.append(high)
-        lows.append(low)
-        closes.append(price)
-        volumes.append(volume)
+        # 计算当前VWAP（使用真实的Turnover数据）
+        # 获取当前行在DataFrame中的位置索引
+        current_index = day_df.index.get_loc(idx)
         
-        # 计算当前VWAP（使用High和Low的平均值）
-        vwap = calculate_vwap_with_hl_average(highs, lows, volumes)
+        # 检查是否有Turnover字段
+        if 'Turnover' in day_df.columns:
+            vwap = calculate_vwap_with_turnover(day_df, current_index)
+        else:
+            # 如果没有Turnover字段，回退到使用HL平均值的方法
+            highs = day_df.iloc[:current_index + 1]['High'].tolist()
+            lows = day_df.iloc[:current_index + 1]['Low'].tolist()
+            volumes = day_df.iloc[:current_index + 1]['Volume'].tolist()
+            vwap = calculate_vwap_with_hl_average(highs, lows, volumes)
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
@@ -1338,14 +1360,14 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
+        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2020, 1, 1),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 8, 5),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
@@ -1361,7 +1383,7 @@ if __name__ == "__main__":
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'leverage': 2,  # 资金杠杆倍数，默认为1
         'use_vwap': True  # VWAP开关，True为使用VWAP，False为不使用
     }
     
