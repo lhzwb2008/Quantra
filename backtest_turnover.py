@@ -17,20 +17,21 @@ def calculate_vwap(turnovers, volumes, prices):
     else:
         return prices[-1]
 
-def calculate_vwap_with_typical_price(highs, lows, closes, volumes):
+def calculate_vwap_with_hl_average(highs, lows, volumes):
     """
-    使用典型价格计算VWAP的近似值
-    典型价格 = (High + Low + Close) / 3
+    使用High和Low的平均值计算VWAP的近似值
+    平均价格 = (High + Low) / 2
     """
     total_volume = sum(volumes)
     if total_volume > 0:
-        # 计算每个时间点的典型价格
-        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        # 计算每个时间点的High和Low平均价格
+        hl_average_prices = [(h + l) / 2 for h, l in zip(highs, lows)]
         # 计算近似成交额
-        turnovers = [tp * v for tp, v in zip(typical_prices, volumes)]
+        turnovers = [avg_price * v for avg_price, v in zip(hl_average_prices, volumes)]
         return sum(turnovers) / total_volume
     else:
-        return closes[-1]
+        # 如果没有成交量，返回最后一个时间点的HL平均价
+        return (highs[-1] + lows[-1]) / 2 if highs and lows else 0
 
 def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
@@ -49,6 +50,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
     print_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time', None)
+    use_vwap = config.get('use_vwap', True)  # 新增VWAP开关参数
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
     trailing_stop = np.nan
@@ -59,7 +61,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     # 存储用于计算VWAP的数据
     highs = []
     lows = []
-    closes = []
+    closes = []  # 保留closes用于其他用途
     volumes = []
     
     # 调试时间点标记，确保只打印一次
@@ -93,13 +95,20 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         closes.append(price)
         volumes.append(volume)
         
-        # 计算当前VWAP（使用典型价格）
-        vwap = calculate_vwap_with_typical_price(highs, lows, closes, volumes)
+        # 计算当前VWAP（使用High和Low的平均值）
+        vwap = calculate_vwap_with_hl_average(highs, lows, volumes)
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
-            # 检查潜在多头入场 - 加入VWAP条件
-            if price > upper and price > vwap:
+            # 检查潜在多头入场
+            if use_vwap:
+                # 使用VWAP条件
+                long_entry_condition = price > upper and price > vwap
+            else:
+                # 不使用VWAP条件
+                long_entry_condition = price > upper
+                
+            if long_entry_condition:
                 # 打印边界计算详情（如果需要）
                 if print_details:
                     date_str = row['DateTime'].strftime('%Y-%m-%d')
@@ -123,11 +132,21 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 初始止损设为上边界和VWAP的最大值
-                trailing_stop = max(upper, vwap)
+                # 初始止损设置
+                if use_vwap:
+                    trailing_stop = max(upper, vwap)
+                else:
+                    trailing_stop = upper
                     
-            # 检查潜在空头入场 - 加入VWAP条件
-            if price < lower_bound and price < vwap:
+            # 检查潜在空头入场
+            if use_vwap:
+                # 使用VWAP条件
+                short_entry_condition = price < lower_bound and price < vwap
+            else:
+                # 不使用VWAP条件
+                short_entry_condition = price < lower_bound
+                
+            if short_entry_condition:
                 # 打印边界计算详情（如果需要）
                 if print_details:
                     date_str = row['DateTime'].strftime('%Y-%m-%d')
@@ -151,17 +170,22 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 初始止损设为下边界和VWAP的最小值
-                trailing_stop = min(lower_bound, vwap)
+                # 初始止损设置
+                if use_vwap:
+                    trailing_stop = min(lower_bound, vwap)
+                else:
+                    trailing_stop = lower_bound
         
         # 更新止损并检查出场信号
         if position != 0:
             if position == 1:  # 多头仓位
-                # 计算当前时刻的止损水平（使用上边界和VWAP的最大值）
-                current_stop = max(upper, vwap)
-                
-                # 检查VWAP是否影响了止损决策
-                vwap_influenced = vwap > upper  # 如果VWAP > 上边界，则VWAP影响了止损
+                # 计算当前时刻的止损水平
+                if use_vwap:
+                    current_stop = max(upper, vwap)
+                    vwap_influenced = vwap > upper  # 如果VWAP > 上边界，则VWAP影响了止损
+                else:
+                    current_stop = upper
+                    vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
                 # 如果价格跌破当前止损，则平仓
                 exit_condition = price < current_stop
@@ -196,18 +220,20 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'upper_bound': upper,
-                        'vwap_value': vwap
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
                     
                     position = 0
                     trailing_stop = np.nan
                     
             elif position == -1:  # 空头仓位
-                # 计算当前时刻的止损水平（使用下边界和VWAP的最小值）
-                current_stop = min(lower_bound, vwap)
-                
-                # 检查VWAP是否影响了止损决策
-                vwap_influenced = vwap < lower_bound  # 如果VWAP < 下边界，则VWAP影响了止损
+                # 计算当前时刻的止损水平
+                if use_vwap:
+                    current_stop = min(lower_bound, vwap)
+                    vwap_influenced = vwap < lower_bound  # 如果VWAP < 下边界，则VWAP影响了止损
+                else:
+                    current_stop = lower_bound
+                    vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
                 # 如果价格涨破当前止损，则平仓
                 exit_condition = price > current_stop
@@ -242,7 +268,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'lower_bound': lower_bound,
-                        'vwap_value': vwap
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
                     
                     position = 0
@@ -1312,14 +1338,14 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',
+        # 'data_path': 'qqq_longport.csv',
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
+        'start_date': date(2020, 1, 1),
         'end_date': date(2025, 8, 5),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
@@ -1330,12 +1356,13 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 2  # 资金杠杆倍数，默认为1
+        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'use_vwap': True  # VWAP开关，True为使用VWAP，False为不使用
     }
     
     # 运行回测
