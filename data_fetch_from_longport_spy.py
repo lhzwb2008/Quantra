@@ -48,7 +48,8 @@ for c in all_candles:
         'High':      c.high,
         'Low':       c.low,
         'Close':     c.close,
-        'Volume':    c.volume
+        'Volume':    c.volume,
+        'Turnover':  c.turnover
     })
 
 df = pd.DataFrame(rows)
