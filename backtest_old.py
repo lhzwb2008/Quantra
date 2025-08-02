@@ -98,7 +98,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 追踪止损设为上边界和VWAP的最大值
+                # 初始止损设为上边界和VWAP的最大值
                 trailing_stop = max(upper, vwap)
                     
             # 检查潜在空头入场 - 加入VWAP条件
@@ -126,18 +126,16 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 entry_price = price
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 追踪止损设为下边界和VWAP的最小值
+                # 初始止损设为下边界和VWAP的最小值
                 trailing_stop = min(lower, vwap)
         
-        # 更新追踪止损并检查出场信号
+        # 更新止损并检查出场信号
         if position != 0:
             if position == 1:  # 多头仓位
-                # 计算止损水平（使用上边界和VWAP的最大值）
-                new_stop = max(upper, vwap)
-                # 只在有利方向更新（提高止损）
-                trailing_stop = max(trailing_stop, new_stop)
+                # 计算当前时刻的止损水平（使用上边界和VWAP的最大值）
+                trailing_stop = max(upper, vwap)
                 
-                # 如果价格跌破追踪止损，则平仓
+                # 如果价格跌破当前止损，则平仓
                 exit_condition = price < trailing_stop
                 
                 # 检查是否出场
@@ -146,8 +144,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
-                        print(f"  价格: {price:.2f} < 追踪止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
+                        print(f"  价格: {price:.2f} < 当前止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
                         print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓多头
@@ -173,12 +171,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     trailing_stop = np.nan
                     
             elif position == -1:  # 空头仓位
-                # 计算止损水平（使用下边界和VWAP的最小值）
-                new_stop = min(lower, vwap)
-                # 只在有利方向更新（降低止损）
-                trailing_stop = min(trailing_stop, new_stop)
+                # 计算当前时刻的止损水平（使用下边界和VWAP的最小值）
+                trailing_stop = min(lower, vwap)
                 
-                # 如果价格涨破追踪止损，则平仓
+                # 如果价格涨破当前止损，则平仓
                 exit_condition = price > trailing_stop
                 
                 # 检查是否出场
@@ -187,9 +183,9 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
-                        print(f"  价格: {price:.2f} > 追踪止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {new_stop:.2f}")
-                        print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
+                        print(f"  价格: {price:.2f} > 当前止损: {trailing_stop:.2f}")
+                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
+                        print(f"  卖出价: {entry_price:.2f}, 买入价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓空头
                     exit_time = row['DateTime']
@@ -358,6 +354,7 @@ def run_backtest(config):
     print_daily_trades = config.get('print_daily_trades', True)
     print_trade_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time')
+    leverage = config.get('leverage', 1)  # 资金杠杆倍数，默认为1
     # 如果未提供ticker，从文件名中提取
     if ticker is None:
         # 从文件名中提取ticker
@@ -604,8 +601,9 @@ def run_backtest(config):
         # 获取当天的开盘价
         day_open_price = day_data['day_open'].iloc[0]
         
-        # 计算仓位大小
-        position_size = floor(capital / day_open_price)
+        # 计算仓位大小（应用杠杆）
+        leveraged_capital = capital * leverage  # 应用杠杆倍数
+        position_size = floor(leveraged_capital / day_open_price)
         
         # 如果资金不足，跳过当天
         if position_size <= 0:
@@ -647,7 +645,8 @@ def run_backtest(config):
             
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
-            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f} | {trade_info}")
+            leverage_info = f" [杠杆{leverage}x]" if leverage != 1 else ""
+            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f}{leverage_info} | {trade_info}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -794,7 +793,8 @@ def run_backtest(config):
     
     # 打印简化的性能指标
     print(f"\n策略性能指标:")
-    strategy_name = f"{ticker} Curr.Band + VWAP"
+    leverage_text = f" (杠杆{leverage}x)" if leverage != 1 else ""
+    strategy_name = f"{ticker} Curr.Band + VWAP{leverage_text}"
     print(f"策略: {strategy_name}")
     
     # 创建表格格式对比策略与买入持有的指标
@@ -857,10 +857,42 @@ def run_backtest(config):
     
     print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
     
+    # 打印最大单笔收益和亏损统计
+    print(f"\n单笔交易统计:")
+    print(f"最大单笔收益: ${metrics.get('max_single_gain', 0):.2f}")
+    print(f"最大单笔亏损: ${metrics.get('max_single_loss', 0):.2f}")
+    
+    # 打印前10笔最大收益
+    if metrics.get('top_10_gains'):
+        print(f"\n前10笔最大收益:")
+        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
+        print("-" * 85)
+        for i, trade in enumerate(metrics['top_10_gains'], 1):
+            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
+            side = '多' if trade['side'] == 'Long' else '空'
+            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
+    
+    # 打印前10笔最大亏损
+    if metrics.get('top_10_losses'):
+        print(f"\n前10笔最大亏损:")
+        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
+        print("-" * 85)
+        for i, trade in enumerate(metrics['top_10_losses'], 1):
+            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
+            side = '多' if trade['side'] == 'Long' else '空'
+            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
+    
     # 打印策略总结
     print(f"\n" + "="*50)
     print(f"策略回测总结 - {strategy_name}")
     print(f"="*50)
+    
+    # 打印杠杆信息
+    if leverage != 1:
+        print(f"💰 资金杠杆倍数: {leverage}x")
+        print(f"💵 初始资金: ${initial_capital:,.0f}")
+        print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
+        print(f"-"*50)
     
     # 核心表现指标
     print(f"📈 总回报率: {metrics['total_return']*100:.1f}%")
@@ -972,6 +1004,19 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
         daily_pnl = trades_df.groupby('Date')['pnl'].sum()
         metrics['max_daily_loss'] = daily_pnl.min() if len(daily_pnl) > 0 and daily_pnl.min() < 0 else 0
         metrics['max_daily_gain'] = daily_pnl.max() if len(daily_pnl) > 0 else 0
+        
+        # 计算最大单笔收益和最大单笔亏损
+        # 按盈亏排序，获取前10笔最大收益
+        top_gains = trades_df.nlargest(10, 'pnl')[['Date', 'side', 'entry_price', 'exit_price', 'pnl', 'exit_reason']]
+        metrics['top_10_gains'] = top_gains.to_dict('records')
+        
+        # 获取前10笔最大亏损
+        top_losses = trades_df.nsmallest(10, 'pnl')[['Date', 'side', 'entry_price', 'exit_price', 'pnl', 'exit_reason']]
+        metrics['top_10_losses'] = top_losses.to_dict('records')
+        
+        # 最大单笔收益和亏损
+        metrics['max_single_gain'] = trades_df['pnl'].max()
+        metrics['max_single_loss'] = trades_df['pnl'].min()
     else:
         metrics['hit_ratio'] = 0
         metrics['profit_loss_ratio'] = 0
@@ -980,6 +1025,10 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
         metrics['max_daily_trades'] = 0
         metrics['max_daily_loss'] = 0
         metrics['max_daily_gain'] = 0
+        metrics['top_10_gains'] = []
+        metrics['top_10_losses'] = []
+        metrics['max_single_gain'] = 0
+        metrics['max_single_loss'] = 0
     
     # 6. 最大回撤 (MDD - Maximum Drawdown)
     # 计算每日资金的累计最大值
@@ -1151,18 +1200,20 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        'data_path': 'tqqq_longport.csv',
-        'ticker': 'TQQQ',
+        # 'data_path':'tqqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_longport.csv',
+        # 'data_path': 'tqqq_longport.csv',
+        'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2020, 1, 1),
-        'end_date': date(2025, 6, 30),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 8, 5),
         'check_interval_minutes': 15 ,
-        # 'transaction_fee_per_share': 0.008166,
-        'transaction_fee_per_share': 0.013166,
-
+        # 'transaction_fee_per_share': 0.01,
+        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.013166,
         'trading_start_time': (9, 40),
-        'trading_end_time': (15, 45),
+        'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
@@ -1170,7 +1221,8 @@ if __name__ == "__main__":
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
-        'K2': 1   # 下边界sigma乘数
+        'K2': 1,  # 下边界sigma乘数
+        'leverage': 2  # 资金杠杆倍数，默认为1
     }
     
     # 运行回测
