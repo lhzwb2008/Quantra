@@ -28,8 +28,6 @@ SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
 
 # 调试模式配置
 DEBUG_MODE = False   # 设置为True开启调试模式
-DEBUG_TIME = "2025-07-07 09:40:00"  # 调试使用的时间，格式: "YYYY-MM-DD HH:MM:SS"
-DEBUG_ONCE = True  # 是否只运行一次就退出
 
 # 收益统计全局变量
 TOTAL_PNL = 0.0  # 总收益
@@ -38,16 +36,7 @@ LAST_STATS_DATE = None  # 上次统计日期
 DAILY_TRADES = []  # 当日交易记录
 
 def get_us_eastern_time():
-    if DEBUG_MODE and DEBUG_TIME:
-        # 如果处于调试模式且指定了时间，返回指定的时间
-        try:
-            dt = datetime.strptime(DEBUG_TIME, "%Y-%m-%d %H:%M:%S")
-            eastern = pytz.timezone('US/Eastern')
-            return eastern.localize(dt)
-        except ValueError:
-            print(f"错误的调试时间格式: {DEBUG_TIME}，应为 'YYYY-MM-DD HH:MM:SS'")
-    
-    # 正常模式或调试时间格式错误时返回当前时间
+    # 正常模式返回当前时间
     eastern = pytz.timezone('US/Eastern')
     return datetime.now(eastern)
 
@@ -546,8 +535,6 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
     print(f"每日最大开仓次数: {max_positions_per_day}")
     if DEBUG_MODE:
         print(f"调试模式已开启! 使用时间: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
-        if DEBUG_ONCE:
-            print("单次运行模式已开启，策略将只运行一次")
     
     initial_capital = get_account_balance()
     if initial_capital <= 0:
@@ -775,39 +762,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 # 清空当日交易记录，为下一个交易日准备
                 DAILY_TRADES.clear()
             
-            if DEBUG_MODE and DEBUG_ONCE:
-                print("\n调试模式单次运行完成，程序退出")
-                
-                # 打印当日交易记录（如果有）
-                if DAILY_TRADES:
-                    print(f"\n===== 当日交易记录 =====")
-                    for i, trade in enumerate(DAILY_TRADES, 1):
-                        print(f"交易 #{i}:")
-                        print(f"  时间: {trade['time']}")
-                        print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
-                        print(f"  价格: ${trade['price']:.2f}")
-                        if trade['pnl'] is not None:
-                            print(f"  盈亏: ${trade['pnl']:+.2f}")
-                    
-                    # 计算当日统计
-                    total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
-                    winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
-                    losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
-                    
-                    print(f"\n当日交易统计:")
-                    print(f"  总交易次数: {total_trades}")
-                    print(f"  盈利次数: {winning_trades}")
-                    print(f"  亏损次数: {losing_trades}")
-                    if total_trades > 0:
-                        print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
-                    print("=" * 50)
-                
-                # 输出最终收益统计
-                if DAILY_PNL != 0 or TOTAL_PNL != 0:
-                    print(f"\n=== 最终收益统计 ===")
-                    print(f"当日盈亏: ${DAILY_PNL:+.2f}")
-                    print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
-                break
+
             continue
         
         # 检查是否是交易日（调试模式下保持原有逻辑）
@@ -1129,8 +1084,10 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     if DEBUG_MODE:
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
             if signal != 0:
-                # 保留交易信号日志
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号! 价格: {price}, 止损: {stop}")
+                # 保留交易信号日志，并添加VWAP和上下界信息
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号!")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前价格: {price}, VWAP: {latest_row['VWAP']:.4f}, 上界: {latest_row['UpperBound']:.4f}, 下界: {latest_row['LowerBound']:.4f}, 止损: {stop}")
+                
                 available_capital = get_account_balance()
                 # 应用杠杆比例
                 adjusted_capital = available_capital * LEVERAGE
@@ -1159,40 +1116,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     "pnl": None  # 开仓时还没有盈亏
                 })
         
-        # 调试模式且单次运行模式，完成一次循环后退出
-        if DEBUG_MODE and DEBUG_ONCE:
-            print("\n调试模式单次运行完成，程序退出")
-            
-            # 打印当日交易记录（如果有）
-            if DAILY_TRADES:
-                print(f"\n===== 当日交易记录 =====")
-                for i, trade in enumerate(DAILY_TRADES, 1):
-                    print(f"交易 #{i}:")
-                    print(f"  时间: {trade['time']}")
-                    print(f"  操作: {trade['action']} {trade['side']} {trade['quantity']} 股")
-                    print(f"  价格: ${trade['price']:.2f}")
-                    if trade['pnl'] is not None:
-                        print(f"  盈亏: ${trade['pnl']:+.2f}")
-                
-                # 计算当日统计
-                total_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓'])
-                winning_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] > 0])
-                losing_trades = len([t for t in DAILY_TRADES if t['action'] == '平仓' and t['pnl'] < 0])
-                
-                print(f"\n当日交易统计:")
-                print(f"  总交易次数: {total_trades}")
-                print(f"  盈利次数: {winning_trades}")
-                print(f"  亏损次数: {losing_trades}")
-                if total_trades > 0:
-                    print(f"  胜率: {winning_trades/total_trades*100:.1f}%")
-                print("=" * 50)
-            
-            # 输出最终收益统计
-            if DAILY_PNL != 0 or TOTAL_PNL != 0:
-                print(f"\n=== 最终收益统计 ===")
-                print(f"当日盈亏: ${DAILY_PNL:+.2f}")
-                print(f"累计盈亏: ${TOTAL_PNL:+.2f}")
-            break
+
             
         next_check_time = now + timedelta(minutes=check_interval_minutes)
         sleep_seconds = (next_check_time - now).total_seconds()
@@ -1207,10 +1131,6 @@ if __name__ == "__main__":
     print("时间:", get_us_eastern_time().strftime("%Y-%m-%d %H:%M:%S"), "(美东时间)")
     if DEBUG_MODE:
         print("调试模式已开启")
-        if DEBUG_TIME:
-            print(f"调试时间: {DEBUG_TIME}")
-        if DEBUG_ONCE:
-            print("单次运行模式已开启")
     print(f"杠杆倍数: {LEVERAGE}倍")
     
     if QUOTE_CTX is None or TRADE_CTX is None:

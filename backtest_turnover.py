@@ -7,11 +7,15 @@ import random
 import os
 from plot_trading_day import plot_trading_day
 
-def calculate_vwap(prices, volumes):
+def calculate_vwap(turnovers, volumes, prices):
     """
-    计算VWAP (成交量加权平均价格)
+    Calculate VWAP using cumulative turnover / cumulative volume
     """
-    return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
+    total_volume = sum(volumes)
+    if total_volume > 0:
+        return sum(turnovers) / total_volume
+    else:
+        return prices[-1]
 
 def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
@@ -39,6 +43,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     
     # 存储用于计算VWAP的数据
     prices = []
+    turnovers = []
     volumes = []
     
     # 调试时间点标记，确保只打印一次
@@ -60,16 +65,17 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         #     print(f"上边界: {upper:.6f}")
         #     print(f"下边界: {lower:.6f}")
         #     print(f"Sigma值: {sigma:.6f}")
-        #     print(f"VWAP: {calculate_vwap(prices, volumes):.6f}")
+        #     print(f"VWAP: {calculate_vwap(prices, volumes, prices):.6f}")
         #     print("=====================================\n")
         #     debug_printed = True  # 确保只打印一次
         
         # 更新VWAP计算数据
         prices.append(price)
+        turnovers.append(price * volume)
         volumes.append(volume)
         
         # 计算当前VWAP
-        vwap = calculate_vwap(prices, volumes)
+        vwap = calculate_vwap(turnovers, volumes, prices)
         
         # 在允许时间内的入场信号
         if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
