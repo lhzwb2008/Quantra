@@ -27,7 +27,7 @@ K2 = 1 # 下边界sigma乘数
 SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
 
 # 调试模式配置
-DEBUG_MODE = False   # 设置为True开启调试模式
+DEBUG_MODE = True   # 设置为True开启调试模式
 
 # 收益统计全局变量
 TOTAL_PNL = 0.0  # 总收益
