@@ -992,9 +992,11 @@ def run_backtest(config):
     
     # 打印杠杆信息
     if leverage != 1:
+        final_capital = daily_df['capital'].iloc[-1]
         print(f"💰 资金杠杆倍数: {leverage}x")
         print(f"💵 初始资金: ${initial_capital:,.0f}")
         print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
+        print(f"💰 最终资金: ${final_capital:,.2f}")
         print(f"-"*50)
     
     # 核心表现指标
@@ -1367,8 +1369,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
-        'end_date': date(2025, 8, 5),
+        'start_date': date(2025, 7, 5),
+        'end_date': date(2025, 9, 15),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
         'transaction_fee_per_share': 0.008166,
@@ -1378,12 +1380,12 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 2,  # 资金杠杆倍数，默认为1
+        'leverage': 4,  # 资金杠杆倍数，默认为1
         'use_vwap': True  # VWAP开关，True为使用VWAP，False为不使用
     }
     

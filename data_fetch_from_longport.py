@@ -16,8 +16,8 @@ TZ_ET = ZoneInfo('US/Eastern')
 
 # ———— 用户参数：美东起止日期（inclusive） ————
 # 注意：history_candlesticks_by_date 接口接受 date 类型
-start_date = date(2024, 1, 1)
-end_date   = date(2025, 8, 5)
+start_date = date(2025, 7, 1)
+end_date   = date(2025, 9, 15)
 
 all_candles = []
 
@@ -53,5 +53,14 @@ for c in all_candles:
     })
 
 df = pd.DataFrame(rows)
+
+# 检查并去除重复的时间戳，保留最后一条记录（通常是更新后的数据）
+initial_count = len(df)
+df = df.drop_duplicates(subset=['DateTime'], keep='last')
+final_count = len(df)
+
+if initial_count > final_count:
+    print(f"⚠️  发现并去除了 {initial_count - final_count} 条重复的时间戳记录")
+
 df.to_csv('qqq_longport.csv', index=False)
 print(f"✔️ 已保存 qqq_longport.csv，共 {len(df)} 条记录（所有时间均为美东本地时间）。")
