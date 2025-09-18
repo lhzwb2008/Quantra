@@ -1,3 +1,15 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+噪声空间策略回测 - 跳过美股特殊事件日版本
+此版本默认排除所有美股特殊日期：
+- 美联储FOMC议息会议日期
+- 美股市场节日
+- ETF分红日期
+
+基于原始backtest.py修改，专门用于测试避开特殊日期后的策略表现
+"""
+
 import pandas as pd
 import numpy as np
 from math import floor
@@ -954,7 +966,8 @@ def run_backtest(config):
     # 打印简化的性能指标
     print(f"\n策略性能指标:")
     leverage_text = f" (杠杆{leverage}x)" if leverage != 1 else ""
-    strategy_name = f"{ticker} Curr.Band + VWAP{leverage_text}"
+    special_dates_text = " [跳过特殊事件日]" if exclude_special_dates else ""
+    strategy_name = f"{ticker} Curr.Band + VWAP{leverage_text}{special_dates_text}"
     print(f"策略: {strategy_name}")
     
     # 创建表格格式对比策略与买入持有的指标
@@ -1043,9 +1056,9 @@ def run_backtest(config):
             print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
     
     # 打印策略总结
-    print(f"\n" + "="*50)
+    print(f"\n" + "="*60)
     print(f"策略回测总结 - {strategy_name}")
-    print(f"="*50)
+    print(f"="*60)
     
     # 打印杠杆信息
     if leverage != 1:
@@ -1445,13 +1458,8 @@ if __name__ == "__main__":
         'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         
-        # 特殊日期过滤配置
-        # 'exclude_special_dates': [],  # 不过滤任何特殊日期（默认）
-        # 'exclude_special_dates': ['FOMC'],  # 只排除美联储议息会议日期
-        # 'exclude_special_dates': ['Dividends'],  # 只排除分红日期
-        # 'exclude_special_dates': ['Market_Holidays'],  # 只排除市场节日
-        # 'exclude_special_dates': ['FOMC', 'Dividends'],  # 排除议息会议和分红日期
-        # 'exclude_special_dates': ['All'],  # 排除所有特殊日期
+        # 特殊日期过滤配置 - 默认排除所有特殊日期
+        'exclude_special_dates': ['All'],  # 排除所有特殊日期（FOMC会议、市场节日、分红日期）
         'special_date_symbols': ['QQQ', 'SPY']  # 用于获取分红日期的股票代码
     }
     
