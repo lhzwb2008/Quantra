@@ -7,7 +7,6 @@ import random
 import os
 from plot_trading_day import plot_trading_day
 from us_special_dates import USSpecialDates
-from trading_fees import TradingFees
 
 def calculate_vwap(turnovers, volumes, prices):
     """
@@ -71,7 +70,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     # 从配置中提取参数
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
-    use_real_fees = config.get('use_real_fees', False)  # 是否使用真实费用计算
     trading_end_time = config.get('trading_end_time', (15, 50))
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
     print_details = config.get('print_trade_details', False)
@@ -83,10 +81,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     trade_entry_time = None
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
-    
-    # 初始化费用计算器
-    if use_real_fees:
-        fee_calculator = TradingFees()
     
     # 调试时间点标记，确保只打印一次
     debug_printed = False
@@ -154,7 +148,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     print(f"    - 下边界参考价: min({day_open:.2f}, {prev_close:.2f}) = {lower_ref:.2f}")
                     print(f"    - Sigma值: {sigma:.6f}")
                     print(f"    - 上边界计算: {upper_ref:.2f} * (1 + {sigma:.6f}) = {upper:.2f}")
-                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower:.2f}")
+                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower_bound:.2f}")
                 
                 # 允许多头入场
                 position = 1
@@ -232,17 +226,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     # 平仓多头
                     exit_time = row['DateTime']
                     # 计算交易费用（开仓和平仓）
-                    if use_real_fees:
-                        # 使用真实费用计算
-                        fees = fee_calculator.calculate_round_trip_fees(
-                            quantity=position_size,
-                            buy_price=entry_price,
-                            sell_price=price
-                        )
-                        transaction_fees = fees['total_fees']
-                    else:
-                        # 使用简化费用计算
-                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
                     pnl = position_size * (price - entry_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -290,17 +274,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     # 平仓空头
                     exit_time = row['DateTime']
                     # 计算交易费用（开仓和平仓）
-                    if use_real_fees:
-                        # 使用真实费用计算（空头：先卖后买）
-                        fees = fee_calculator.calculate_round_trip_fees(
-                            quantity=position_size,
-                            buy_price=price,  # 平仓时买入
-                            sell_price=entry_price  # 开仓时卖出
-                        )
-                        transaction_fees = fees['total_fees']
-                    else:
-                        # 使用简化费用计算
-                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
                     pnl = position_size * (entry_price - price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -343,17 +317,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            if use_real_fees:
-                # 使用真实费用计算
-                fees = fee_calculator.calculate_round_trip_fees(
-                    quantity=position_size,
-                    buy_price=entry_price,
-                    sell_price=close_price
-                )
-                transaction_fees = fees['total_fees']
-            else:
-                # 使用简化费用计算
-                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (close_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -382,17 +346,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            if use_real_fees:
-                # 使用真实费用计算（空头：先卖后买）
-                fees = fee_calculator.calculate_round_trip_fees(
-                    quantity=position_size,
-                    buy_price=close_price,  # 平仓时买入
-                    sell_price=entry_price  # 开仓时卖出
-                )
-                transaction_fees = fees['total_fees']
-            else:
-                # 使用简化费用计算
-                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (entry_price - close_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -427,17 +381,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            if use_real_fees:
-                # 使用真实费用计算
-                fees = fee_calculator.calculate_round_trip_fees(
-                    quantity=position_size,
-                    buy_price=entry_price,
-                    sell_price=last_price
-                )
-                transaction_fees = fees['total_fees']
-            else:
-                # 使用简化费用计算
-                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (last_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -463,17 +407,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            if use_real_fees:
-                # 使用真实费用计算（空头：先卖后买）
-                fees = fee_calculator.calculate_round_trip_fees(
-                    quantity=position_size,
-                    buy_price=last_price,  # 平仓时买入
-                    sell_price=entry_price  # 开仓时卖出
-                )
-                transaction_fees = fees['total_fees']
-            else:
-                # 使用简化费用计算
-                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
             pnl = position_size * (entry_price - last_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -1003,18 +937,7 @@ def run_backtest(config):
     
     # 打印交易费用统计
     print(f"\n交易费用统计:")
-    use_real_fees = config.get('use_real_fees', False)
-    if use_real_fees:
-        print(f"费用计算模式: 真实费用（基于Longport费率）")
-        print(f"  - 佣金: $0.99/笔")
-        print(f"  - 平台费: $1.00/笔")
-        print(f"  - SEC费: 卖出时收取")
-        print(f"  - TAF费: 卖出时收取")
-        print(f"  - 交收费: 按股数收取")
-    else:
-        print(f"费用计算模式: 简化费用（${config.get('transaction_fee_per_share', 0.01):.4f}/股）")
-    
-    print(f"\n总交易费用: ${total_transaction_fees:.2f}")
+    print(f"总交易费用: ${total_transaction_fees:.2f}")
     if len(trades_df) > 0:
         print(f"平均每笔交易费用: ${total_transaction_fees / len(trades_df):.2f}")
     if len(daily_df) > 0:
@@ -1503,25 +1426,23 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 12282,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
+        'start_date': date(2025, 7, 30),
         'end_date': date(2025, 9, 20),
         'check_interval_minutes': 15 ,
-        
-        # 费用计算配置
-        'use_real_fees': True,  # 使用真实费用计算（基于Longport费率）
-        'transaction_fee_per_share': 0.013166,  # 简化费用计算时使用
-        
+        # 'transaction_fee_per_share': 0.01,
+        # 'transaction_fee_per_share': 0.008166,
+        'transaction_fee_per_share': 0.013166,
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 3,  # 资金杠杆倍数，默认为1
+        'leverage': 4,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         
         # 特殊日期过滤配置

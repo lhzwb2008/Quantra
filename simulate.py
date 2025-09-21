@@ -19,7 +19,7 @@ TRADING_START_TIME = (9, 40)  # 交易开始时间：9点40分
 TRADING_END_TIME = (15, 40)   # 交易结束时间：15点40分
 MAX_POSITIONS_PER_DAY = 10
 LOOKBACK_DAYS = 1
-LEVERAGE = 1.8 # 杠杆倍数，默认为1倍
+LEVERAGE = 3 # 杠杆倍数，默认为1倍
 K1 = 1 # 上边界sigma乘数
 K2 = 1 # 下边界sigma乘数
 
@@ -125,6 +125,13 @@ def get_historical_data(symbol, days_back=None):
     date_to_check = current_date
     api_call_count = 0
     while date_to_check >= start_date:
+        # 跳过周末（周六=5, 周日=6）
+        if date_to_check.weekday() >= 5:
+            if DEBUG_MODE:
+                print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 跳过周末: {date_to_check}")
+            date_to_check -= timedelta(days=1)
+            continue
+            
         day_start_time = datetime.combine(date_to_check, time(9, 30))
         day_start_time_et = eastern.localize(day_start_time)
         
@@ -233,6 +240,14 @@ def get_historical_data(symbol, days_back=None):
     # 过滤掉未来日期的数据（双重保险）
     df = df[df["Date"] <= current_date]
     
+    # 过滤周末数据（双重保险）
+    weekday_mask = df["Date"].apply(lambda x: x.weekday() < 5 if isinstance(x, date_type) else True)
+    df = df[weekday_mask]
+    
+    if DEBUG_MODE and not df.empty:
+        unique_dates = sorted(df["Date"].unique())
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 最终数据包含的日期: {unique_dates}")
+    
     return df
 
 def get_quote(symbol):
@@ -288,6 +303,24 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     if unique_dates and isinstance(unique_dates[0], date_type):
         unique_dates = [d for d in unique_dates if d <= current_date]
         df_copy = df_copy[df_copy["Date"].isin(unique_dates)]
+    
+    # 过滤周末数据：只保留周一到周五的数据
+    weekday_dates = []
+    for d in unique_dates:
+        if isinstance(d, date_type):
+            # weekday(): 0=Monday, 1=Tuesday, ..., 6=Sunday
+            if d.weekday() < 5:  # 0-4 表示周一到周五
+                weekday_dates.append(d)
+        else:
+            weekday_dates.append(d)  # 如果不是date类型，保留原样
+    
+    unique_dates = weekday_dates
+    df_copy = df_copy[df_copy["Date"].isin(unique_dates)]
+    
+    if DEBUG_MODE:
+        print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 过滤周末后的日期数量: {len(unique_dates)}")
+        if len(unique_dates) > 0:
+            print(f"[{now_et.strftime('%Y-%m-%d %H:%M:%S')}] 最近的交易日: {unique_dates[-5:]}")
     
     # 假设最后一天是当前交易日，直接排除
     if len(unique_dates) > 1:
