@@ -1503,7 +1503,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 12282,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 9, 20),
         'check_interval_minutes': 15 ,
         
@@ -1521,7 +1521,7 @@ if __name__ == "__main__":
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         
         # 特殊日期过滤配置
