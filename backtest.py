@@ -548,11 +548,21 @@ def run_backtest(config):
     print(f"计算噪声区域边界...")
     # 将时间点转为列
     pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
-    # 计算每个时间点的绝对回报的滚动平均值
-    # 这确保我们对每个时间点使用前lookback_days天的数据
+    
+    # 重要修复：确保rolling基于实际交易日而不是日历日
+    # 对于周一或节假日后的第一个交易日，应该使用前一个交易日的数据
+    # 这里使用实际存在的交易日进行rolling计算
     sigma = pivot.rolling(window=lookback_days, min_periods=lookback_days).mean().shift(1)
+    
+    # 对于lookback_days=1的情况，特殊处理：直接使用前一个交易日的数据
+    if lookback_days == 1:
+        # shift(1)已经确保使用前一个交易日的数据
+        # 因为pivot的索引只包含实际的交易日，所以shift(1)会自动跳过周末
+        pass
+    
     # 转回长格式
     sigma = sigma.stack().reset_index(name='sigma')
+    
     
     # 保存一个原始数据的副本，用于计算买入持有策略
     price_df_original = price_df.copy()
@@ -561,15 +571,34 @@ def run_backtest(config):
     price_df = pd.merge(price_df, sigma, on=['Date', 'Time'], how='left')
     
     # 检查每个交易日是否有足够的sigma数据
-    # 创建一个标记，记录哪些日期的sigma数据不完整
+    # 创建一个标记，记录哪些日期的sigma数据严重不完整（缺失超过10%）
     incomplete_sigma_dates = set()
     for date in price_df['Date'].unique():
         day_data = price_df[price_df['Date'] == date]
-        if day_data['sigma'].isna().any():
+        na_count = day_data['sigma'].isna().sum()
+        total_count = len(day_data)
+        missing_ratio = na_count / total_count if total_count > 0 else 1.0
+        
+        # 只有当缺失率超过10%时才过滤掉这一天
+        if missing_ratio > 0.1:
             incomplete_sigma_dates.add(date)
+            incomplete_sigma_dates.add(date)
+            # print(f"{date} sigma缺失率过高: {na_count}/{total_count} ({missing_ratio*100:.1f}%) - 将被过滤")
+        # elif na_count > 0:
+            # 少量缺失值，填充为前值
+            # print(f"{date} 有少量sigma缺失: {na_count}/{total_count} ({missing_ratio*100:.1f}%) - 将被保留")
     
-    # 移除sigma数据不完整的日期
+    # 移除sigma数据严重不完整的日期
+    # if incomplete_sigma_dates:
+    #     print(f"sigma严重不完整的日期（将被过滤）: {sorted(incomplete_sigma_dates)}")
     price_df = price_df[~price_df['Date'].isin(incomplete_sigma_dates)]
+    
+    # 对于剩余的少量缺失值，使用前值填充（forward fill）
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].fillna(method='ffill')
+    # 如果还有缺失（比如第一个值），使用后值填充
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].fillna(method='bfill')
+    # 如果整个时间点都缺失，使用0填充（保守策略）
+    price_df['sigma'] = price_df['sigma'].fillna(0)
     
     # 确保所有剩余的sigma值都有有效数据
     if price_df['sigma'].isna().any():
@@ -678,7 +707,10 @@ def run_backtest(config):
         # 先运行回测，记录有交易的日期
         for trade_date in unique_dates:
             day_data = price_df[price_df['Date'] == trade_date].copy()
-            if len(day_data) < 10:  # 跳过数据不足的日期
+            # 设置数据点阈值：对于今天允许更少的数据点
+            is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+            min_data_points = 1 if is_today else 10
+            if len(day_data) < min_data_points:  # 跳过数据不足的日期
                 continue
                 
             prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
@@ -721,9 +753,11 @@ def run_backtest(config):
     for trade_date in unique_dates:
         # 获取当天的数据（从原始数据中）
         day_data = price_df_original[price_df_original['Date'] == trade_date].copy()
-        
+
         # 跳过数据不足的日期
-        if len(day_data) < 10:  # 任意阈值
+        is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+        min_data_points = 1 if is_today else 10
+        if len(day_data) < min_data_points:  # 任意阈值
             continue
         
         # 获取当天的开盘价和收盘价（用于计算买入持有）
@@ -738,19 +772,24 @@ def run_backtest(config):
         })
     
     # 处理策略交易部分
+    
     for i, trade_date in enumerate(filtered_dates):
         # 获取当天的数据
         day_data = price_df[price_df['Date'] == trade_date].copy()
         day_data = day_data.sort_values('DateTime').reset_index(drop=True)
         
+        
         # 跳过数据不足的日期
-        if len(day_data) < 10:  # 任意阈值
-            daily_results.append({
-                'Date': trade_date,
-                'capital': capital,
-                'daily_return': 0
-            })
-            continue
+        is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+        min_data_points = 1 if is_today else 10
+        if len(day_data) < min_data_points:  # 任意阈值
+            if not is_today:
+                daily_results.append({
+                    'Date': trade_date,
+                    'capital': capital,
+                    'daily_return': 0
+                })
+                continue
         
         # 获取前一天的收盘价
         prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
@@ -1424,10 +1463,10 @@ if __name__ == "__main__":
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 12282,
+        'initial_capital': 9990,
         'lookback_days':1,
-        'start_date': date(2025, 7, 30),
-        'end_date': date(2025, 9, 20),
+        'start_date': date(2025, 1, 1),
+        'end_date': date(2025, 9, 23),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
         # 'transaction_fee_per_share': 0.008166,
@@ -1437,12 +1476,12 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         
         # 特殊日期过滤配置
@@ -1452,7 +1491,7 @@ if __name__ == "__main__":
         # 'exclude_special_dates': ['Market_Holidays'],  # 只排除市场节日
         # 'exclude_special_dates': ['FOMC', 'Dividends'],  # 排除议息会议和分红日期
         # 'exclude_special_dates': ['All'],  # 排除所有特殊日期
-        'special_date_symbols': ['QQQ', 'SPY']  # 用于获取分红日期的股票代码
+        # 'special_date_symbols': ['QQQ', 'SPY']  # 用于获取分红日期的股票代码
     }
     
     # 运行回测

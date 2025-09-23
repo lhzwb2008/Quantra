@@ -146,10 +146,12 @@ def get_historical_data(symbol, days_back=None):
         
         for attempt in range(max_retries):
             try:
-                # 每天最多获取390分钟数据（6.5小时交易时间）
-                day_candles = QUOTE_CTX.history_candlesticks_by_offset(
-                    symbol, sdk_period, adjust_type, True, 390,
-                    day_start_time_et
+                # 使用history_candlesticks_by_date方法（与backtest数据源一致）
+                # 这个方法返回的是完整交易日的数据，避免了by_offset方法可能的日期错误
+                day_candles = QUOTE_CTX.history_candlesticks_by_date(
+                    symbol, sdk_period, adjust_type,
+                    date_to_check,  # 开始日期
+                    date_to_check   # 结束日期（同一天）
                 )
                 api_call_count += 1
                 break  # 成功则跳出重试循环
@@ -387,6 +389,7 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
         print(f"错误: 目标日期 {target_date} 数据为空")
         sys.exit(1)
     
+    # 使用第一根分钟K线的Open作为当天开盘价（与backtest.py一致）
     day_open = target_day_data["Open"].iloc[0]
     
     # 获取目标日期的前一日收盘价
@@ -394,6 +397,7 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
         prev_date = unique_dates[unique_dates.index(target_date) - 1]
         prev_day_data = df[df["Date"] == prev_date]
         if not prev_day_data.empty:
+            # 使用最后一根分钟K线的Close作为前一天收盘价（与backtest.py一致）
             prev_close = prev_day_data["Close"].iloc[-1]
         else:
             prev_close = None
