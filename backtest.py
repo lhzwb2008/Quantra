@@ -6,7 +6,6 @@ from datetime import datetime, time, timedelta, date
 import random
 import os
 from plot_trading_day import plot_trading_day
-from us_special_dates import USSpecialDates
 
 def calculate_vwap(turnovers, volumes, prices):
     """
@@ -70,17 +69,18 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     # 从配置中提取参数
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    enable_transaction_fees = config.get('enable_transaction_fees', True)  # 新增手续费开关
     trading_end_time = config.get('trading_end_time', (15, 50))
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
     print_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time', None)
     use_vwap = config.get('use_vwap', True)  # 新增VWAP开关参数
-    # 滑点配置
-    slippage_bps = config.get('slippage_bps', 0)  # 滑点，单位为基点(bp)，1bp = 0.01%
+    # 滑点配置 - 简化为直接的买卖价差
+    slippage_per_share = config.get('slippage_per_share', 0.02)  # 每股滑点，买入时多付，卖出时少收
     
     def apply_slippage(price, is_buy, is_entry):
         """
-        应用滑点到交易价格
+        应用滑点到交易价格 - 简化版本
         参数:
             price: 原始价格
             is_buy: 是否为买入操作
@@ -88,17 +88,14 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         返回:
             调整后的价格
         """
-        if slippage_bps == 0:
+        if slippage_per_share == 0:
             return price
         
-        slippage_factor = slippage_bps / 10000  # 转换基点到小数
-        
-        # 对于买入操作，滑点使价格上升（对交易者不利）
-        # 对于卖出操作，滑点使价格下降（对交易者不利）
+        # 简化逻辑：买入时价格上升，卖出时价格下降
         if is_buy:
-            return price * (1 + slippage_factor)
+            return price + slippage_per_share  # 买入多付
         else:
-            return price * (1 - slippage_factor)
+            return price - slippage_per_share  # 卖出少收
     
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
@@ -252,7 +249,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     exit_time = row['DateTime']
                     exit_price = apply_slippage(price, is_buy=False, is_entry=False)  # 多头平仓是卖出
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    if enable_transaction_fees:
+                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    else:
+                        transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (exit_price - entry_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -301,7 +301,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     exit_time = row['DateTime']
                     exit_price = apply_slippage(price, is_buy=True, is_entry=False)  # 空头平仓是买入
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    if enable_transaction_fees:
+                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    else:
+                        transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (entry_price - exit_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
@@ -344,7 +347,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (close_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -373,7 +379,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (entry_price - close_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -410,7 +419,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             # 应用滑点
             exit_price = apply_slippage(last_price, is_buy=False, is_entry=False)  # 多头平仓是卖出
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (exit_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -438,7 +450,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
             # 应用滑点
             exit_price = apply_slippage(last_price, is_buy=True, is_entry=False)  # 空头平仓是买入
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (entry_price - exit_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -483,6 +498,7 @@ def run_backtest(config):
     plots_dir = config.get('plots_dir', 'trading_plots')
     check_interval_minutes = config.get('check_interval_minutes', 30)
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    enable_transaction_fees = config.get('enable_transaction_fees', True)  # 新增手续费开关
     trading_start_time = config.get('trading_start_time', (10, 00))
     trading_end_time = config.get('trading_end_time', (15, 40))
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
@@ -491,9 +507,6 @@ def run_backtest(config):
     debug_time = config.get('debug_time')
     leverage = config.get('leverage', 1)  # 资金杠杆倍数，默认为1
     
-    # 特殊日期过滤参数
-    exclude_special_dates = config.get('exclude_special_dates', [])  # 要排除的特殊日期类型
-    special_date_symbols = config.get('special_date_symbols', [ticker] if ticker else ['QQQ'])  # 用于获取分红日期的股票代码
     # 如果未提供ticker，从文件名中提取
     if ticker is None:
         # 从文件名中提取ticker
@@ -625,9 +638,9 @@ def run_backtest(config):
     price_df = price_df[~price_df['Date'].isin(incomplete_sigma_dates)]
     
     # 对于剩余的少量缺失值，使用前值填充（forward fill）
-    price_df['sigma'] = price_df.groupby('Date')['sigma'].fillna(method='ffill')
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].ffill()
     # 如果还有缺失（比如第一个值），使用后值填充
-    price_df['sigma'] = price_df.groupby('Date')['sigma'].fillna(method='bfill')
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].bfill()
     # 如果整个时间点都缺失，使用0填充（保守策略）
     price_df['sigma'] = price_df['sigma'].fillna(0)
     
@@ -635,57 +648,6 @@ def run_backtest(config):
     if price_df['sigma'].isna().any():
         print(f"警告: 仍有{price_df['sigma'].isna().sum()}个缺失的sigma值")
     
-    # 特殊日期过滤
-    if exclude_special_dates:
-        print(f"\n应用特殊日期过滤，排除类型: {exclude_special_dates}")
-        
-        # 创建特殊日期获取器
-        special_dates_handler = USSpecialDates()
-        
-        # 获取要过滤的日期范围
-        filter_start_date = start_date if start_date else price_df['Date'].min()
-        filter_end_date = end_date if end_date else price_df['Date'].max()
-        
-        # 获取所有特殊日期
-        all_special_dates = special_dates_handler.get_all_special_dates(
-            symbols=special_date_symbols,
-            start_date=filter_start_date,
-            end_date=filter_end_date
-        )
-        
-        # 构建要排除的日期集合
-        exclude_dates = set()
-        for exclude_type in exclude_special_dates:
-            if exclude_type == 'All':
-                # 排除所有特殊日期
-                for dates in all_special_dates.values():
-                    exclude_dates.update(dates)
-            elif exclude_type == 'FOMC' and 'FOMC' in all_special_dates:
-                exclude_dates.update(all_special_dates['FOMC'])
-            elif exclude_type == 'Market_Holidays' and 'Market_Holidays' in all_special_dates:
-                exclude_dates.update(all_special_dates['Market_Holidays'])
-            elif exclude_type == 'Dividends':
-                # 排除所有分红日期
-                for key, dates in all_special_dates.items():
-                    if 'Dividends' in key:
-                        exclude_dates.update(dates)
-        
-        # 过滤数据
-        original_dates_count = len(price_df['Date'].unique())
-        price_df = price_df[~price_df['Date'].isin(exclude_dates)]
-        filtered_dates_count = len(price_df['Date'].unique())
-        
-        print(f"原始交易日: {original_dates_count} 天")
-        print(f"排除特殊日期: {len(exclude_dates)} 天")
-        print(f"过滤后交易日: {filtered_dates_count} 天")
-        
-        # 打印被排除的日期示例
-        if exclude_dates:
-            sorted_excluded = sorted(list(exclude_dates))[:10]  # 显示前10个被排除的日期
-            excluded_str = ', '.join([d.strftime('%Y-%m-%d') for d in sorted_excluded])
-            print(f"被排除的日期示例: {excluded_str}")
-            if len(exclude_dates) > 10:
-                print(f"... 还有 {len(exclude_dates) - 10} 个日期被排除")
     
     # 使用正确的参考价格计算噪声区域的上下边界
     # 从配置中获取K1和K2参数
@@ -905,7 +867,10 @@ def run_backtest(config):
             # 从每笔交易中提取交易费用
             if 'transaction_fees' not in trade:
                 # 如果交易数据中没有交易费用，则计算
-                trade['transaction_fees'] = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                if enable_transaction_fees:
+                    trade['transaction_fees'] = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                else:
+                    trade['transaction_fees'] = 0  # 关闭手续费
             day_transaction_fees += trade['transaction_fees']
         
         # 添加到总交易费用
@@ -1489,22 +1454,21 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        # 'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 9, 30),
+        'start_date': date(2020, 1, 1),
+        'end_date': date(2024, 9, 30),
         'check_interval_minutes': 15 ,
-        # 'transaction_fee_per_share': 0.01,
-        # 'transaction_fee_per_share': 0.008166,
-        'transaction_fee_per_share': 0.013166,
-        'slippage_bps': 0.3,  # 滑点设置，单位为基点(bp)，1bp=0.01%，0表示无滑点
-                            # 买入时价格上升，卖出时价格下降（对交易者不利）
-                            # 建议值：0-5bp，根据实际交易经验调整
+        'enable_transaction_fees': False,  # 是否启用手续费计算，False表示不计算手续费
+        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.013166,
+        'slippage_per_share': 0.02,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
+                                     # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
@@ -1518,14 +1482,6 @@ if __name__ == "__main__":
         'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         
-        # 特殊日期过滤配置
-        # 'exclude_special_dates': [],  # 不过滤任何特殊日期（默认）
-        # 'exclude_special_dates': ['FOMC'],  # 只排除美联储议息会议日期
-        # 'exclude_special_dates': ['Dividends'],  # 只排除分红日期
-        # 'exclude_special_dates': ['Market_Holidays'],  # 只排除市场节日
-        # 'exclude_special_dates': ['FOMC', 'Dividends'],  # 排除议息会议和分红日期
-        # 'exclude_special_dates': ['All'],  # 排除所有特殊日期
-        # 'special_date_symbols': ['QQQ', 'SPY']  # 用于获取分红日期的股票代码
     }
     
     # 运行回测
