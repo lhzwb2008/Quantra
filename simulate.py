@@ -595,7 +595,8 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         now = get_us_eastern_time()
         current_date = now.date()
         if DEBUG_MODE:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 主循环开始")
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S.%f')}] 主循环开始 (精确时间)")
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 时间精度: 秒={now.second}, 微秒={now.microsecond}")
         
         # 每次循环都更新当前持仓状态和账户余额
         current_positions = get_current_positions()
@@ -640,16 +641,33 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if trigger_h < 16:  # 假设市场在16:00关闭
                 trigger_times.append((trigger_h, trigger_m))
         
-        # 判断当前是否是触发时间点
-        is_trigger_time = (current_hour, current_minute) in trigger_times
+        # 判断当前是否是触发时间点（允许前后30秒的误差）
+        is_trigger_time = False
+        for trigger_h, trigger_m in trigger_times:
+            trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=0, microsecond=0)
+            time_diff = abs((now - trigger_time).total_seconds())
+            if time_diff <= 30:  # 30秒误差范围内都认为是触发时间
+                is_trigger_time = True
+                break
         
         if is_trigger_time:
-            # 找到对应的K线时间
-            trigger_index = trigger_times.index((current_hour, current_minute))
-            k_h, k_m = k_line_check_times[trigger_index]
-            check_time_str = f"{k_h:02d}:{k_m:02d}"
+            # 找到最接近的触发时间对应的K线时间
+            closest_trigger_idx = None
+            min_diff = float('inf')
+            for i, (trigger_h, trigger_m) in enumerate(trigger_times):
+                trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=0, microsecond=0)
+                time_diff = abs((now - trigger_time).total_seconds())
+                if time_diff < min_diff:
+                    min_diff = time_diff
+                    closest_trigger_idx = i
             
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发检查，使用 {check_time_str} 的K线数据")
+            if closest_trigger_idx is not None:
+                k_h, k_m = k_line_check_times[closest_trigger_idx]
+                check_time_str = f"{k_h:02d}:{k_m:02d}"
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发检查，使用 {check_time_str} 的K线数据")
+            else:
+                # 如果没有找到合适的触发时间，跳过本次检查
+                continue
         else:
             # 如果不是触发时间点，计算下一个触发时间
             next_trigger_time = None
@@ -679,9 +697,9 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                             break
                     if next_trigger_idx is not None:
                         next_k_h, next_k_m = k_line_check_times[next_trigger_idx]
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间 {next_k_h:02d}:{next_k_m:02d}")
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间 {next_k_h:02d}:{next_k_m:02d} (触发时间: {next_trigger_time.strftime('%H:%M:%S')})")
                     else:
-                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间")
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {wait_seconds:.0f} 秒到下一个检查时间 (触发时间: {next_trigger_time.strftime('%H:%M:%S')})")
                 time_module.sleep(wait_seconds)
                 continue
         
@@ -1155,11 +1173,30 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         
 
             
-        next_check_time = now + timedelta(minutes=check_interval_minutes)
+        # 计算下一个精确的检查时间点（避免累积误差）
+        current_time = now.time()
+        current_hour, current_minute = current_time.hour, current_time.minute
+        
+        # 计算下一个检查时间点
+        next_check_minute = ((current_minute // check_interval_minutes) + 1) * check_interval_minutes
+        next_check_hour = current_hour
+        
+        if next_check_minute >= 60:
+            next_check_hour += next_check_minute // 60
+            next_check_minute = next_check_minute % 60
+        
+        # 创建下一个检查时间的datetime对象
+        next_check_time = now.replace(hour=next_check_hour, minute=next_check_minute, second=0, microsecond=0)
+        
+        # 如果计算的时间已经过了，则加一天
+        if next_check_time <= now:
+            next_check_time += timedelta(days=1)
+        
         sleep_seconds = (next_check_time - now).total_seconds()
         if sleep_seconds > 0:
             if DEBUG_MODE:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {sleep_seconds:.0f} 秒")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 等待 {sleep_seconds:.1f} 秒到下一个精确检查时间 {next_check_time.strftime('%H:%M:%S')}")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前时间精度检查: 秒={now.second}, 微秒={now.microsecond}")
             time_module.sleep(sleep_seconds)
 
 if __name__ == "__main__":

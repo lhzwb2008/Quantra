@@ -75,6 +75,31 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     print_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time', None)
     use_vwap = config.get('use_vwap', True)  # 新增VWAP开关参数
+    # 滑点配置
+    slippage_bps = config.get('slippage_bps', 0)  # 滑点，单位为基点(bp)，1bp = 0.01%
+    
+    def apply_slippage(price, is_buy, is_entry):
+        """
+        应用滑点到交易价格
+        参数:
+            price: 原始价格
+            is_buy: 是否为买入操作
+            is_entry: 是否为开仓操作
+        返回:
+            调整后的价格
+        """
+        if slippage_bps == 0:
+            return price
+        
+        slippage_factor = slippage_bps / 10000  # 转换基点到小数
+        
+        # 对于买入操作，滑点使价格上升（对交易者不利）
+        # 对于卖出操作，滑点使价格下降（对交易者不利）
+        if is_buy:
+            return price * (1 + slippage_factor)
+        else:
+            return price * (1 - slippage_factor)
+    
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
     trailing_stop = np.nan
@@ -152,7 +177,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 
                 # 允许多头入场
                 position = 1
-                entry_price = price
+                entry_price = apply_slippage(price, is_buy=True, is_entry=True)  # 多头开仓是买入
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
                 # 初始止损设置
@@ -190,7 +215,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 
                 # 允许空头入场
                 position = -1
-                entry_price = price
+                entry_price = apply_slippage(price, is_buy=False, is_entry=True)  # 空头开仓是卖出
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
                 # 初始止损设置
@@ -225,9 +250,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     
                     # 平仓多头
                     exit_time = row['DateTime']
+                    exit_price = apply_slippage(price, is_buy=False, is_entry=False)  # 多头平仓是卖出
                     # 计算交易费用（开仓和平仓）
                     transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-                    pnl = position_size * (price - entry_price) - transaction_fees
+                    pnl = position_size * (exit_price - entry_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
                     trades.append({
@@ -235,7 +261,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'exit_time': exit_time,
                         'side': 'Long',
                         'entry_price': entry_price,
-                        'exit_price': price,
+                        'exit_price': exit_price,
                         'pnl': pnl,
                         'exit_reason': exit_reason,
                         'position_size': position_size,
@@ -273,9 +299,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     
                     # 平仓空头
                     exit_time = row['DateTime']
+                    exit_price = apply_slippage(price, is_buy=True, is_entry=False)  # 空头平仓是买入
                     # 计算交易费用（开仓和平仓）
                     transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-                    pnl = position_size * (entry_price - price) - transaction_fees
+                    pnl = position_size * (entry_price - exit_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
                     trades.append({
@@ -283,7 +310,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'exit_time': exit_time,
                         'side': 'Short',
                         'entry_price': entry_price,
-                        'exit_price': price,
+                        'exit_price': exit_price,
                         'pnl': pnl,
                         'exit_reason': exit_reason,
                         'position_size': position_size,
@@ -380,15 +407,17 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 多头市场收盘平仓:")
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
+            # 应用滑点
+            exit_price = apply_slippage(last_price, is_buy=False, is_entry=False)  # 多头平仓是卖出
             # 计算交易费用（开仓和平仓）
             transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-            pnl = position_size * (last_price - entry_price) - transaction_fees
+            pnl = position_size * (exit_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
                 'side': 'Long',
                 'entry_price': entry_price,
-                'exit_price': last_price,
+                'exit_price': exit_price,
                 'pnl': pnl,
                 'exit_reason': 'Market Close',
                 'position_size': position_size,
@@ -406,15 +435,17 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 空头市场收盘平仓:")
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
+            # 应用滑点
+            exit_price = apply_slippage(last_price, is_buy=True, is_entry=False)  # 空头平仓是买入
             # 计算交易费用（开仓和平仓）
             transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-            pnl = position_size * (entry_price - last_price) - transaction_fees
+            pnl = position_size * (entry_price - exit_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
                 'side': 'Short',
                 'entry_price': entry_price,
-                'exit_price': last_price,
+                'exit_price': exit_price,
                 'pnl': pnl,
                 'exit_reason': 'Market Close',
                 'position_size': position_size,
@@ -1463,14 +1494,17 @@ if __name__ == "__main__":
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 9990,
+        'initial_capital': 10000,
         'lookback_days':1,
         'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 9, 23),
+        'end_date': date(2025, 9, 30),
         'check_interval_minutes': 15 ,
         # 'transaction_fee_per_share': 0.01,
         # 'transaction_fee_per_share': 0.008166,
         'transaction_fee_per_share': 0.013166,
+        'slippage_bps': 0.3,  # 滑点设置，单位为基点(bp)，1bp=0.01%，0表示无滑点
+                            # 买入时价格上升，卖出时价格下降（对交易者不利）
+                            # 建议值：0-5bp，根据实际交易经验调整
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
