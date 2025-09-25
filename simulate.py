@@ -644,7 +644,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
         # 判断当前是否是触发时间点（允许前后30秒的误差）
         is_trigger_time = False
         for trigger_h, trigger_m in trigger_times:
-            trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=0, microsecond=0)
+            trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=1, microsecond=0)
             time_diff = abs((now - trigger_time).total_seconds())
             if time_diff <= 30:  # 30秒误差范围内都认为是触发时间
                 is_trigger_time = True
@@ -655,7 +655,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             closest_trigger_idx = None
             min_diff = float('inf')
             for i, (trigger_h, trigger_m) in enumerate(trigger_times):
-                trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=0, microsecond=0)
+                trigger_time = now.replace(hour=trigger_h, minute=trigger_m, second=1, microsecond=0)
                 time_diff = abs((now - trigger_time).total_seconds())
                 if time_diff < min_diff:
                     min_diff = time_diff
@@ -1186,7 +1186,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             next_check_minute = next_check_minute % 60
         
         # 创建下一个检查时间的datetime对象
-        next_check_time = now.replace(hour=next_check_hour, minute=next_check_minute, second=0, microsecond=0)
+        next_check_time = now.replace(hour=next_check_hour, minute=next_check_minute, second=1, microsecond=0)
         
         # 如果计算的时间已经过了，则加一天
         if next_check_time <= now:
