@@ -764,11 +764,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
             
+            # 获取实际平仓价格
+            try:
+                time_module.sleep(1)  # 等待订单执行
+                close_order_detail = TRADE_CTX.order_detail(close_order_id)
+                actual_close_price = float(close_order_detail.executed_price) if close_order_detail.executed_price else current_price
+            except Exception as e:
+                actual_close_price = current_price
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 获取平仓成交价格失败: {str(e)}")
+            
             # 计算盈亏
             if entry_price:
-                pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
-                pnl_pct = (current_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
+                pnl = (actual_close_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                pnl_pct = (actual_close_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {actual_close_price}")
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
                 # 更新收益统计
                 DAILY_PNL += pnl
@@ -779,11 +789,11 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     "action": "平仓",
                     "side": side,
                     "quantity": abs(position_quantity),
-                    "price": current_price,
+                    "price": actual_close_price,
                     "pnl": pnl
                 })
             else:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {current_price}")
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {actual_close_price}")
                 
             position_quantity = 0
             entry_price = None
@@ -1054,11 +1064,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
                 
+                # 获取实际平仓价格
+                try:
+                    time_module.sleep(1)  # 等待订单执行
+                    close_order_detail = TRADE_CTX.order_detail(close_order_id)
+                    actual_exit_price = float(close_order_detail.executed_price) if close_order_detail.executed_price else exit_price
+                except Exception as e:
+                    actual_exit_price = exit_price
+                    if DEBUG_MODE:
+                        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 获取平仓成交价格失败: {str(e)}")
+                
                 # 计算盈亏
                 if entry_price:
-                    pnl = (exit_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
-                    pnl_pct = (exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {exit_price}")
+                    pnl = (actual_exit_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                    pnl_pct = (actual_exit_price / entry_price - 1) * 100 * (1 if position_quantity > 0 else -1)
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓成功: {side} {abs(position_quantity)} {symbol} 价格: {actual_exit_price}")
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 交易结果: {'盈利' if pnl > 0 else '亏损'} ${abs(pnl):.2f} ({pnl_pct:.2f}%)")
                     # 更新收益统计
                     DAILY_PNL += pnl
@@ -1069,7 +1089,7 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                         "action": "平仓",
                         "side": side,
                         "quantity": abs(position_quantity),
-                        "price": exit_price,
+                        "price": actual_exit_price,
                         "pnl": pnl
                     })
                 
@@ -1156,10 +1176,21 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 订单已提交，ID: {order_id}")
                 
-                # 删除订单状态检查代码，直接更新持仓状态
-                position_quantity = position_size if signal > 0 else -position_size
-                entry_price = latest_price
+            # 获取实际成交价格
+            try:
+                time_module.sleep(1)  # 等待订单执行
+                order_detail = TRADE_CTX.order_detail(order_id)
+                actual_price = float(order_detail.executed_price) if order_detail.executed_price else latest_price
+                entry_price = actual_price
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
+            except Exception as e:
+                # 如果获取失败，使用市场价格作为备选
+                entry_price = latest_price
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price} (使用市场价格)")
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 获取成交价格失败: {str(e)}")
+            
+            position_quantity = position_size if signal > 0 else -position_size
                 
                 # 记录开仓交易
                 DAILY_TRADES.append({
