@@ -1191,16 +1191,16 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 获取成交价格失败: {str(e)}")
             
             position_quantity = position_size if signal > 0 else -position_size
-                
-                # 记录开仓交易
-                DAILY_TRADES.append({
-                    "time": now.strftime('%Y-%m-%d %H:%M:%S'),
-                    "action": "开仓",
-                    "side": side,
-                    "quantity": position_size,
-                    "price": entry_price,
-                    "pnl": None  # 开仓时还没有盈亏
-                })
+            
+            # 记录开仓交易
+            DAILY_TRADES.append({
+                "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                "action": "开仓",
+                "side": side,
+                "quantity": position_size,
+                "price": entry_price,
+                "pnl": None  # 开仓时还没有盈亏
+            })
         
 
             
