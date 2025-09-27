@@ -1176,31 +1176,20 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 order_id = submit_order(symbol, side, position_size, outside_rth=outside_rth_setting)
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 订单已提交，ID: {order_id}")
                 
-            # 获取实际成交价格
-            try:
-                time_module.sleep(1)  # 等待订单执行
-                order_detail = TRADE_CTX.order_detail(order_id)
-                actual_price = float(order_detail.executed_price) if order_detail.executed_price else latest_price
-                entry_price = actual_price
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
-            except Exception as e:
-                # 如果获取失败，使用市场价格作为备选
+                # 删除订单状态检查代码，直接更新持仓状态
+                position_quantity = position_size if signal > 0 else -position_size
                 entry_price = latest_price
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price} (使用市场价格)")
-                if DEBUG_MODE:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 获取成交价格失败: {str(e)}")
-            
-            position_quantity = position_size if signal > 0 else -position_size
-            
-            # 记录开仓交易
-            DAILY_TRADES.append({
-                "time": now.strftime('%Y-%m-%d %H:%M:%S'),
-                "action": "开仓",
-                "side": side,
-                "quantity": position_size,
-                "price": entry_price,
-                "pnl": None  # 开仓时还没有盈亏
-            })
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 开仓成功: {side} {position_size} {symbol} 价格: {entry_price}")
+                
+                # 记录开仓交易
+                DAILY_TRADES.append({
+                    "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                    "action": "开仓",
+                    "side": side,
+                    "quantity": position_size,
+                    "price": entry_price,
+                    "pnl": None  # 开仓时还没有盈亏
+                })
         
 
             
