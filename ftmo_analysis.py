@@ -605,7 +605,24 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         if sys.stdout != original_stdout:
             sys.stdout.close()
             sys.stdout = original_stdout
-        return False, 'error', 0, 0, {'error_msg': str(e)}
+        
+        # 打印详细的错误信息以便调试
+        import traceback
+        error_details = {
+            'error_msg': str(e),
+            'error_type': type(e).__name__,
+            'traceback': traceback.format_exc(),
+            'start_date': start_date.strftime('%Y-%m-%d') if start_date else 'N/A'
+        }
+        
+        print(f"\n⚠️  FTMO挑战模拟出现错误:")
+        print(f"  错误类型: {error_details['error_type']}")
+        print(f"  错误信息: {error_details['error_msg']}")
+        print(f"  开始日期: {error_details['start_date']}")
+        print(f"  详细堆栈:")
+        print(f"  {error_details['traceback']}")
+        
+        return False, 'error', 0, 0, error_details
     
     if len(daily_results) == 0:
         return False, 'no_data', 0, 0, {}
@@ -726,9 +743,41 @@ def save_intermediate_results(results_summary, filename='ftmo_intermediate_resul
         return df
     return None
 
+def generate_fixed_test_dates(config, num_simulations=100):
+    """
+    预先生成固定的测试日期列表，确保所有杠杆率使用相同的测试数据
+    
+    参数:
+        config: 基础配置字典
+        num_simulations: 模拟次数
+        
+    返回:
+        测试开始日期列表
+    """
+    start_date = config['start_date']
+    end_date = config['end_date']
+    total_days = (end_date - start_date).days
+    
+    # 确保有足够的数据进行可靠的蒙特卡洛分析
+    if total_days < 60:
+        print(f"警告: 数据时间范围太短，需要至少60天的数据进行可靠分析（当前只有{total_days}天）")
+        print(f"提示: 请获取更长时间范围的数据后重新运行分析")
+        return None
+    
+    # 预先生成所有的测试开始日期
+    test_dates = []
+    max_start_offset = max(0, total_days - 60)
+    
+    for sim in range(num_simulations):
+        start_offset = random.randint(0, max_start_offset)
+        sim_start_date = start_date + timedelta(days=start_offset)
+        test_dates.append(sim_start_date)
+    
+    return test_dates
+
 def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, use_daily_stop_loss=True, daily_stop_loss=0.048):
     """
-    使用蒙特卡洛方法分析FTMO挑战通过率
+    使用蒙特卡洛方法分析FTMO挑战通过率（使用固定的测试日期确保公平性）
     
     参数:
         config: 基础配置字典
@@ -738,15 +787,15 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
     if leverage_range is None:
         leverage_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     
-    # 获取数据的时间范围
-    start_date = config['start_date']
-    end_date = config['end_date']
-    total_days = (end_date - start_date).days
+    # 🎯 预先生成固定的测试日期列表，确保所有杠杆率使用相同的测试数据
+    print(f"🎲 生成固定测试数据集（{num_simulations}个随机日期）...")
+    fixed_test_dates = generate_fixed_test_dates(config, num_simulations)
     
-    # 确保有足够的数据进行抽样
-    if total_days < 60:  # 至少需要60天数据
-        print(f"警告: 数据时间范围太短，需要至少60天的数据")
+    if fixed_test_dates is None:
         return None
+    
+    print(f"✅ 测试日期生成完成，范围: {min(fixed_test_dates)} 至 {max(fixed_test_dates)}")
+    print(f"📊 所有杠杆率将使用相同的{len(fixed_test_dates)}个测试日期，确保公平比较")
     
     results_summary = []
     
@@ -762,10 +811,8 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         failure_examples = []  # 存储失败案例的详细信息
         
         for sim in range(num_simulations):
-            # 随机选择起始日期，确保至少有60天的数据可用
-            max_start_offset = max(0, total_days - 60)
-            start_offset = random.randint(0, max_start_offset)
-            sim_start_date = start_date + timedelta(days=start_offset)
+            # 🎯 使用预设的固定测试日期，确保所有杠杆率测试条件相同
+            sim_start_date = fixed_test_dates[sim]
             
             # 模拟挑战
             passed, reason, days, final_return, details = simulate_ftmo_challenge(
@@ -783,8 +830,8 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 'details': details
             })
             
-            # 收集失败案例（只保留前5个典型失败案例）
-            if not passed and reason in ['daily_loss_intraday', 'total_loss_intraday', 'daily_loss', 'total_loss'] and len(failure_examples) < 5:
+            # 收集失败案例（包括程序错误和FTMO规则违规）
+            if not passed and reason in ['daily_loss_intraday', 'total_loss_intraday', 'daily_loss', 'total_loss', 'error'] and len(failure_examples) < 5:
                 failure_examples.append({
                     'simulation_id': sim + 1,
                     'reason': reason,
@@ -799,6 +846,37 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 current_passed = sum(1 for r in simulation_results if r['passed'])
                 current_rate = current_passed / (sim + 1) * 100
                 print(f"  进度: {sim + 1}/{num_simulations} | 当前通过率: {current_rate:.1f}%")
+                
+                # 显示最近几次测试的详细信息
+                if sim >= 4:  # 显示最近5次测试
+                    print(f"  📊 最近5次测试详情:")
+                    recent_results = simulation_results[-5:]
+                    for j, result in enumerate(recent_results, 1):
+                        start_date_str = result.get('start_date', 'N/A')
+                        days = result.get('days', 0)
+                        final_return = result.get('final_return', 0)
+                        passed_status = "✅通过" if result['passed'] else "❌失败"
+                        reason = result.get('reason', 'N/A')
+                        
+                        # 计算结束日期
+                        if start_date_str != 'N/A' and days > 0:
+                            try:
+                                # 尝试解析字符串格式的日期
+                                start_date_obj = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                                end_date_obj = start_date_obj + timedelta(days=days-1)
+                                end_date_str = end_date_obj.strftime('%Y-%m-%d')
+                            except (TypeError, ValueError):
+                                # 如果已经是date对象或其他格式，直接使用
+                                if hasattr(start_date_str, 'strftime'):
+                                    end_date_obj = start_date_str + timedelta(days=days-1)
+                                    end_date_str = end_date_obj.strftime('%Y-%m-%d')
+                                    start_date_str = start_date_str.strftime('%Y-%m-%d')
+                                else:
+                                    end_date_str = start_date_str
+                        else:
+                            end_date_str = start_date_str
+                        
+                        print(f"    测试{sim-4+j}: {start_date_str} → {end_date_str} | {days}天 | {final_return:+.1f}% | {passed_status} ({reason})")
         
         # 统计结果
         passed_count = sum(1 for r in simulation_results if r['passed'])
@@ -868,11 +946,28 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
         # 合并日内和收盘的失败次数
         total_daily_loss_failures = failure_reasons.get('daily_loss', 0) + failure_reasons.get('daily_loss_intraday', 0)
         total_total_loss_failures = failure_reasons.get('total_loss', 0) + failure_reasons.get('total_loss_intraday', 0)
-        print(f"  ✓ 失败原因: 日损失{total_daily_loss_failures}次 | 总损失{total_total_loss_failures}次")
+        other_failures = failure_reasons.get('data_exhausted', 0) + failure_reasons.get('error', 0) + failure_reasons.get('no_data', 0)
         
-        # 打印失败案例详情
+        print(f"  ✓ 失败原因: 日损失{total_daily_loss_failures}次 | 总损失{total_total_loss_failures}次 | 其他{other_failures}次")
+        
+        # 打印详细的失败原因统计
+        if failure_reasons:
+            failure_details = []
+            for reason, count in failure_reasons.items():
+                if count > 0:
+                    reason_name = {
+                        'daily_loss': '日损失超限',
+                        'total_loss': '总损失超限', 
+                        'data_exhausted': '数据用完未达目标',
+                        'error': '程序错误',
+                        'no_data': '无数据'
+                    }.get(reason, reason)
+                    failure_details.append(f"{reason_name}{count}次")
+            print(f"  ✓ 失败详情: {' | '.join(failure_details)}")
+        
+        # 打印失败案例详情（只显示真正的FTMO规则违规案例）
         if failure_examples:
-            print(f"  📋 典型失败案例:")
+            print(f"  📋 典型FTMO规则违规案例:")
             for i, example in enumerate(failure_examples, 1):
                 details = example['details']
                 print(f"    案例{i}: 模拟#{example['simulation_id']} | 开始日期: {example['start_date']} | 持续{example['days']}天")
@@ -885,6 +980,13 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 if 'capital_at_violation' in details:
                     print(f"           违规时资金: ${details['capital_at_violation']:.2f}")
                 print()
+        elif total_daily_loss_failures == 0 and total_total_loss_failures == 0:
+            # 检查是否有程序错误
+            error_count = failure_reasons.get('error', 0)
+            if error_count > 0:
+                print(f"  ⚠️  有{error_count}次程序错误，请检查上方的错误日志")
+            else:
+                print(f"  ✓ 无FTMO规则违规案例（所有失败都是温和原因）")
     
     # 创建结果DataFrame
     results_df = pd.DataFrame(results_summary)
@@ -929,7 +1031,8 @@ def monte_carlo_multi_timing_analysis(config, num_simulations=100, leverage=4, u
     total_days = (end_date - start_date).days
     
     if total_days < 60:
-        print(f"警告: 数据时间范围太短，需要至少60天的数据")
+        print(f"警告: 数据时间范围太短，需要至少60天的数据进行可靠分析（当前只有{total_days}天）")
+        print(f"提示: 请获取更长时间范围的数据后重新运行分析")
         return None
     
     print(f"\n🔄 多账户时间错配分析")
@@ -1316,11 +1419,12 @@ if __name__ == "__main__":
     # 创建与backtest.py相同的配置（使用最新的手续费和滑点数据）
     base_config = {
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days': 1,
-        'start_date': date(2020, 1, 1),
-        'end_date': date(2025, 9, 30),  # 使用更新的结束日期
+        'start_date': date(2024, 1, 1),   # 使用实际数据的开始日期
+        'end_date': date(2025, 9, 30),     # 使用实际数据的结束日期
         'check_interval_minutes': 15,
         'enable_transaction_fees': True,  # 启用手续费计算
         'transaction_fee_per_share': 0.008166,  # 最新手续费配置
@@ -1332,7 +1436,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'leverage': 1,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
     }
     
@@ -1341,10 +1445,10 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 100  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 30  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    LEVERAGE_RANGE = [1,2, 3, 4, 5,6,7,8]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损

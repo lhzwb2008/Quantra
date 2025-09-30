@@ -581,8 +581,19 @@ def run_backtest(config):
     # 创建日期参考价格DataFrame
     date_refs_df = pd.DataFrame(date_refs)
     
+    # 检查是否有足够的数据进行处理
+    if date_refs_df.empty or len(date_refs) == 0:
+        raise ValueError(f"在指定日期范围内没有找到有效的交易数据。请检查日期范围设置。")
+    
     # 将参考价格合并回主DataFrame
     price_df = price_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
+    
+    # 检查Date列是否存在
+    if 'Date' not in price_df.columns:
+        raise ValueError("price_df中缺少Date列，无法进行合并操作")
+    if 'Date' not in date_refs_df.columns:
+        raise ValueError("date_refs_df中缺少Date列，无法进行合并操作")
+    
     price_df = pd.merge(price_df, date_refs_df, on='Date', how='left')
     
     # 计算每分钟相对开盘的回报（使用day_open保持一致性）
@@ -895,6 +906,13 @@ def run_backtest(config):
     
     # 创建每日结果DataFrame
     daily_df = pd.DataFrame(daily_results)
+    
+    # 检查daily_results是否为空或缺少Date列
+    if daily_df.empty:
+        raise ValueError("daily_results为空，无法创建日度结果DataFrame")
+    if 'Date' not in daily_df.columns:
+        raise ValueError("daily_results中缺少Date列，无法进行日期转换")
+    
     daily_df['Date'] = pd.to_datetime(daily_df['Date'])
     daily_df.set_index('Date', inplace=True)
     
@@ -1461,8 +1479,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 9, 1),
-        'end_date': date(2025, 9, 30),
+        'start_date': date(2025, 5, 26),
+        'end_date': date(2025, 6, 11),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1474,7 +1492,7 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
