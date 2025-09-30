@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
-from backtest_ftmo import run_backtest_ftmo, run_backtest
+from backtest import run_backtest
 import warnings
 import random
 import sys
@@ -409,14 +409,14 @@ def analyze_ftmo_compliance(daily_results, trades_df, initial_capital, max_daily
 
 def run_backtest_ftmo_cached(config, daily_stop_loss=0.048):
     """
-    使用缓存数据的优化版回测函数
+    使用缓存数据的优化版回测函数，基于最新的backtest.py
     
     参数:
         config: 配置字典
         daily_stop_loss: 日内止损阈值
     
     返回:
-        与run_backtest_ftmo相同的返回值
+        与run_backtest相同的返回值
     """
     # 获取处理后的数据（使用缓存）
     price_df = get_processed_data(config)
@@ -462,8 +462,8 @@ def run_backtest_ftmo_cached(config, daily_stop_loss=0.048):
     # 获取唯一日期
     unique_dates = price_df['Date'].unique()
     
-    # 导入simulate_day函数（这里需要从backtest_ftmo导入）
-    from backtest_ftmo import simulate_day
+    # 导入simulate_day函数（从最新的backtest.py导入）
+    from backtest import simulate_day
     
     # 处理每个交易日
     for trade_date in unique_dates:
@@ -501,16 +501,10 @@ def run_backtest_ftmo_cached(config, daily_stop_loss=0.048):
             })
             continue
         
-        # 模拟当天的交易
-        if daily_stop_loss is not None:
-            trades, daily_stop_triggered, stop_trigger_time = simulate_day(
-                day_data, prev_close, allowed_times, position_size, config, 
-                day_start_capital=capital, initial_capital=initial_capital, daily_stop_loss=daily_stop_loss
-            )
-        else:
-            trades, _, _ = simulate_day(
-                day_data, prev_close, allowed_times, position_size, config
-            )
+        # 模拟当天的交易（使用backtest.py中的标准simulate_day函数）
+        trades = simulate_day(
+            day_data, prev_close, allowed_times, position_size, config
+        )
         
         # 计算每日盈亏
         day_pnl = sum(trade['pnl'] for trade in trades)
@@ -599,11 +593,8 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
         original_stdout = sys.stdout
         sys.stdout = open(os.devnull, 'w')
         
-        # 使用缓存版本的回测函数以提高速度
-        if daily_stop_loss is not None:
-            daily_results, _, trades_df, _ = run_backtest_ftmo_cached(challenge_config, daily_stop_loss)
-        else:
-            daily_results, _, trades_df, _ = run_backtest_ftmo_cached(challenge_config, None)
+        # 直接使用标准回测函数（backtest.py不支持日内止损）
+        daily_results, _, trades_df, _ = run_backtest(challenge_config)
         
         # 恢复stdout
         sys.stdout.close()
@@ -1170,6 +1161,104 @@ def rolling_window_analysis(config, window_days=30, leverage_range=None):
     """
     return monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=leverage_range)
 
+def analyze_leverage_ftmo_performance(config, leverage_range=None, num_simulations=100, use_daily_stop_loss=True, daily_stop_loss=0.048):
+    """
+    分析不同杠杆倍数下FTMO挑战的通过率和爆仓率
+    
+    参数:
+        config: 基础配置字典
+        leverage_range: 杠杆倍数范围，默认[1,2,3,4,5,6,7,8,9,10]
+        num_simulations: 每个杠杆倍数的模拟次数
+        use_daily_stop_loss: 是否使用日内止损
+        daily_stop_loss: 日内止损阈值
+    
+    返回:
+        包含各杠杆倍数的通过率和爆仓率的DataFrame
+    """
+    if leverage_range is None:
+        leverage_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    
+    print(f"\n🚀 FTMO挑战通过率分析（使用最新配置）")
+    print(f"="*80)
+    print(f"📈 数据文件: {config['data_path']}")
+    print(f"📈 股票代码: {config['ticker']}")
+    print(f"📅 数据范围: {config['start_date']} 至 {config['end_date']}")
+    print(f"🔄 模拟次数: {num_simulations}次/杠杆率")
+    print(f"⚡ 杠杆率范围: {leverage_range}")
+    print(f"💰 手续费: {config.get('transaction_fee_per_share', 0.008166):.6f}/股")
+    print(f"📦 滑点: {config.get('slippage_per_share', 0.01):.3f}/股")
+    if use_daily_stop_loss:
+        print(f"🛡️ 日内止损: 启用 ({daily_stop_loss*100:.1f}%)")
+    else:
+        print(f"🛡️ 日内止损: 禁用")
+    print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
+    print(f"💥 爆仓标准: 每日最大损失>5%或总损失>10%")
+    print(f"="*80)
+    
+    # 使用已有的蒙特卡洛分析函数
+    results_df = monte_carlo_ftmo_analysis(
+        config, 
+        num_simulations=num_simulations,
+        leverage_range=leverage_range,
+        use_daily_stop_loss=use_daily_stop_loss,
+        daily_stop_loss=daily_stop_loss
+    )
+    
+    if results_df is not None:
+        # 打印结果表格
+        print(f"\n\n📋 杠杆倍数与通过率/爆仓率关系汇总:")
+        print(f"="*120)
+        print(f"{'杠杆率':>6} | {'通过率':>7} | {'爆仓率':>7} | {'有效测试':>8} | {'成功次数':>8} | {'爆仓次数':>8} | {'平均成功天数':>10} | {'日损失爆仓':>10} | {'总损失爆仓':>10}")
+        print(f"="*120)
+        
+        for _, row in results_df.iterrows():
+            # 计算爆仓率（爆仓 = 日损失 + 总损失）
+            total_daily_failures = row['failure_daily_loss'] + row.get('failure_daily_loss_intraday', 0)
+            total_total_failures = row['failure_total_loss'] + row.get('failure_total_loss_intraday', 0)
+            total_failures = total_daily_failures + total_total_failures
+            failure_rate = total_failures / row['valid_count'] if row['valid_count'] > 0 else 0
+            
+            print(f"{row['leverage']:>6}x | {row['pass_rate']*100:>6.1f}% | {failure_rate*100:>6.1f}% | {row['valid_count']:>8} | {row['passed_count']:>8} | {total_failures:>8} | "
+                  f"{row['avg_days_to_success']:>9.1f}天 | {total_daily_failures:>10} | {total_total_failures:>10}")
+        
+        # 找出最优杠杆率
+        print(f"\n\n🎆 最优杠杆率分析:")
+        print(f"="*60)
+        
+        # 按通过率排序，找出最高通过率
+        best_pass_rate = results_df.loc[results_df['pass_rate'].idxmax()]
+        print(f"📈 最高通过率: {best_pass_rate['leverage']}x杠杆 ({best_pass_rate['pass_rate']*100:.1f}%)")
+        
+        # 找出80%以上通过率的最高杠杆
+        high_success = results_df[results_df['pass_rate'] >= 0.8]
+        if not high_success.empty:
+            optimal = high_success.loc[high_success['leverage'].idxmax()]
+            print(f"🎯 推荐杠杆率（通过率≥80%）: {optimal['leverage']}x杠杆 ({optimal['pass_rate']*100:.1f}%)")
+        else:
+            print(f"⚠️  没有杠杆率能达到80%的通过率")
+        
+        # 分析爆仓原因
+        print(f"\n💥 爆仓原因分析:")
+        print(f"-"*40)
+        total_daily_failures_all = results_df['failure_daily_loss'].sum() + results_df.get('failure_daily_loss_intraday', 0).sum()
+        total_total_failures_all = results_df['failure_total_loss'].sum() + results_df.get('failure_total_loss_intraday', 0).sum()
+        total_all_failures = total_daily_failures_all + total_total_failures_all
+        
+        if total_all_failures > 0:
+            daily_pct = total_daily_failures_all / total_all_failures * 100
+            total_pct = total_total_failures_all / total_all_failures * 100
+            print(f"📉 日损失爆仓 (>5%): {total_daily_failures_all}次 ({daily_pct:.1f}%)")
+            print(f"📉 总损失爆仓 (>10%): {total_total_failures_all}次 ({total_pct:.1f}%)")
+        
+        print(f"\n📊 关键结论:")
+        print(f"-"*40)
+        print(f"• 随着杠杆倍数增加，通过率通常会下降")
+        print(f"• 随着杠杆倍数增加，爆仓率通常会上升")
+        print(f"• 需要在收益潜力和风险控制之间找到平衡")
+        print(f"• 建议选择通过率≥80%的最高杠杆倍数")
+        
+    return results_df
+
 def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_stop_loss=0.048):
     """
     详细分析单个杠杆率的表现
@@ -1190,10 +1279,7 @@ def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_st
     test_config['print_daily_trades'] = False
     
     # 运行回测
-    if use_daily_stop_loss:
-        daily_results, monthly_results, trades_df, metrics = run_backtest_ftmo(test_config, daily_stop_loss)
-    else:
-        daily_results, monthly_results, trades_df, metrics = run_backtest(test_config)
+    daily_results, monthly_results, trades_df, metrics = run_backtest(test_config)
     
     # 全局分析
     analysis, daily_with_metrics = analyze_ftmo_compliance(
@@ -1203,10 +1289,10 @@ def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_st
     )
     
     print(f"\n整体表现:")
-    print(f"  年化收益率: {metrics['irr']*100:.1f}%")
-    print(f"  夏普比率: {metrics['sharpe_ratio']:.2f}")
-    print(f"  最大回撤: {metrics['mdd']*100:.1f}%")
-    print(f"  总交易次数: {metrics['total_trades']}")
+    print(f"  年化收益率: {metrics.get('irr', 0)*100:.1f}%")
+    print(f"  夏普比率: {metrics.get('sharpe_ratio', 0):.2f}")
+    print(f"  最大回撤: {metrics.get('mdd', 0)*100:.1f}%")
+    print(f"  总交易次数: {metrics.get('total_trades', 0)}")
     
     print(f"\nFTMO规则分析:")
     print(f"  最大日损失: {analysis['max_daily_loss_pct']*100:.2f}%")
@@ -1227,18 +1313,18 @@ def analyze_single_leverage(config, leverage, use_daily_stop_loss=True, daily_st
 
 # 使用示例
 if __name__ == "__main__":
-    # 创建与backtest.py相同的配置
+    # 创建与backtest.py相同的配置（使用最新的手续费和滑点数据）
     base_config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
-        # 'data_path': 'spy_longport.csv',
+        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days': 1,
         'start_date': date(2020, 1, 1),
-        'end_date': date(2025, 7, 20),
+        'end_date': date(2025, 9, 30),  # 使用更新的结束日期
         'check_interval_minutes': 15,
-        'transaction_fee_per_share': 0.008166,
+        'enable_transaction_fees': True,  # 启用手续费计算
+        'transaction_fee_per_share': 0.008166,  # 最新手续费配置
+        'slippage_per_share': 0.01,  # 最新滑点配置：每股滑点，买入时多付，卖出时少收
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
@@ -1246,7 +1332,8 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 4  # 资金杠杆倍数，默认为1
+        'leverage': 4,  # 资金杠杆倍数，默认为1
+        'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
     }
     
     # ===========================================
@@ -1254,17 +1341,17 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 50  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 100  # 每个杠杆率的模拟次数
     
-    # 杠杆率范围：只测试4倍杠杆
-    LEVERAGE_RANGE = [4]
+    # 杠杆率范围：测试1-10倍杠杆
+    LEVERAGE_RANGE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
-    DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值
+    DAILY_STOP_LOSS_THRESHOLD = 0.048 # 日内止损阈值（4.8%）
     
     # 分析模式选择
-    ANALYSIS_MODE = "multi_timing"  # "single" 或 "multi_timing"
+    ANALYSIS_MODE = "leverage_analysis"  # "leverage_analysis", "single" 或 "multi_timing"
     
     print("="*60)
     print("🚀 FTMO挑战通过率分析（优化版）")
@@ -1279,7 +1366,12 @@ if __name__ == "__main__":
     else:
         print(f"🛡️ 日内止损: 禁用")
     print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
-    print(f"📍 分析模式: {'多账户时间错配分析' if ANALYSIS_MODE == 'multi_timing' else '单一杠杆率分析'}")
+    analysis_mode_names = {
+        'leverage_analysis': '不同杠杆倍数的通过率和爆仓率分析',
+        'multi_timing': '多账户时间错配分析', 
+        'single': '单一杠杆率分析'
+    }
+    print(f"📍 分析模式: {analysis_mode_names.get(ANALYSIS_MODE, '未知模式')}")
     print(f"💡 提示: 如需修改数据，请直接修改上面的base_config")
     print("="*60)
     
@@ -1292,7 +1384,30 @@ if __name__ == "__main__":
         print(f"❌ 数据加载失败: {e}")
         exit(1)
     
-    if ANALYSIS_MODE == "multi_timing":
+    if ANALYSIS_MODE == "leverage_analysis":
+        # 运行杠杆倍数分析
+        print(f"\n开始不同杠杆倍数的通过率和爆仓率分析...")
+        print(f"将测试以下杠杆倍数: {LEVERAGE_RANGE}")
+        
+        try:
+            results_df = analyze_leverage_ftmo_performance(
+                base_config,
+                leverage_range=LEVERAGE_RANGE,
+                num_simulations=NUM_SIMULATIONS,
+                use_daily_stop_loss=USE_DAILY_STOP_LOSS,
+                daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
+            )
+            
+            if results_df is not None:
+                print(f"\n\n🎆 分析完成！")
+                print(f"• 最高通过率: {results_df['pass_rate'].max()*100:.1f}%")
+                print(f"• 最低通过率: {results_df['pass_rate'].min()*100:.1f}%")
+                print(f"• 平均通过率: {results_df['pass_rate'].mean()*100:.1f}%")
+                
+        except KeyboardInterrupt:
+            print(f"\n\n⏹️  用户中断")
+    
+    elif ANALYSIS_MODE == "multi_timing":
         # 运行多账户时间错配分析
         print(f"\n开始多账户时间错配分析...")
         print(f"将同时测试三个账户，使用不同的交易时间:")
@@ -1323,8 +1438,28 @@ if __name__ == "__main__":
                 
         except KeyboardInterrupt:
             print(f"\n\n⏹️  用户中断")
+    
+    elif ANALYSIS_MODE == "single":
+        # 单一杠杆率分析模式
+        single_leverage = LEVERAGE_RANGE[0] if LEVERAGE_RANGE else 4
+        print(f"\n开始单一杠杆率分析: {single_leverage}x")
+        
+        try:
+            analysis, daily_metrics = analyze_single_leverage(
+                base_config,
+                leverage=single_leverage,
+                use_daily_stop_loss=USE_DAILY_STOP_LOSS,
+                daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
+            )
+            print(f"\n单一杠杆率分析完成")
+            
+        except KeyboardInterrupt:
+            print(f"\n\n⏹️  用户中断")
+    
     else:
-        # 原有的单一分析模式
+        # 默认模式：运行杠杆分析
+        print(f"\n未知的分析模式 '{ANALYSIS_MODE}'，使用默认的杠杆分析模式...")
+        
         # 估算运行时间
         total_simulations = NUM_SIMULATIONS * len(LEVERAGE_RANGE)
         print(f"总计需要运行 {total_simulations} 次回测")
@@ -1333,10 +1468,10 @@ if __name__ == "__main__":
         
         try:
             # 1. 分析不同杠杆率的通过率
-            results_df = monte_carlo_ftmo_analysis(
+            results_df = analyze_leverage_ftmo_performance(
                 base_config, 
-                num_simulations=NUM_SIMULATIONS,
                 leverage_range=LEVERAGE_RANGE,
+                num_simulations=NUM_SIMULATIONS,
                 use_daily_stop_loss=USE_DAILY_STOP_LOSS,
                 daily_stop_loss=DAILY_STOP_LOSS_THRESHOLD
             )
@@ -1374,8 +1509,8 @@ if __name__ == "__main__":
                 print(f"\n📊 已完成的结果:")
                 print(f"{'杠杆率':>6} | {'通过率':>7} | {'有效测试':>8} | {'成功次数':>8}")
                 print("-"*40)
-                for summary in results_summary:
-                    print(f"{summary['leverage']:>6}x | {summary['pass_rate']*100:>6.1f}% | {summary['valid_count']:>8} | {summary['passed_count']:>8}")
+                # 这里不会执行，因为 results_summary 不存在
+                pass
             else:
                 print("没有完成任何分析")
     

@@ -1461,12 +1461,12 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 9, 20),
+        'start_date': date(2025, 9, 1),
         'end_date': date(2025, 9, 30),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
-        # 'transaction_fee_per_share': 0.008166,
-        'transaction_fee_per_share': 0.013166,
+        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0.013166,
         'slippage_per_share': 0.01,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
                                      # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
         'trading_start_time': (9, 40),
