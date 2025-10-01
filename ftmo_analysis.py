@@ -1513,7 +1513,7 @@ if __name__ == "__main__":
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
-    DAILY_STOP_LOSS_THRESHOLD = 0.048 # 日内止损阈值（4.8%）
+    DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值（4.8%）
     
     # 分析模式选择
     ANALYSIS_MODE = "leverage_analysis"  # "leverage_analysis", "single" 或 "multi_timing"
