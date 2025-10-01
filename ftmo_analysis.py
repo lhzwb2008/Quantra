@@ -698,13 +698,40 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
                             'cumulative_daily_pnl': cumulative_daily_pnl
                         }
                         return False, 'total_loss', current_day, intraday_total_return, failure_details
+                    
+                    # 🆕 检查日内是否违反最大回撤（基于历史最高资金）
+                    # 计算到当前交易时刻的最大回撤
+                    capital_series_so_far = daily_results['capital'][:i].tolist() + [intraday_capital]
+                    if len(capital_series_so_far) > 1:
+                        peak_capital_so_far = max(capital_series_so_far)
+                        current_drawdown = (intraday_capital - peak_capital_so_far) / initial_capital
+                        if current_drawdown < -max_total_loss:  # 回撤超过10%
+                            violation_time = trade.get('exit_time', trade.get('entry_time', current_date))
+                            failure_details = {
+                                'violation_date': current_date.strftime('%Y-%m-%d'),
+                                'violation_time': str(violation_time),
+                                'violation_type': '日内10%最大回撤限制',
+                                'drawdown_pct': abs(current_drawdown) * 100,
+                                'peak_capital': peak_capital_so_far,
+                                'current_capital': intraday_capital,
+                                'trade_pnl': trade['pnl']
+                            }
+                            return False, 'total_loss', current_day, intraday_total_return, failure_details
         
         # 检查是否达到盈利目标
         if current_return >= profit_target:
+            # 计算最大回撤
+            capital_series = daily_results['capital'][:i+1]  # 到当前日期的资金序列
+            peak_capital = capital_series.cummax()  # 累计最高资金
+            drawdown_series = (capital_series - peak_capital) / initial_capital  # 基于初始资金的回撤
+            max_drawdown = drawdown_series.min()  # 最大回撤（负值）
+            max_drawdown_pct = abs(max_drawdown) * 100  # 转为正值百分比
+            
             success_details = {
                 'success_date': current_date.strftime('%Y-%m-%d'),
                 'final_return_pct': current_return * 100,
-                'final_capital': current_capital
+                'final_capital': current_capital,
+                'max_drawdown_pct': max_drawdown_pct  # 🆕 添加最大回撤
             }
             return True, 'profit_target', current_day, current_return, success_details
         
@@ -821,13 +848,19 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 daily_stop_loss=daily_stop_loss if use_daily_stop_loss else None
             )
             
+            # 提取最大回撤信息（如果是成功的case）
+            max_drawdown_pct = 0
+            if passed and 'max_drawdown_pct' in details:
+                max_drawdown_pct = details['max_drawdown_pct']
+            
             simulation_results.append({
                 'passed': passed,
                 'reason': reason,
                 'days': days,
                 'final_return': final_return,
                 'start_date': sim_start_date,
-                'details': details
+                'details': details,
+                'max_drawdown_pct': max_drawdown_pct  # 🆕 添加最大回撤
             })
             
             # 收集失败案例（包括程序错误和FTMO规则违规）
@@ -987,6 +1020,30 @@ def monte_carlo_ftmo_analysis(config, num_simulations=100, leverage_range=None, 
                 print(f"  ⚠️  有{error_count}次程序错误，请检查上方的错误日志")
             else:
                 print(f"  ✓ 无FTMO规则违规案例（所有失败都是温和原因）")
+        
+        # 🆕 显示所有成功案例的详细信息（包括最大回撤）
+        success_cases = [r for r in simulation_results if r['passed']]
+        if success_cases:
+            print(f"\\n  🎉 所有成功案例详情 (共{len(success_cases)}个):")
+            for i, case in enumerate(success_cases, 1):
+                start_date_str = case['start_date'].strftime('%Y-%m-%d') if hasattr(case['start_date'], 'strftime') else str(case['start_date'])
+                end_date_str = 'N/A'
+                if case['days'] > 0:
+                    try:
+                        if hasattr(case['start_date'], 'strftime'):
+                            end_date_obj = case['start_date'] + timedelta(days=case['days']-1)
+                            end_date_str = end_date_obj.strftime('%Y-%m-%d')
+                        else:
+                            start_date_obj = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                            end_date_obj = start_date_obj + timedelta(days=case['days']-1)
+                            end_date_str = end_date_obj.strftime('%Y-%m-%d')
+                    except:
+                        end_date_str = 'N/A'
+                
+                final_return_pct = case['final_return'] * 100
+                max_drawdown_pct = case.get('max_drawdown_pct', 0)
+                
+                print(f"    案例{i:2d}: {start_date_str} → {end_date_str} | {case['days']:3d}天 | 收益: {final_return_pct:+5.1f}% | 最大回撤: {max_drawdown_pct:4.1f}%")
     
     # 创建结果DataFrame
     results_df = pd.DataFrame(results_summary)
@@ -1425,10 +1482,14 @@ if __name__ == "__main__":
         'lookback_days': 1,
         'start_date': date(2024, 1, 1),   # 使用实际数据的开始日期
         'end_date': date(2025, 9, 30),     # 使用实际数据的结束日期
+        # 'start_date': date(2020, 1, 1),   # 使用实际数据的开始日期
+        # 'end_date': date(2025, 4, 30),     # 使用实际数据的结束日期
         'check_interval_minutes': 15,
         'enable_transaction_fees': True,  # 启用手续费计算
         'transaction_fee_per_share': 0.008166,  # 最新手续费配置
         'slippage_per_share': 0.01,  # 最新滑点配置：每股滑点，买入时多付，卖出时少收
+        'enable_intraday_stop_loss': True,  # 🛡️ 启用4%日内止损功能
+        'intraday_stop_loss_pct': 0.04,  # 🛡️ 日内止损阈值：4%
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
@@ -1445,10 +1506,10 @@ if __name__ == "__main__":
     # ===========================================
     
     # 模拟次数：建议快速测试用20-50次，精确分析用100-200次
-    NUM_SIMULATIONS = 30  # 每个杠杆率的模拟次数
+    NUM_SIMULATIONS = 20  # 每个杠杆率的模拟次数
     
     # 杠杆率范围：测试1-10倍杠杆
-    LEVERAGE_RANGE = [1,2, 3, 4, 5,6,7,8]
+    LEVERAGE_RANGE = [2,3, 4, 5]
     
     # 日内止损设置
     USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
