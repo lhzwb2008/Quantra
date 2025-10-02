@@ -1599,7 +1599,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 9, 20),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 10, 5),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
@@ -1612,14 +1612,15 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
-        'print_trade_details': True,
+        'print_daily_trades': False,
+        'print_trade_details': False,
         'debug_time': '12:10',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
         'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
-        
+        'enable_intraday_stop_loss': False,  # 是否启用日内止损
+        'intraday_stop_loss_threshold': 0.04,  # 日内止损阈值（4.5%）
     }
     
     # 运行回测
