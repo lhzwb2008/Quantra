@@ -28,6 +28,7 @@ SYMBOL = os.environ.get('SYMBOL', 'QQQ.US')
 
 # 调试模式配置
 DEBUG_MODE = True   # 设置为True开启调试模式
+LOG_VERBOSE = True  # 设置为True开启详细日志输出
 
 # 收益统计全局变量
 TOTAL_PNL = 0.0  # 总收益
