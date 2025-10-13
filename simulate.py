@@ -8,6 +8,7 @@ from math import floor
 from decimal import Decimal
 from dotenv import load_dotenv
 import numpy as np
+from functools import wraps
 
 from longport.openapi import Config, TradeContext, QuoteContext, Period, OrderSide, OrderType, TimeInForceType, AdjustType, OutsideRTH
 
@@ -34,6 +35,32 @@ TOTAL_PNL = 0.0  # 总收益
 DAILY_PNL = 0.0  # 当日收益
 LAST_STATS_DATE = None  # 上次统计日期
 DAILY_TRADES = []  # 当日交易记录
+
+def api_retry(max_retries=3, retry_delay=2):
+    """API调用重试装饰器
+    
+    Args:
+        max_retries: 最大重试次数，默认3次
+        retry_delay: 重试间隔（秒），默认2秒
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_msg = str(e)
+                    if attempt < max_retries - 1:
+                        if DEBUG_MODE:
+                            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {func.__name__} 调用失败 (尝试 {attempt + 1}/{max_retries}): {error_msg}")
+                            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {retry_delay}秒后重试...")
+                        time_module.sleep(retry_delay)
+                    else:
+                        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] {func.__name__} 调用失败，已达最大重试次数: {error_msg}")
+                        raise
+        return wrapper
+    return decorator
 
 def get_us_eastern_time():
     # 正常模式返回当前时间
@@ -64,6 +91,7 @@ def create_contexts():
 
 QUOTE_CTX, TRADE_CTX = create_contexts()
 
+@api_retry(max_retries=3, retry_delay=2)
 def get_account_balance():
     if DEBUG_MODE:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
@@ -84,6 +112,7 @@ def get_account_balance():
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
     return 0.0
 
+@api_retry(max_retries=3, retry_delay=2)
 def get_current_positions():
     if DEBUG_MODE:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
@@ -100,6 +129,7 @@ def get_current_positions():
             }
     return positions
 
+@api_retry(max_retries=3, retry_delay=2)
 def get_historical_data(symbol, days_back=None):
     # 简化天数计算逻辑
     if days_back is None:
@@ -252,6 +282,7 @@ def get_historical_data(symbol, days_back=None):
     
     return df
 
+@api_retry(max_retries=3, retry_delay=2)
 def get_quote(symbol):
     quotes = QUOTE_CTX.quote([symbol])
     quote_data = {
@@ -439,6 +470,7 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     
     return df
 
+@api_retry(max_retries=3, retry_delay=2)
 def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth=None):
     sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell
     if isinstance(order_type, str):
@@ -542,6 +574,7 @@ def check_exit_conditions(df, position_quantity, current_stop):
         return exit_signal, new_stop
     return False, None
 
+@api_retry(max_retries=3, retry_delay=2)
 def is_trading_day(symbol=None):
     market = None
     if symbol:
