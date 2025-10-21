@@ -425,9 +425,12 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     day_0930_data = target_day_data[target_day_data["Time"] == "09:30"]
     if not day_0930_data.empty:
         day_open = day_0930_data["Open"].iloc[0]
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 使用09:30开盘价: {day_open:.2f}")
     else:
         # 如果没有09:30数据，回退到第一根K线
         day_open = target_day_data["Open"].iloc[0]
+        first_time = target_day_data.iloc[0]["Time"]
+        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 未找到09:30数据，使用{first_time}开盘价: {day_open:.2f}")
     
     # 获取前一日15:59的收盘价
     if target_date in unique_dates and unique_dates.index(target_date) > 0:
@@ -438,9 +441,12 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
             prev_1559_data = prev_day_data[prev_day_data["Time"] == "15:59"]
             if not prev_1559_data.empty:
                 prev_close = prev_1559_data["Close"].iloc[0]
+                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘价: {prev_close:.2f}")
             else:
                 # 如果没有15:59数据，回退到最后一根K线
                 prev_close = prev_day_data["Close"].iloc[-1]
+                last_time = prev_day_data.iloc[-1]["Time"]
+                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘价(使用{last_time}): {prev_close:.2f}")
         else:
             prev_close = None
     else:
@@ -452,6 +458,8 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     # 根据算法计算参考价格
     upper_ref = max(day_open, prev_close)
     lower_ref = min(day_open, prev_close)
+    
+    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 边界参考: 当日开盘={day_open:.2f}, 前日收盘={prev_close:.2f}, 上边界参考={upper_ref:.2f}, 下边界参考={lower_ref:.2f}")
     
     # 对目标日期的每个时间点计算上下边界
     # 使用目标日期的数据
