@@ -323,6 +323,47 @@ def calculate_vwap(df):
     
     return result_df['VWAP']
 
+def get_daily_klines(symbol, start_date, end_date):
+    """
+    获取指定日期范围的日K线数据
+    返回: {日期字符串: {Open, High, Low, Close, Volume, Turnover}}
+    """
+    try:
+        resp = QUOTE_CTX.history_candlesticks_by_date(
+            symbol,
+            Period.Day,
+            AdjustType.NoAdjust,
+            start_date,
+            end_date
+        )
+        
+        # 转换为字典，key为日期字符串
+        daily_data = {}
+        eastern = pytz.timezone('US/Eastern')
+        hk_tz = pytz.timezone('Asia/Hong_Kong')
+        
+        for candle in resp:
+            # API返回的timestamp是香港本地的naive时间
+            dt_hk = hk_tz.localize(candle.timestamp)
+            # 转到美东
+            dt_et = dt_hk.astimezone(eastern)
+            date_str = dt_et.strftime('%Y-%m-%d')
+            
+            daily_data[date_str] = {
+                'Open': candle.open,
+                'High': candle.high,
+                'Low': candle.low,
+                'Close': candle.close,
+                'Volume': candle.volume,
+                'Turnover': candle.turnover
+            }
+        
+        return daily_data
+    except Exception as e:
+        print(f"获取日K线数据失败: {e}")
+        return {}
+
+
 def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     # 创建数据副本
     df_copy = df.copy()
@@ -420,33 +461,73 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
         print(f"错误: 目标日期 {target_date} 数据为空")
         sys.exit(1)
     
+    # 获取API层面的日K线数据进行对比
+    # 获取当天和前一天的日K线
+    if len(unique_dates) >= 2:
+        # 获取最近两个交易日的日K线数据
+        query_start_date = unique_dates[-2]
+        query_end_date = unique_dates[-1]
+        daily_klines = get_daily_klines(SYMBOL, query_start_date, query_end_date)
+    else:
+        daily_klines = {}
+    
     # 使用指定时间点的K线数据
     # 获取当日09:30的开盘价
     day_0930_data = target_day_data[target_day_data["Time"] == "09:30"]
+    
+    # 获取分钟K线拼接的"日K"（第一根分钟K线的Open）
+    minute_daily_open = target_day_data.iloc[0]["Open"]
+    minute_first_time = target_day_data.iloc[0]["Time"]
+    
+    # 获取真实日K线的Open
+    target_date_str = target_date.strftime('%Y-%m-%d') if isinstance(target_date, date_type) else str(target_date)
+    real_daily_open = daily_klines.get(target_date_str, {}).get('Open', None)
+    
     if not day_0930_data.empty:
         day_open = day_0930_data["Open"].iloc[0]
-        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 使用09:30开盘价: {day_open:.2f}")
+        day_0930_close = day_0930_data["Close"].iloc[0]
+        if real_daily_open is not None:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 09:30分钟K Open={day_open:.2f}, Close={day_0930_close:.2f} | 拼接日K Open({minute_first_time})={minute_daily_open:.2f} | API日K Open={real_daily_open:.2f}")
+        else:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 09:30分钟K Open={day_open:.2f}, Close={day_0930_close:.2f} | 拼接日K Open({minute_first_time})={minute_daily_open:.2f} | API日K Open=未获取")
     else:
         # 如果没有09:30数据，回退到第一根K线
         day_open = target_day_data["Open"].iloc[0]
         first_time = target_day_data.iloc[0]["Time"]
-        print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 未找到09:30数据，使用{first_time}开盘价: {day_open:.2f}")
+        if real_daily_open is not None:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 未找到09:30数据，使用{first_time}开盘价: {day_open:.2f} | 拼接日K Open={minute_daily_open:.2f} | API日K Open={real_daily_open:.2f}")
+        else:
+            print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 未找到09:30数据，使用{first_time}开盘价: {day_open:.2f} | 拼接日K Open={minute_daily_open:.2f} | API日K Open=未获取")
     
     # 获取前一日15:59的收盘价
     if target_date in unique_dates and unique_dates.index(target_date) > 0:
         prev_date = unique_dates[unique_dates.index(target_date) - 1]
         prev_day_data = df[df["Date"] == prev_date]
         if not prev_day_data.empty:
+            # 获取分钟K线拼接的"日K"收盘价（最后一根分钟K线的Close）
+            minute_daily_close = prev_day_data.iloc[-1]["Close"]
+            minute_last_time = prev_day_data.iloc[-1]["Time"]
+            
+            # 获取真实日K线的Close
+            prev_date_str = prev_date.strftime('%Y-%m-%d') if isinstance(prev_date, date_type) else str(prev_date)
+            real_daily_close = daily_klines.get(prev_date_str, {}).get('Close', None)
+            
             # 尝试获取15:59的收盘价
             prev_1559_data = prev_day_data[prev_day_data["Time"] == "15:59"]
             if not prev_1559_data.empty:
                 prev_close = prev_1559_data["Close"].iloc[0]
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘价: {prev_close:.2f}")
+                if real_daily_close is not None:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date}) 15:59分钟K={prev_close:.2f} | 拼接日K Close({minute_last_time})={minute_daily_close:.2f} | API日K Close={real_daily_close:.2f}")
+                else:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date}) 15:59分钟K={prev_close:.2f} | 拼接日K Close({minute_last_time})={minute_daily_close:.2f} | API日K Close=未获取")
             else:
                 # 如果没有15:59数据，回退到最后一根K线
                 prev_close = prev_day_data["Close"].iloc[-1]
                 last_time = prev_day_data.iloc[-1]["Time"]
-                print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘价(使用{last_time}): {prev_close:.2f}")
+                if real_daily_close is not None:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘(使用{last_time}): {prev_close:.2f} | 拼接日K Close={minute_daily_close:.2f} | API日K Close={real_daily_close:.2f}")
+                else:
+                    print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 前日({prev_date})收盘(使用{last_time}): {prev_close:.2f} | 拼接日K Close={minute_daily_close:.2f} | API日K Close=未获取")
         else:
             prev_close = None
     else:
