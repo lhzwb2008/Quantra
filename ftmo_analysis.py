@@ -560,7 +560,7 @@ def run_backtest_ftmo_cached(config, daily_stop_loss=0.048):
     
     return daily_df, monthly, trades_df, metrics
 
-def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_loss=0.05, max_total_loss=0.10, daily_stop_loss=0.048):
+def simulate_ftmo_challenge(config, start_date, profit_target=None, max_daily_loss=None, max_total_loss=None, daily_stop_loss=0.048):
     """
     模拟单次FTMO挑战（无时间限制）
     
@@ -569,14 +569,22 @@ def simulate_ftmo_challenge(config, start_date, profit_target=0.10, max_daily_lo
     参数:
         config: 配置字典
         start_date: 挑战开始日期
-        profit_target: 盈利目标 (10%)
-        max_daily_loss: 最大日损失 (5%)
-        max_total_loss: 最大总损失 (10%)
+        profit_target: 盈利目标，如果为None则从config读取（默认10%）
+        max_daily_loss: 最大日损失，如果为None则从config读取（默认5%）
+        max_total_loss: 最大总损失，如果为None则从config读取（默认10%）
         daily_stop_loss: 日内止损阈值 (4.5%)
     
     返回:
         (是否通过, 结束原因, 持续天数, 最终收益率, 失败详情字典)
     """
+    # 从配置中读取FTMO规则参数（如果未指定）
+    if profit_target is None:
+        profit_target = config.get('ftmo_profit_target', 0.10)
+    if max_daily_loss is None:
+        max_daily_loss = config.get('ftmo_max_daily_loss', 0.05)
+    if max_total_loss is None:
+        max_total_loss = config.get('ftmo_max_total_loss', 0.10)
+    
     # 设置一个较长的结束日期，让策略自然运行
     end_date = config['end_date']  # 使用配置中的结束日期
     
@@ -1481,14 +1489,14 @@ if __name__ == "__main__":
         'initial_capital': 100000,
         'lookback_days': 1,
         'start_date': date(2024, 1, 1),   # 使用实际数据的开始日期
-        'end_date': date(2025, 9, 30),     # 使用实际数据的结束日期
+        'end_date': date(2025, 10, 30),     # 使用实际数据的结束日期
         # 'start_date': date(2020, 1, 1),   # 使用实际数据的开始日期
         # 'end_date': date(2025, 4, 30),     # 使用实际数据的结束日期
         'check_interval_minutes': 15,
         'enable_transaction_fees': True,  # 启用手续费计算
         'transaction_fee_per_share': 0.008166,  # 最新手续费配置
         'slippage_per_share': 0.01,  # 最新滑点配置：每股滑点，买入时多付，卖出时少收
-        'enable_intraday_stop_loss': True,  # 🛡️ 启用4%日内止损功能
+        'enable_intraday_stop_loss': False,  # 🛡️ 启用4%日内止损功能
         'intraday_stop_loss_pct': 0.04,  # 🛡️ 日内止损阈值：4%
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
@@ -1499,6 +1507,10 @@ if __name__ == "__main__":
         'K2': 1,  # 下边界sigma乘数
         'leverage': 1,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
+        # 🎯 FTMO挑战规则配置
+        'ftmo_profit_target': 0.10,      # 盈利目标 (10%)
+        'ftmo_max_daily_loss': 0.1,     # 最大日损失 (5%)
+        'ftmo_max_total_loss': 0.06,     # 🔴 最大总损失 (改为6%，原为10%)
     }
     
     # ===========================================
@@ -1512,7 +1524,7 @@ if __name__ == "__main__":
     LEVERAGE_RANGE = [2,3, 4, 5]
     
     # 日内止损设置
-    USE_DAILY_STOP_LOSS = True  # 是否启用日内止损
+    USE_DAILY_STOP_LOSS = False  # 是否启用日内止损
     DAILY_STOP_LOSS_THRESHOLD = 0.04 # 日内止损阈值（4.8%）
     
     # 分析模式选择
@@ -1530,14 +1542,17 @@ if __name__ == "__main__":
         print(f"🛡️ 日内止损: 启用 ({DAILY_STOP_LOSS_THRESHOLD*100:.1f}%)")
     else:
         print(f"🛡️ 日内止损: 禁用")
-    print(f"🎯 目标: 达到10%收益即通过（无时间限制）")
+    print(f"🎯 FTMO规则配置:")
+    print(f"   • 盈利目标: {base_config.get('ftmo_profit_target', 0.10)*100:.0f}%")
+    print(f"   • 最大日损失: {base_config.get('ftmo_max_daily_loss', 0.05)*100:.0f}%")
+    print(f"   • 最大总损失: {base_config.get('ftmo_max_total_loss', 0.10)*100:.0f}% 🔴")
     analysis_mode_names = {
         'leverage_analysis': '不同杠杆倍数的通过率和爆仓率分析',
         'multi_timing': '多账户时间错配分析', 
         'single': '单一杠杆率分析'
     }
     print(f"📍 分析模式: {analysis_mode_names.get(ANALYSIS_MODE, '未知模式')}")
-    print(f"💡 提示: 如需修改数据，请直接修改上面的base_config")
+    print(f"💡 提示: 如需修改失败条件，请修改base_config中的ftmo_*参数")
     print("="*60)
     
     # 预加载和处理数据（只需要一次）
