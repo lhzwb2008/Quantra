@@ -1597,10 +1597,10 @@ if __name__ == "__main__":
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 13800,
+        'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
-        'end_date': date(2025, 7, 2),
+        'start_date': date(2024, 7, 1),
+        'end_date': date(2025, 7, 1),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
