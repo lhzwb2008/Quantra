@@ -56,14 +56,15 @@ def calculate_vwap_with_turnover(day_df, current_index):
     
     return vwap
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_start_capital=None):
+def simulate_day(day_df, prev_close, allowed_times, entry_allowed_times, position_size, config, day_start_capital=None):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
     
     参数:
         day_df: 包含日内数据的DataFrame
         prev_close: 前一日收盘价
-        allowed_times: 允许交易的时间列表
+        allowed_times: 允许持仓管理（止损检查）的时间列表
+        entry_allowed_times: 允许开仓判断的时间列表
         position_size: 仓位大小
         config: 配置字典，包含所有交易参数
     """
@@ -245,8 +246,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
         if enable_intraday_stop_loss and intraday_stop_triggered:
             # 已触发日内止损，跳过所有开仓逻辑
             pass
-        # 在允许时间内的入场信号
-        elif position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+        # 在允许时间内的入场信号（使用entry_allowed_times进行开仓判断）
+        elif position == 0 and current_time in entry_allowed_times and positions_opened_today < max_positions_per_day:
             # 检查潜在多头入场
             if use_vwap:
                 # 使用VWAP条件
@@ -617,6 +618,7 @@ def run_backtest(config):
     random_plots = config.get('random_plots', 0)
     plots_dir = config.get('plots_dir', 'trading_plots')
     check_interval_minutes = config.get('check_interval_minutes', 30)
+    entry_check_interval_minutes = config.get('entry_check_interval_minutes', 1)  # 新增：开仓检查间隔，默认1分钟
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
     enable_transaction_fees = config.get('enable_transaction_fees', True)  # 新增手续费开关
     trading_start_time = config.get('trading_start_time', (10, 00))
@@ -791,7 +793,7 @@ def run_backtest(config):
     price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
     price_df['LowerBound'] = price_df['lower_ref'] * (1 - K2 * price_df['sigma'])
     
-    # 根据检查间隔生成允许的交易时间
+    # 根据检查间隔生成允许的持仓管理时间（用于止损检查）
     allowed_times = []
     start_hour, start_minute = trading_start_time  # 使用可配置的开始时间
     end_hour, end_minute = trading_end_time        # 使用可配置的结束时间
@@ -813,7 +815,26 @@ def run_backtest(config):
         allowed_times.append(end_time_str)
         allowed_times.sort()
     
-    print(f"使用{check_interval_minutes}分钟的检查间隔")
+    # 根据开仓检查间隔生成允许的开仓时间
+    entry_allowed_times = []
+    current_hour, current_minute = start_hour, start_minute
+    while current_hour < end_hour or (current_hour == end_hour and current_minute <= end_minute):
+        # 将当前时间添加到entry_allowed_times
+        entry_allowed_times.append(f"{current_hour:02d}:{current_minute:02d}")
+        
+        # 增加entry_check_interval_minutes
+        current_minute += entry_check_interval_minutes
+        if current_minute >= 60:
+            current_hour += current_minute // 60
+            current_minute = current_minute % 60
+    
+    # 始终确保trading_end_time包含在内
+    if end_time_str not in entry_allowed_times:
+        entry_allowed_times.append(end_time_str)
+        entry_allowed_times.sort()
+    
+    print(f"使用{check_interval_minutes}分钟的持仓管理检查间隔")
+    print(f"使用{entry_check_interval_minutes}分钟的开仓检查间隔")
     
     # 初始化回测变量
     capital = initial_capital
@@ -842,7 +863,7 @@ def run_backtest(config):
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config, config.get('initial_capital', 100000))
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, entry_allowed_times, 100, config, config.get('initial_capital', 100000))
             
             # 从结果中提取交易
             trades = simulation_result
@@ -938,7 +959,7 @@ def run_backtest(config):
             continue
                 
         # 模拟当天的交易
-        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config, capital)
+        simulation_result = simulate_day(day_data, prev_close, allowed_times, entry_allowed_times, position_size, config, capital)
         
         # 从结果中提取交易
         trades = simulation_result
@@ -1597,11 +1618,12 @@ if __name__ == "__main__":
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 13800,
+        'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2024, 1, 1),
-        'end_date': date(2025, 7, 2),
-        'check_interval_minutes': 15 ,
+        'start_date': date(2024, 7, 1),
+        'end_date': date(2025, 7, 1),
+        'check_interval_minutes': 15,  # 持仓管理（止损检查）的时间间隔
+        'entry_check_interval_minutes': 15,  # 开仓判断的时间间隔，默认1分钟
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
         # 'transaction_fee_per_share': 0.013166,
