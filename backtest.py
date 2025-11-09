@@ -1599,7 +1599,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 13800,
         'lookback_days':1,
-        'start_date': date(2024, 7, 1),
+        'start_date': date(2024, 1, 1),
         'end_date': date(2025, 7, 2),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
@@ -1614,7 +1614,6 @@ if __name__ == "__main__":
         # 'plots_dir': 'trading_plots',
         'print_daily_trades': False,
         'print_trade_details': False,
-        'debug_time': '12:10',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
         'leverage': 3,  # 资金杠杆倍数，默认为1
