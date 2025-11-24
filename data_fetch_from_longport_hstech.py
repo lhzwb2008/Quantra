@@ -12,11 +12,10 @@ ctx    = QuoteContext(config)
 
 # ———— 时区定义 ————
 TZ_HK = ZoneInfo('Asia/Hong_Kong')
-TZ_ET = ZoneInfo('US/Eastern')
 
-# ———— 用户参数：美东起止日期（inclusive） ————
+# ———— 用户参数：香港时间起止日期（inclusive） ————
 # 注意：history_candlesticks_by_date 接口接受 date 类型
-start_date = date(2024, 11, 1)
+start_date = date(2024, 1, 1)
 end_date   = date(2025, 11, 12)
 
 all_candles = []
@@ -25,7 +24,7 @@ all_candles = []
 current = start_date
 while current <= end_date:
     resp = ctx.history_candlesticks_by_date(
-        "QQQ.US",
+        "03032.HK",  # 恒生科技ETF
         Period.Min_1,
         AdjustType.NoAdjust,
         current,
@@ -35,15 +34,13 @@ while current <= end_date:
     all_candles.extend(resp)
     current += timedelta(days=1)
 
-# ———— 转换时区 & 保存 ————
+# ———— 转换 & 保存（保持香港时间） ————
 rows = []
 for c in all_candles:
     # API 返回的 timestamp 是香港本地的 naive 时间
     dt_hk = c.timestamp.replace(tzinfo=TZ_HK)
-    # 转到美东
-    dt_et = dt_hk.astimezone(TZ_ET)
     rows.append({
-        'DateTime': dt_et.strftime('%Y-%m-%d %H:%M:%S'),
+        'DateTime': dt_hk.strftime('%Y-%m-%d %H:%M:%S'),
         'Open':      c.open,
         'High':      c.high,
         'Low':       c.low,
@@ -62,5 +59,6 @@ final_count = len(df)
 if initial_count > final_count:
     print(f"⚠️  发现并去除了 {initial_count - final_count} 条重复的时间戳记录")
 
-df.to_csv('qqq_longport.csv', index=False)
-print(f"✔️ 已保存 qqq_longport.csv，共 {len(df)} 条记录（所有时间均为美东本地时间）。")
+df.to_csv('hstech_etf_longport.csv', index=False)
+print(f"✔️ 已保存 hstech_etf_longport.csv，共 {len(df)} 条记录（所有时间均为香港本地时间）。")
+

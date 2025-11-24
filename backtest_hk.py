@@ -1,3 +1,10 @@
+"""
+港股回测脚本 - 基于噪声空间策略 + VWAP
+针对恒生科技ETF(03032.HK)的回测 - 追踪恒生科技指数
+交易时间：09:30-12:00 (早市), 13:00-16:00 (午市)
+时区：Asia/Hong_Kong (香港时间)
+"""
+
 import pandas as pd
 import numpy as np
 from math import floor
@@ -654,11 +661,11 @@ def run_backtest(config):
     
     # 检查DayOpen和DayClose列是否存在，如果不存在则创建
     if 'DayOpen' not in price_df.columns or 'DayClose' not in price_df.columns:
-        # 对于每一天，获取第一行（9:30 AM开盘价）
+        # 对于每一天，获取第一行（港股 9:30 AM开盘价）
         opening_prices = price_df.groupby('Date').first().reset_index()
         opening_prices = opening_prices[['Date', 'Open']].rename(columns={'Open': 'DayOpen'})
 
-        # 对于每一天，获取最后一行（4:00 PM收盘价）
+        # 对于每一天，获取最后一行（港股 4:00 PM收盘价）
         closing_prices = price_df.groupby('Date').last().reset_index()
         closing_prices = closing_prices[['Date', 'Close']].rename(columns={'Close': 'DayClose'})
 
@@ -667,10 +674,10 @@ def run_backtest(config):
         price_df = pd.merge(price_df, closing_prices, on='Date', how='left')
     
     # 使用筛选后数据的DayOpen和DayClose
-    # 这些代表9:30 AM开盘价和4:00 PM收盘价
+    # 这些代表港股 9:30 AM开盘价和 4:00 PM收盘价
     price_df['prev_close'] = price_df.groupby('Date')['DayClose'].transform('first').shift(1)
     
-    # 使用9:30 AM价格作为当天的开盘价
+    # 使用港股 9:30 AM价格作为当天的开盘价
     price_df['day_open'] = price_df.groupby('Date')['DayOpen'].transform('first')
     
     # 为每个交易日计算一次参考价格，并将其应用于该日的所有时间点
@@ -1588,38 +1595,36 @@ def plot_specific_days(config, dates_to_plot):
     for d in dates_to_plot:
         print(f"- {d}")
 
-# 示例用法
+# 示例用法 - 港股恒生科技ETF回测
 if __name__ == "__main__":  
-    # 创建配置字典
+    # 创建配置字典 - 针对港股市场
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
-        # 'data_path': 'tqqq_longport.csv',
-        'ticker': 'QQQ',
-        'initial_capital': 10000,
-        'lookback_days':1,
+        'data_path': 'hstech_etf_longport.csv',  # 恒生科技ETF数据
+        'ticker': '03032.HK',
+        'initial_capital': 100000,  # 初始资金100,000港币
+        'lookback_days': 1,
         'start_date': date(2024, 11, 1),
         'end_date': date(2025, 11, 12),
-        'check_interval_minutes': 15 ,
-        'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
-        'transaction_fee_per_share': 0.008166,
-        # 'transaction_fee_per_share': 0.013166,
-        'slippage_per_share': 0.01,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
-                                     # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
-        'trading_start_time': (9, 40),
-        'trading_end_time': (15, 40),
+        'check_interval_minutes': 30,  # 每15分钟检查一次
+        'enable_transaction_fees': False,  # 是否启用手续费计算
+        'transaction_fee_per_share': 0.0005,  # 港股交易费用（恒生科技ETF价格约5港币，0.0005约0.01%）
+        'slippage_per_share': 0.002,  # 滑点设置（恒生科技ETF价格约5港币，0.001约0.02%，往返0.04%）
+        # 港股交易时间：
+        # 早市: 09:30-12:00
+        # 午市: 13:00-16:00 (收盘竞价 16:00-16:10，但主要交易在16:00前)
+        'trading_start_time': (9, 40),   # 早上9:40开始交易（避开开盘竞价）
+        'trading_end_time': (15, 50),    # 下午15:50结束交易（避开收盘竞价）
         'max_positions_per_day': 10,
         # 'random_plots': 3,
-        # 'plots_dir': 'trading_plots',
+        # 'plots_dir': 'trading_plots_hk',
         'print_daily_trades': False,
         'print_trade_details': False,
-        'K1': 1,  # 上边界sigma乘数
-        'K2': 1,  # 下边界sigma乘数
+        'K1': 1.5,  # 上边界sigma乘数
+        'K2': 1.5,  # 下边界sigma乘数
         'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
-        'intraday_stop_loss_threshold': 0.04,  # 日内止损阈值（4.5%）
+        'intraday_stop_loss_threshold': 0.04,  # 日内止损阈值（4%）
     }
     
     # 运行回测
