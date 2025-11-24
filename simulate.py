@@ -665,6 +665,12 @@ def check_exit_conditions(df, position_quantity, current_stop):
 
 @api_retry(max_retries=3, retry_delay=2)
 def is_trading_day(symbol=None):
+    """
+    检查是否是交易日
+    返回: (is_trading_day, is_half_day)
+        is_trading_day: 是否是交易日（包括半交易日）
+        is_half_day: 是否是半交易日
+    """
     market = None
     if symbol:
         if symbol.endswith(".US"):
@@ -691,7 +697,7 @@ def is_trading_day(symbol=None):
     half_trading_dates = calendar_resp.half_trading_days
     is_trade_day = current_date in trading_dates
     is_half_trade_day = current_date in half_trading_dates
-    return is_trade_day or is_half_trade_day
+    return (is_trade_day or is_half_trade_day, is_half_trade_day)
 
 def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MINUTES,
                         trading_start_time=TRADING_START_TIME, trading_end_time=TRADING_END_TIME,
@@ -954,12 +960,14 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             continue
         
         # 检查是否是交易日（调试模式下保持原有逻辑）
-        is_today_trading_day = is_trading_day(symbol)
+        is_today_trading_day, is_half_day = is_trading_day(symbol)
         if DEBUG_MODE:
-            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 是否交易日: {is_today_trading_day}")
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 是否交易日: {is_today_trading_day}, 是否半交易日: {is_half_day}")
             
         if not is_today_trading_day:
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
+        elif is_half_day:
+            print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天是半交易日，不开新仓")
             if position_quantity != 0:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
                 
@@ -1216,6 +1224,12 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             if position_quantity != 0:
                 if DEBUG_MODE:
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 已有持仓，跳过开仓检查")
+                continue
+            
+            # 检查是否是半交易日，如果是则不开新仓
+            if is_half_day:
+                if DEBUG_MODE:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 半交易日，跳过开仓")
                 continue
                 
             # 检查今日是否达到最大持仓数
