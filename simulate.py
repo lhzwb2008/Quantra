@@ -966,6 +966,39 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
             
         if not is_today_trading_day:
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天不是交易日，跳过交易")
+            # 如果有持仓，执行平仓
+            if position_quantity != 0:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 非交易日，执行平仓")
+                
+                # 获取当前价格用于计算盈亏
+                quote = get_quote(symbol)
+                current_price = float(quote.get("last_done", 0))
+                
+                side = "Sell" if position_quantity > 0 else "Buy"
+                close_order_id = submit_order(symbol, side, abs(position_quantity), outside_rth=outside_rth_setting)
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 平仓订单已提交，ID: {close_order_id}")
+                
+                # 计算盈亏
+                if entry_price and current_price > 0:
+                    pnl = (current_price - entry_price) * (1 if position_quantity > 0 else -1) * abs(position_quantity)
+                    DAILY_PNL += pnl
+                    TOTAL_PNL += pnl
+                    # 记录平仓交易
+                    DAILY_TRADES.append({
+                        "time": now.strftime('%Y-%m-%d %H:%M:%S'),
+                        "action": "平仓",
+                        "side": side,
+                        "quantity": abs(position_quantity),
+                        "price": current_price,
+                        "pnl": pnl
+                    })
+                    
+                position_quantity = 0
+                entry_price = None
+            next_check_time = now + timedelta(hours=12)
+            wait_seconds = (next_check_time - now).total_seconds()
+            time_module.sleep(wait_seconds)
+            continue
         elif is_half_day:
             print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 今天是半交易日，不开新仓")
             if position_quantity != 0:
