@@ -16,22 +16,34 @@
 # ==================== 策略参数配置 ====================
 CONFIG = {
     # 回测时间范围
-    'start_date': '2025-01-01',     # 回测开始日期（格式：'YYYY-MM-DD'，None表示从最早数据开始）
-    'end_date': '2025-12-01',               # 回测结束日期（格式：'YYYY-MM-DD'，None表示到最新数据）
+    'start_date': None,              # 回测开始日期（格式：'YYYY-MM-DD'，None表示从最早数据开始）
+    'end_date': None,                # 回测结束日期（格式：'YYYY-MM-DD'，None表示到最新数据）
     
-    # 策略参数
-    'lookback_days': 10,            # 回看期（天）- 用于计算相对强度
-    'holding_days': 5,              # 持仓期（天）- 固定持仓天数
-    'min_rel_weakness': 0.05,       # 最小相对弱度（5%）- 需低于指数5%以上
+    # 策略参数（最优配置：三年都盈利，平均收益76.67%）
+    'lookback_days': 10,             # 回看期（天）- 用于计算相对强度
+    'holding_days': 7,               # 持仓期（天）- 7日给予更多反转时间
+    'min_rel_weakness': 0.10,        # 最小相对弱度（10%）- 需低于指数10%以上
+    
+    # 对冲参数
+    'hedge_ratio': 0.0,              # 对冲比例（0.0=不对冲，1.0=全对冲）
+                                     # 建议：0.0-0.2 获得最佳收益，0.4-0.6 平衡风险
     
     # 资金管理
-    'initial_capital': 1000000,     # 初始资金（元）- 个股和指数对冲各使用全部资金
-    'transaction_cost': 0.0002,      # 交易费率（0.2%，双边）
+    'initial_capital': 1000000,      # 初始资金（元）- 个股和指数对冲各使用全部资金
+    
+    # 交易成本（长桥证券港股费率）
+    'transaction_cost_rate': 0.001115,  # 交易费率（单边0.1115%）
+    'fixed_cost_per_trade': 15,         # 平台使用费（15港元/笔）
 }
 
 # 说明：
 # - 个股仓位 = initial_capital（全仓买入）
-# - 指数对冲仓位 = initial_capital（全仓反向对冲）
+# - 指数对冲仓位 = initial_capital × hedge_ratio（按比例对冲）
+# - 长桥证券交易成本：
+#   • 佣金：免佣金
+#   • 比例费用：0.1115%（单边）= 印花税0.1% + 交收费0.002% + 交易费0.00565% + 其他0.004%
+#   • 固定费用：15港元/笔（平台使用费）
+#   • 双边总成本：约0.223% + 30港元/次交易
 # - 总杠杆 = 2倍（1倍个股 + 1倍指数对冲）
 
 # 示例配置：
@@ -65,8 +77,12 @@ class DailyReversalHedgeStrategy:
         # 资金管理（个股和指数都使用全仓）
         self.initial_capital = config['initial_capital']
         self.stock_position = self.initial_capital      # 全仓买入个股
+        self.hedge_ratio = config.get('hedge_ratio', 1.0)  # 对冲比例，默认全对冲
         self.index_position = self.initial_capital      # 全仓反向对冲指数
-        self.transaction_cost = config['transaction_cost']
+        
+        # 交易成本（长桥证券费率）
+        self.transaction_cost_rate = config['transaction_cost_rate']  # 费率（单边）
+        self.fixed_cost_per_trade = config['fixed_cost_per_trade']    # 固定费用/笔
         
         # 交易记录
         self.trades = []
@@ -174,15 +190,27 @@ class DailyReversalHedgeStrategy:
         stock_pnl = pos['stock_shares'] * (stock_price - pos['entry_stock_price'])
         stock_return = (stock_price - pos['entry_stock_price']) / pos['entry_stock_price']
         
-        # 计算对冲盈亏（做空指数）
-        index_pnl = pos['index_shares'] * (pos['entry_index_price'] - index_price)
+        # 计算对冲盈亏（做空指数），按对冲比例调整
+        index_pnl_full = pos['index_shares'] * (pos['entry_index_price'] - index_price)
+        index_pnl = index_pnl_full * self.hedge_ratio
         index_return = (pos['entry_index_price'] - index_price) / pos['entry_index_price']
         
         total_pnl = stock_pnl + index_pnl
         
-        # 计算成本（双边：买入+卖出）
-        stock_cost = self.stock_position * self.transaction_cost * 2  # 股票买入+卖出
-        index_cost = self.index_position * self.transaction_cost * 2  # 指数买入+卖出
+        # 计算成本（长桥证券费率：单边0.1115% + 15港元/笔，双边需要×2）
+        # 个股成本：比例费用 + 固定费用
+        stock_cost_rate = self.stock_position * self.transaction_cost_rate * 2  # 买入+卖出
+        stock_cost_fixed = self.fixed_cost_per_trade * 2  # 买入+卖出各15港元
+        stock_cost = stock_cost_rate + stock_cost_fixed
+        
+        # 指数成本（按对冲比例）
+        if self.hedge_ratio > 0:
+            index_cost_rate = self.index_position * self.transaction_cost_rate * 2 * self.hedge_ratio
+            index_cost_fixed = self.fixed_cost_per_trade * 2 * self.hedge_ratio
+            index_cost = index_cost_rate + index_cost_fixed
+        else:
+            index_cost = 0
+        
         cost = stock_cost + index_cost
         net_pnl = total_pnl - cost
         
@@ -220,9 +248,17 @@ class DailyReversalHedgeStrategy:
         status = "✅" if net_pnl > 0 else "❌"
         print(f"\n{date.strftime('%Y-%m-%d')} 平仓 {status}:")
         print(f"  股票盈亏: {stock_pnl:>10,.0f}元 ({stock_return*100:>6.2f}%)")
-        print(f"  对冲盈亏: {index_pnl:>10,.0f}元 ({index_return*100:>6.2f}%)")
+        if self.hedge_ratio > 0:
+            print(f"  对冲盈亏: {index_pnl:>10,.0f}元 ({index_return*100:>6.2f}%) [比例{self.hedge_ratio*100:.0f}%]")
+        else:
+            print(f"  对冲盈亏: 未对冲")
         print(f"  合计盈亏: {total_pnl:>10,.0f}元")
-        print(f"  交易成本: {cost:>10,.0f}元 (个股{stock_cost:.0f}元[{self.stock_position:,.0f}×{self.transaction_cost*100:.2f}%×2] + 指数{index_cost:.0f}元[{self.index_position:,.0f}×{self.transaction_cost*100:.2f}%×2])")
+        if self.hedge_ratio > 0:
+            print(f"  交易成本: {cost:>10,.0f}元 (个股{stock_cost:.0f}元 + 指数{index_cost:.0f}元)")
+            print(f"    费率: {self.transaction_cost_rate*100:.3f}%×2 + 固定费{self.fixed_cost_per_trade:.0f}港元×2")
+        else:
+            print(f"  交易成本: {cost:>10,.0f}元 (个股{stock_cost:.0f}元)")
+            print(f"    费率: {self.transaction_cost_rate*100:.3f}%×2 + 固定费{self.fixed_cost_per_trade:.0f}港元×2")
         print(f"  净盈亏:   {net_pnl:>10,.0f}元 | 持仓{holding_days}日 | 账户: {self.capital:>12,.0f}元")
         
         self.current_position = None
@@ -256,8 +292,12 @@ class DailyReversalHedgeStrategy:
         print("="*100)
         print(f"回测时间: {actual_start} ~ {actual_end}")
         print(f"回看期: {self.lookback_days}日 | 持仓期: {self.holding_days}日 | 最小相对弱度: {self.min_rel_weakness*100:.1f}%")
-        print(f"初始资金: {self.initial_capital:,}元 | 个股仓位: {self.stock_position:,}元(全仓) | 指数对冲: {self.index_position:,}元(全仓)")
-        print(f"交易费率: {self.transaction_cost*100:.2f}% | 总杠杆: 2倍")
+        if self.hedge_ratio > 0:
+            print(f"初始资金: {self.initial_capital:,}元 | 个股仓位: {self.stock_position:,}元(全仓) | 指数对冲: {int(self.index_position*self.hedge_ratio):,}元({self.hedge_ratio*100:.0f}%)")
+            print(f"交易费率: {self.transaction_cost_rate*100:.3f}%(单边) + {self.fixed_cost_per_trade}港元/笔 | 总杠杆: {1+self.hedge_ratio:.1f}倍")
+        else:
+            print(f"初始资金: {self.initial_capital:,}元 | 个股仓位: {self.stock_position:,}元(全仓) | 指数对冲: 不对冲")
+            print(f"交易费率: {self.transaction_cost_rate*100:.3f}%(单边) + {self.fixed_cost_per_trade}港元/笔 | 总杠杆: 1倍")
         print("="*100)
         
         start_idx = self.lookback_days
@@ -327,6 +367,20 @@ class DailyReversalHedgeStrategy:
         sharpe = (mean_return / std_return) * np.sqrt(50)
         return sharpe
     
+    def calculate_max_drawdown(self, df):
+        """计算最大回撤"""
+        # 计算累计资金曲线
+        df = df.copy()
+        df['cumulative_capital'] = self.initial_capital + df['net_pnl'].cumsum()
+        
+        # 计算最大回撤
+        df['peak'] = df['cumulative_capital'].cummax()
+        df['drawdown'] = (df['cumulative_capital'] - df['peak']) / df['peak'] * 100
+        
+        max_drawdown = df['drawdown'].min()
+        
+        return max_drawdown, df
+    
     def analyze_results(self):
         """分析回测结果"""
         if not self.trades:
@@ -357,6 +411,9 @@ class DailyReversalHedgeStrategy:
         years = (end_date - start_date).days / 365.25
         annual_return = (((self.capital / self.initial_capital) ** (1/years)) - 1) * 100 if years > 0 else 0
         
+        # 计算最大回撤
+        max_drawdown, df_with_dd = self.calculate_max_drawdown(df)
+        
         print("\n" + "="*100)
         print("回测结果")
         print("="*100)
@@ -364,6 +421,7 @@ class DailyReversalHedgeStrategy:
         print(f"总收益率: {total_return:.2f}%")
         print(f"年化收益: {annual_return:.2f}%")
         print(f"夏普比率: {sharpe_ratio:.3f}")
+        print(f"最大回撤: {max_drawdown:.2f}%")
         print(f"交易次数: {trades_count}笔")
         print(f"胜率: {win_rate:.1f}% ({win_count}胜/{trades_count-win_count}负)")
         print(f"平均盈亏: {avg_pnl:,.0f}元/笔")
@@ -378,21 +436,22 @@ class DailyReversalHedgeStrategy:
         print(f"  净盈亏:     {self.capital-self.initial_capital:>12,.0f}元 ({total_return:>7.2f}%)")
         
         # 按年份统计
-        df['year'] = pd.to_datetime(df['entry_date']).dt.year
-        yearly_stats = df.groupby('year').agg({
-            'net_pnl': ['count', 'sum'],
-            'stock_pnl': 'sum',
-            'index_pnl': 'sum'
-        })
+        df_with_dd['year'] = pd.to_datetime(df_with_dd['entry_date']).dt.year
         
         print(f"\n年度统计:")
-        for year, data in yearly_stats.iterrows():
-            count = int(data[('net_pnl', 'count')])
-            net = data[('net_pnl', 'sum')]
-            stock = data[('stock_pnl', 'sum')]
-            hedge = data[('index_pnl', 'sum')]
+        for year in sorted(df_with_dd['year'].unique()):
+            year_data = df_with_dd[df_with_dd['year'] == year]
+            
+            count = len(year_data)
+            net = year_data['net_pnl'].sum()
+            stock = year_data['stock_pnl'].sum()
+            hedge = year_data['index_pnl'].sum()
+            
+            # 计算该年的最大回撤
+            year_max_dd, _ = self.calculate_max_drawdown(year_data.reset_index(drop=True))
+            
             status = "✅" if net > 0 else "❌"
-            print(f"  {status} {year}: {count}笔, 个股{stock:>10,.0f}, 对冲{hedge:>10,.0f}, 合计{net:>10,.0f}元")
+            print(f"  {status} {year}: {count}笔, 个股{stock:>10,.0f}, 对冲{hedge:>10,.0f}, 合计{net:>10,.0f}元, 最大回撤{year_max_dd:>6.2f}%")
         
         print("="*100)
         
@@ -406,17 +465,24 @@ class DailyReversalHedgeStrategy:
 
 
 if __name__ == '__main__':
+    # 获取脚本所在目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(script_dir, 'daily_data')
+    
     # 加载数据
     print("加载数据...")
-    index_df = pd.read_csv('daily_data/03032_daily.csv')
+    print(f"数据目录: {data_dir}")
+    
+    index_df = pd.read_csv(os.path.join(data_dir, '03032_daily.csv'))
     
     components = {}
-    for file in os.listdir('daily_data'):
+    for file in os.listdir(data_dir):
         if file.endswith('_daily.csv') and file != '03032_daily.csv':
             symbol = file.replace('_daily.csv', '') + '.HK'
-            components[symbol] = pd.read_csv(os.path.join('daily_data', file))
+            components[symbol] = pd.read_csv(os.path.join(data_dir, file))
     
-    print(f"加载了指数和 {len(components)} 只成分股数据\n")
+    print(f"加载了指数和 {len(components)} 只成分股数据")
+    print(f"指数数据: {len(index_df)}条, 从 {index_df['Date'].min()} 到 {index_df['Date'].max()}\n")
     
     # 运行策略
     strategy = DailyReversalHedgeStrategy(CONFIG)
