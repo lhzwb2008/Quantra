@@ -7,13 +7,56 @@ import random
 import os
 from plot_trading_day import plot_trading_day
 
-def calculate_vwap(prices, volumes):
+def calculate_vwap(turnovers, volumes, prices):
     """
-    计算VWAP (成交量加权平均价格)
+    Calculate VWAP using cumulative turnover / cumulative volume
     """
-    return sum(p * v for p, v in zip(prices, volumes)) / sum(volumes) if sum(volumes) > 0 else prices[-1]
+    total_volume = sum(volumes)
+    if total_volume > 0:
+        return sum(turnovers) / total_volume
+    else:
+        return prices[-1]
 
-def simulate_day(day_df, prev_close, allowed_times, position_size, config):
+def calculate_vwap_with_hl_average(highs, lows, volumes):
+    """
+    使用High和Low的平均值计算VWAP的近似值
+    平均价格 = (High + Low) / 2
+    """
+    total_volume = sum(volumes)
+    if total_volume > 0:
+        # 计算每个时间点的High和Low平均价格
+        hl_average_prices = [(h + l) / 2 for h, l in zip(highs, lows)]
+        # 计算近似成交额
+        turnovers = [avg_price * v for avg_price, v in zip(hl_average_prices, volumes)]
+        return sum(turnovers) / total_volume
+    else:
+        # 如果没有成交量，返回最后一个时间点的HL平均价
+        return (highs[-1] + lows[-1]) / 2 if highs and lows else 0
+
+def calculate_vwap_with_turnover(day_df, current_index):
+    """
+    使用真实的Turnover数据计算VWAP，与simulate.py保持一致
+    """
+    # 获取当天到当前时间点的所有数据
+    current_day_data = day_df.iloc[:current_index + 1].copy()
+    
+    # 按时间排序确保正确累计
+    current_day_data = current_day_data.sort_values('DateTime')
+    
+    # 计算累计成交量和成交额
+    cumulative_volume = current_day_data['Volume'].cumsum()
+    cumulative_turnover = current_day_data['Turnover'].cumsum()
+    
+    # 计算VWAP: 累计成交额 / 累计成交量
+    if cumulative_volume.iloc[-1] > 0:
+        vwap = cumulative_turnover.iloc[-1] / cumulative_volume.iloc[-1]
+    else:
+        # 处理成交量为0的情况，使用当前收盘价
+        vwap = current_day_data['Close'].iloc[-1]
+    
+    return vwap
+
+def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_start_capital=None):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
     
@@ -26,14 +69,64 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     """
     # 从配置中提取参数
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    enable_transaction_fees = config.get('enable_transaction_fees', True)  # 新增手续费开关
     trading_end_time = config.get('trading_end_time', (15, 50))
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
     print_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time', None)
-    volume_lookback = config.get('volume_lookback', 20)  # 历史成交量回看期，默认20分钟
-    volume_recent = config.get('volume_recent', 5)  # 近期成交量回看期，默认5分钟
-    volume_threshold = config.get('volume_threshold', 1.2)  # 成交量阈值，默认1.2倍
-    use_volume_confirmation = config.get('use_volume_confirmation', True)  # 成交量确认开关，默认开启
+    use_vwap = config.get('use_vwap', True)  # 新增VWAP开关参数
+    # 滑点配置 - 简化为直接的买卖价差
+    slippage_per_share = config.get('slippage_per_share', 0.02)  # 每股滑点，买入时多付，卖出时少收
+    
+    # 🛡️ 日内止损配置 - 新增功能
+    enable_intraday_stop_loss = config.get('enable_intraday_stop_loss', False)  # 是否启用日内止损
+    intraday_stop_loss_pct = config.get('intraday_stop_loss_pct', 0.04)  # 日内止损阈值，默认4%
+    initial_capital = config.get('initial_capital', 100000)  # 初始资金，用于计算日内损失
+    
+    # ⏱️ 最小持仓时间配置 - 新增功能
+    min_holding_minutes = config.get('min_holding_minutes', 0)  # 最小持仓时间（分钟），默认为0表示无限制
+    
+    def apply_slippage(price, is_buy, is_entry):
+        """
+        应用滑点到交易价格 - 简化版本
+        参数:
+            price: 原始价格
+            is_buy: 是否为买入操作
+            is_entry: 是否为开仓操作
+        返回:
+            调整后的价格
+        """
+        if slippage_per_share == 0:
+            return price
+        
+        # 简化逻辑：买入时价格上升，卖出时价格下降
+        if is_buy:
+            return price + slippage_per_share  # 买入多付
+        else:
+            return price - slippage_per_share  # 卖出少收
+    
+    def check_intraday_stop_loss(pnl, current_time):
+        """
+        🛡️ 检查日内止损
+        参数:
+            pnl: 当前交易的盈亏
+            current_time: 当前时间
+        返回:
+            是否触发止损
+        """
+        nonlocal current_day_pnl, intraday_stop_triggered
+        
+        current_day_pnl += pnl
+        if enable_intraday_stop_loss and not intraday_stop_triggered:
+            # 计算日内损失百分比（基于当日开始资金）
+            intraday_loss_pct = current_day_pnl / day_start_capital
+            if intraday_loss_pct < -intraday_stop_loss_pct:
+                intraday_stop_triggered = True
+                if print_details:
+                    print(f"🛡️ 日内止损触发！时间: {current_time}, 当日损失: {intraday_loss_pct*100:.2f}%, 阈值: {intraday_stop_loss_pct*100:.1f}%")
+                return True
+        return False
+    
     position = 0  # 0: 无仓位, 1: 多头, -1: 空头
     entry_price = np.nan
     trailing_stop = np.nan
@@ -41,9 +134,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
     
-    # 存储用于计算VWAP的数据
-    prices = []
-    volumes = []
+    # 🛡️ 日内止损监控变量
+    if day_start_capital is None:
+        day_start_capital = initial_capital  # 如果没有传入，使用初始资金
+    current_day_pnl = 0  # 当日累计盈亏
+    intraday_stop_triggered = False  # 是否已触发日内止损
     
     # 调试时间点标记，确保只打印一次
     debug_printed = False
@@ -51,10 +146,77 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
     for idx, row in day_df.iterrows():
         current_time = row['Time']
         price = row['Close']
+        high = row['High']
+        low = row['Low']
         volume = row['Volume']
         upper = row['UpperBound']
-        lower = row['LowerBound']
+        lower_bound = row['LowerBound']
         sigma = row.get('sigma', 0)
+        
+        # 🛡️ 实时监控：如果有持仓，检查当前K线的浮动盈亏
+        if position != 0 and enable_intraday_stop_loss and not intraday_stop_triggered:
+            # 计算当前浮动盈亏
+            if position == 1:  # 多头
+                # 使用当前价格计算浮动盈亏（考虑滑点）
+                current_exit_price = apply_slippage(price, is_buy=False, is_entry=False)
+                unrealized_pnl = position_size * (current_exit_price - entry_price)
+            else:  # 空头
+                # 使用当前价格计算浮动盈亏（考虑滑点）
+                current_exit_price = apply_slippage(price, is_buy=True, is_entry=False)
+                unrealized_pnl = position_size * (entry_price - current_exit_price)
+            
+            # 计算包含未实现盈亏的当日总盈亏
+            total_current_day_pnl = current_day_pnl + unrealized_pnl
+            
+            # 检查是否触发日内止损（基于当日开始资金的4%）
+            intraday_loss_pct = total_current_day_pnl / day_start_capital
+            if intraday_loss_pct < -intraday_stop_loss_pct:
+                # 触发日内止损，立即平仓
+                if print_details:
+                    print(f"🛡️ 实时止损触发！时间: {current_time}, 浮动损失: {intraday_loss_pct*100:.2f}%, 阈值: {intraday_stop_loss_pct*100:.1f}%")
+                
+                # 立即平仓
+                exit_time = row['DateTime']
+                exit_price = current_exit_price
+                
+                # 计算交易费用
+                if enable_transaction_fees:
+                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)
+                else:
+                    transaction_fees = 0
+                
+                # 计算实际盈亏（包含交易费用）
+                if position == 1:
+                    pnl = position_size * (exit_price - entry_price) - transaction_fees
+                else:
+                    pnl = position_size * (entry_price - exit_price) - transaction_fees
+                
+                # 记录强制平仓交易
+                trades.append({
+                    'entry_time': trade_entry_time,
+                    'exit_time': exit_time,
+                    'side': 'Long' if position == 1 else 'Short',
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl,
+                    'exit_reason': 'Intraday Stop Loss',
+                    'position_size': position_size,
+                    'transaction_fees': transaction_fees,
+                    'vwap_influenced': False,
+                    'stop_level': intraday_stop_loss_pct,
+                    'upper_bound': upper if position == 1 else np.nan,
+                    'lower_bound': lower_bound if position == -1 else np.nan,
+                    'vwap_value': np.nan
+                })
+                
+                # 更新当日盈亏并标记止损已触发
+                current_day_pnl += pnl
+                intraday_stop_triggered = True
+                position = 0
+                trailing_stop = np.nan
+                
+                # 触发止损后，当日不再开仓
+                continue
         
         # # 调试特定时间点
         # if debug_time is not None and current_time >= debug_time and not debug_printed:
@@ -64,50 +226,39 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
         #     print(f"上边界: {upper:.6f}")
         #     print(f"下边界: {lower:.6f}")
         #     print(f"Sigma值: {sigma:.6f}")
-        #     print(f"VWAP: {calculate_vwap(prices, volumes):.6f}")
+        #     print(f"VWAP: {calculate_vwap(prices, volumes, prices):.6f}")
         #     print("=====================================\n")
         #     debug_printed = True  # 确保只打印一次
         
-        # 更新VWAP计算数据
-        prices.append(price)
-        volumes.append(volume)
+        # 计算当前VWAP（使用真实的Turnover数据）
+        # 获取当前行在DataFrame中的位置索引
+        current_index = day_df.index.get_loc(idx)
         
-        # 计算当前VWAP
-        vwap = calculate_vwap(prices, volumes)
-        
-        # 计算近期成交量平均值（用于成交量确认）
-        # 实盘中当前K线未完成，所以使用上一根K线的成交量数据
-        if len(volumes) >= volume_lookback + volume_recent + 1:  # +1 是为了排除当前未完成的K线
-            # 排除当前K线后的数据
-            completed_volumes = volumes[:-1]
-            # 近期：最近的 volume_recent 根已完成K线
-            avg_volume_recent = np.mean(completed_volumes[-volume_recent:])
-            # 历史：近期之前的 volume_lookback 根已完成K线（不重叠）
-            avg_volume_history = np.mean(completed_volumes[-(volume_lookback + volume_recent):-volume_recent])
+        # 检查是否有Turnover字段
+        if 'Turnover' in day_df.columns:
+            vwap = calculate_vwap_with_turnover(day_df, current_index)
         else:
-            # 如果历史数据不足，使用简化的逻辑
-            if len(volumes) > 1:
-                completed_volumes = volumes[:-1]
-                # 如果数据足够分割
-                if len(completed_volumes) >= volume_recent + 1:
-                    avg_volume_recent = np.mean(completed_volumes[-volume_recent:])
-                    # 剩余的作为历史
-                    remaining = completed_volumes[:-volume_recent]
-                    avg_volume_history = np.mean(remaining) if len(remaining) > 0 else avg_volume_recent
-                else:
-                    # 数据太少，近期和历史使用相同值
-                    avg_volume_recent = np.mean(completed_volumes)
-                    avg_volume_history = avg_volume_recent
-            else:
-                # 只有一根K线时使用当前值
-                avg_volume_recent = volume
-                avg_volume_history = volume
+            # 如果没有Turnover字段，回退到使用HL平均值的方法
+            highs = day_df.iloc[:current_index + 1]['High'].tolist()
+            lows = day_df.iloc[:current_index + 1]['Low'].tolist()
+            volumes = day_df.iloc[:current_index + 1]['Volume'].tolist()
+            vwap = calculate_vwap_with_hl_average(highs, lows, volumes)
         
+        # 🛡️ 日内止损检查 - 如果已触发止损，当日不再开仓
+        if enable_intraday_stop_loss and intraday_stop_triggered:
+            # 已触发日内止损，跳过所有开仓逻辑
+            pass
         # 在允许时间内的入场信号
-        if position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
-            # 检查潜在多头入场 - 加入VWAP条件和成交量确认
-            volume_condition = avg_volume_recent > avg_volume_history * volume_threshold if use_volume_confirmation else True
-            if price > upper and price > vwap and volume_condition:
+        elif position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+            # 检查潜在多头入场
+            if use_vwap:
+                # 使用VWAP条件
+                long_entry_condition = price > upper and price > vwap
+            else:
+                # 不使用VWAP条件
+                long_entry_condition = price > upper
+                
+            if long_entry_condition:
                 # 打印边界计算详情（如果需要）
                 if print_details:
                     date_str = row['DateTime'].strftime('%Y-%m-%d')
@@ -118,33 +269,34 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     
                     print(f"\n交易点位详情 [{date_str} {current_time}] - 多头入场:")
                     print(f"  价格: {price:.2f} > 上边界: {upper:.2f} 且 > VWAP: {vwap:.2f}")
-                    if use_volume_confirmation:
-                        print(f"  成交量确认 (使用已完成K线数据):")
-                        print(f"    - 近期平均({volume_recent}根): {avg_volume_recent:,.0f}")
-                        print(f"    - 历史平均({volume_lookback}根): {avg_volume_history:,.0f}")
-                        print(f"    - 阈值: {avg_volume_history * volume_threshold:,.0f} (历史平均 × {volume_threshold})")
-                        print(f"    - 满足条件: {avg_volume_recent:,.0f} > {avg_volume_history * volume_threshold:,.0f}")
-                    else:
-                        print(f"  成交量确认: 已关闭")
                     print(f"  边界计算详情:")
                     print(f"    - 日开盘价: {day_open:.2f}, 前日收盘价: {prev_close:.2f}")
                     print(f"    - 上边界参考价: max({day_open:.2f}, {prev_close:.2f}) = {upper_ref:.2f}")
                     print(f"    - 下边界参考价: min({day_open:.2f}, {prev_close:.2f}) = {lower_ref:.2f}")
                     print(f"    - Sigma值: {sigma:.6f}")
                     print(f"    - 上边界计算: {upper_ref:.2f} * (1 + {sigma:.6f}) = {upper:.2f}")
-                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower:.2f}")
+                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower_bound:.2f}")
                 
                 # 允许多头入场
                 position = 1
-                entry_price = price
+                entry_price = apply_slippage(price, is_buy=True, is_entry=True)  # 多头开仓是买入
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 初始止损设为上边界和VWAP的最大值
-                trailing_stop = max(upper, vwap)
+                # 初始止损设置
+                if use_vwap:
+                    trailing_stop = max(upper, vwap)
+                else:
+                    trailing_stop = upper
                     
-            # 检查潜在空头入场 - 加入VWAP条件和成交量确认
-            volume_condition = avg_volume_recent > avg_volume_history * volume_threshold if use_volume_confirmation else True
-            if price < lower and price < vwap and volume_condition:
+            # 检查潜在空头入场
+            if use_vwap:
+                # 使用VWAP条件
+                short_entry_condition = price < lower_bound and price < vwap
+            else:
+                # 不使用VWAP条件
+                short_entry_condition = price < lower_bound
+                
+            if short_entry_condition:
                 # 打印边界计算详情（如果需要）
                 if print_details:
                     date_str = row['DateTime'].strftime('%Y-%m-%d')
@@ -154,55 +306,64 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                     day_open = row.get('day_open', 0)
                     
                     print(f"\n交易点位详情 [{date_str} {current_time}] - 空头入场:")
-                    print(f"  价格: {price:.2f} < 下边界: {lower:.2f} 且 < VWAP: {vwap:.2f}")
-                    if use_volume_confirmation:
-                        print(f"  成交量确认 (使用已完成K线数据):")
-                        print(f"    - 近期平均({volume_recent}根): {avg_volume_recent:,.0f}")
-                        print(f"    - 历史平均({volume_lookback}根): {avg_volume_history:,.0f}")
-                        print(f"    - 阈值: {avg_volume_history * volume_threshold:,.0f} (历史平均 × {volume_threshold})")
-                        print(f"    - 满足条件: {avg_volume_recent:,.0f} > {avg_volume_history * volume_threshold:,.0f}")
-                    else:
-                        print(f"  成交量确认: 已关闭")
+                    print(f"  价格: {price:.2f} < 下边界: {lower_bound:.2f} 且 < VWAP: {vwap:.2f}")
                     print(f"  边界计算详情:")
                     print(f"    - 日开盘价: {day_open:.2f}, 前日收盘价: {prev_close:.2f}")
                     print(f"    - 上边界参考价: max({day_open:.2f}, {prev_close:.2f}) = {upper_ref:.2f}")
                     print(f"    - 下边界参考价: min({day_open:.2f}, {prev_close:.2f}) = {lower_ref:.2f}")
                     print(f"    - Sigma值: {sigma:.6f}")
                     print(f"    - 上边界计算: {upper_ref:.2f} * (1 + {sigma:.6f}) = {upper:.2f}")
-                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower:.2f}")
+                    print(f"    - 下边界计算: {lower_ref:.2f} * (1 - {sigma:.6f}) = {lower_bound:.2f}")
                 
                 # 允许空头入场
                 position = -1
-                entry_price = price
+                entry_price = apply_slippage(price, is_buy=False, is_entry=True)  # 空头开仓是卖出
                 trade_entry_time = row['DateTime']
                 positions_opened_today += 1  # 增加开仓计数器
-                # 初始止损设为下边界和VWAP的最小值
-                trailing_stop = min(lower, vwap)
+                # 初始止损设置
+                if use_vwap:
+                    trailing_stop = min(lower_bound, vwap)
+                else:
+                    trailing_stop = lower_bound
         
         # 更新止损并检查出场信号
         if position != 0:
             if position == 1:  # 多头仓位
-                # 计算当前时刻的止损水平（使用上边界和VWAP的最大值）
-                trailing_stop = max(upper, vwap)
+                # 计算当前时刻的止损水平
+                if use_vwap:
+                    current_stop = max(upper, vwap)
+                    vwap_influenced = vwap > upper  # 如果VWAP > 上边界，则VWAP影响了止损
+                else:
+                    current_stop = upper
+                    vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
                 # 如果价格跌破当前止损，则平仓
-                exit_condition = price < trailing_stop
+                exit_condition = price < current_stop
                 
-                # 检查是否出场
-                if exit_condition and current_time in allowed_times:
+                # ⏱️ 检查持仓时间是否满足最小持仓要求
+                holding_time_minutes = (row['DateTime'] - trade_entry_time).total_seconds() / 60
+                min_holding_satisfied = holding_time_minutes >= min_holding_minutes
+                
+                # 检查是否出场（需要同时满足：1. 止损条件触发 2. 在允许时间内 3. 持仓时间满足要求）
+                if exit_condition and current_time in allowed_times and min_holding_satisfied:
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
-                        print(f"  价格: {price:.2f} < 当前止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
+                        print(f"  价格: {price:.2f} < 当前止损: {current_stop:.2f}")
+                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
+                        print(f"  ⏱️ 持仓时间: {holding_time_minutes:.1f}分钟")
                     
                     # 平仓多头
                     exit_time = row['DateTime']
+                    exit_price = apply_slippage(price, is_buy=False, is_entry=False)  # 多头平仓是卖出
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-                    pnl = position_size * (price - entry_price) - transaction_fees
+                    if enable_transaction_fees:
+                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    else:
+                        transaction_fees = 0  # 关闭手续费
+                    pnl = position_size * (exit_price - entry_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
                     trades.append({
@@ -210,38 +371,59 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'exit_time': exit_time,
                         'side': 'Long',
                         'entry_price': entry_price,
-                        'exit_price': price,
+                        'exit_price': exit_price,
                         'pnl': pnl,
                         'exit_reason': exit_reason,
                         'position_size': position_size,
-                        'transaction_fees': transaction_fees
+                        'transaction_fees': transaction_fees,
+                        'vwap_influenced': vwap_influenced,  # 新增字段
+                        'stop_level': current_stop,
+                        'upper_bound': upper,
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
+                    
+                    # 🛡️ 检查日内止损
+                    check_intraday_stop_loss(pnl, current_time)
                     
                     position = 0
                     trailing_stop = np.nan
                     
             elif position == -1:  # 空头仓位
-                # 计算当前时刻的止损水平（使用下边界和VWAP的最小值）
-                trailing_stop = min(lower, vwap)
+                # 计算当前时刻的止损水平
+                if use_vwap:
+                    current_stop = min(lower_bound, vwap)
+                    vwap_influenced = vwap < lower_bound  # 如果VWAP < 下边界，则VWAP影响了止损
+                else:
+                    current_stop = lower_bound
+                    vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
                 # 如果价格涨破当前止损，则平仓
-                exit_condition = price > trailing_stop
+                exit_condition = price > current_stop
                 
-                # 检查是否出场
-                if exit_condition and current_time in allowed_times:
+                # ⏱️ 检查持仓时间是否满足最小持仓要求
+                holding_time_minutes = (row['DateTime'] - trade_entry_time).total_seconds() / 60
+                min_holding_satisfied = holding_time_minutes >= min_holding_minutes
+                
+                # 检查是否出场（需要同时满足：1. 止损条件触发 2. 在允许时间内 3. 持仓时间满足要求）
+                if exit_condition and current_time in allowed_times and min_holding_satisfied:
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
                         print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
-                        print(f"  价格: {price:.2f} > 当前止损: {trailing_stop:.2f}")
-                        print(f"  止损计算: min(下边界={lower:.2f}, VWAP={vwap:.2f}) = {trailing_stop:.2f}")
+                        print(f"  价格: {price:.2f} > 当前止损: {current_stop:.2f}")
+                        print(f"  止损计算: min(下边界={lower_bound:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  卖出价: {entry_price:.2f}, 买入价: {price:.2f}, 股数: {position_size}")
+                        print(f"  ⏱️ 持仓时间: {holding_time_minutes:.1f}分钟")
                     
                     # 平仓空头
                     exit_time = row['DateTime']
+                    exit_price = apply_slippage(price, is_buy=True, is_entry=False)  # 空头平仓是买入
                     # 计算交易费用（开仓和平仓）
-                    transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-                    pnl = position_size * (entry_price - price) - transaction_fees
+                    if enable_transaction_fees:
+                        transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                    else:
+                        transaction_fees = 0  # 关闭手续费
+                    pnl = position_size * (entry_price - exit_price) - transaction_fees
                     
                     exit_reason = 'Stop Loss'
                     trades.append({
@@ -249,12 +431,19 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                         'exit_time': exit_time,
                         'side': 'Short',
                         'entry_price': entry_price,
-                        'exit_price': price,
+                        'exit_price': exit_price,
                         'pnl': pnl,
                         'exit_reason': exit_reason,
                         'position_size': position_size,
-                        'transaction_fees': transaction_fees
+                        'transaction_fees': transaction_fees,
+                        'vwap_influenced': vwap_influenced,  # 新增字段
+                        'stop_level': current_stop,
+                        'lower_bound': lower_bound,
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
+                    
+                    # 🛡️ 检查日内止损
+                    check_intraday_stop_loss(pnl, current_time)
                     
                     position = 0
                     trailing_stop = np.nan
@@ -279,7 +468,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (close_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -290,8 +482,15 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'pnl': pnl,
                 'exit_reason': 'Intraday Close',
                 'position_size': position_size,
-                'transaction_fees': transaction_fees
+                'transaction_fees': transaction_fees,
+                'vwap_influenced': False,  # 收盘平仓不受VWAP影响
+                'stop_level': np.nan,
+                'upper_bound': np.nan,
+                'vwap_value': np.nan
             })
+            
+            # 🛡️ 检查日内止损
+            check_intraday_stop_loss(pnl, end_time_str)
             
             position = 0
             trailing_stop = np.nan
@@ -304,7 +503,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"  入场价: {entry_price:.2f}, 出场价: {close_price:.2f}, 股数: {position_size}")
             
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
             pnl = position_size * (entry_price - close_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
@@ -315,8 +517,15 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 'pnl': pnl,
                 'exit_reason': 'Intraday Close',
                 'position_size': position_size,
-                'transaction_fees': transaction_fees
+                'transaction_fees': transaction_fees,
+                'vwap_influenced': False,  # 收盘平仓不受VWAP影响
+                'stop_level': np.nan,
+                'lower_bound': np.nan,
+                'vwap_value': np.nan
             })
+            
+            # 🛡️ 检查日内止损
+            check_intraday_stop_loss(pnl, end_time_str)
             
             position = 0
             trailing_stop = np.nan
@@ -334,20 +543,32 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 多头市场收盘平仓:")
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
+            # 应用滑点
+            exit_price = apply_slippage(last_price, is_buy=False, is_entry=False)  # 多头平仓是卖出
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-            pnl = position_size * (last_price - entry_price) - transaction_fees
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
+            pnl = position_size * (exit_price - entry_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
                 'side': 'Long',
                 'entry_price': entry_price,
-                'exit_price': last_price,
+                'exit_price': exit_price,
                 'pnl': pnl,
                 'exit_reason': 'Market Close',
                 'position_size': position_size,
-                'transaction_fees': transaction_fees
+                'transaction_fees': transaction_fees,
+                'vwap_influenced': False,  # 市场收盘平仓不受VWAP影响
+                'stop_level': np.nan,
+                'upper_bound': np.nan,
+                'vwap_value': np.nan
             })
+            
+            # 🛡️ 检查日内止损
+            check_intraday_stop_loss(pnl, last_time)
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -356,20 +577,32 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config):
                 print(f"\n交易点位详情 [{date_str} {last_time}] - 空头市场收盘平仓:")
                 print(f"  入场价: {entry_price:.2f}, 出场价: {last_price:.2f}, 股数: {position_size}")
             
+            # 应用滑点
+            exit_price = apply_slippage(last_price, is_buy=True, is_entry=False)  # 空头平仓是买入
             # 计算交易费用（开仓和平仓）
-            transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
-            pnl = position_size * (entry_price - last_price) - transaction_fees
+            if enable_transaction_fees:
+                transaction_fees = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+            else:
+                transaction_fees = 0  # 关闭手续费
+            pnl = position_size * (entry_price - exit_price) - transaction_fees
             trades.append({
                 'entry_time': trade_entry_time,
                 'exit_time': exit_time,
                 'side': 'Short',
                 'entry_price': entry_price,
-                'exit_price': last_price,
+                'exit_price': exit_price,
                 'pnl': pnl,
                 'exit_reason': 'Market Close',
                 'position_size': position_size,
-                'transaction_fees': transaction_fees
+                'transaction_fees': transaction_fees,
+                'vwap_influenced': False,  # 市场收盘平仓不受VWAP影响
+                'stop_level': np.nan,
+                'lower_bound': np.nan,
+                'vwap_value': np.nan
             })
+            
+            # 🛡️ 检查日内止损
+            check_intraday_stop_loss(pnl, last_time)
     
     return trades 
 
@@ -397,7 +630,9 @@ def run_backtest(config):
     random_plots = config.get('random_plots', 0)
     plots_dir = config.get('plots_dir', 'trading_plots')
     check_interval_minutes = config.get('check_interval_minutes', 30)
+    min_holding_minutes = config.get('min_holding_minutes', 0)  # ⏱️ 最小持仓时间（分钟）
     transaction_fee_per_share = config.get('transaction_fee_per_share', 0.01)
+    enable_transaction_fees = config.get('enable_transaction_fees', True)  # 新增手续费开关
     trading_start_time = config.get('trading_start_time', (10, 00))
     trading_end_time = config.get('trading_end_time', (15, 40))
     max_positions_per_day = config.get('max_positions_per_day', float('inf'))
@@ -405,6 +640,7 @@ def run_backtest(config):
     print_trade_details = config.get('print_trade_details', False)
     debug_time = config.get('debug_time')
     leverage = config.get('leverage', 1)  # 资金杠杆倍数，默认为1
+    
     # 如果未提供ticker，从文件名中提取
     if ticker is None:
         # 从文件名中提取ticker
@@ -479,8 +715,19 @@ def run_backtest(config):
     # 创建日期参考价格DataFrame
     date_refs_df = pd.DataFrame(date_refs)
     
+    # 检查是否有足够的数据进行处理
+    if date_refs_df.empty or len(date_refs) == 0:
+        raise ValueError(f"在指定日期范围内没有找到有效的交易数据。请检查日期范围设置。")
+    
     # 将参考价格合并回主DataFrame
     price_df = price_df.drop(columns=['upper_ref', 'lower_ref'], errors='ignore')
+    
+    # 检查Date列是否存在
+    if 'Date' not in price_df.columns:
+        raise ValueError("price_df中缺少Date列，无法进行合并操作")
+    if 'Date' not in date_refs_df.columns:
+        raise ValueError("date_refs_df中缺少Date列，无法进行合并操作")
+    
     price_df = pd.merge(price_df, date_refs_df, on='Date', how='left')
     
     # 计算每分钟相对开盘的回报（使用day_open保持一致性）
@@ -490,11 +737,21 @@ def run_backtest(config):
     print(f"计算噪声区域边界...")
     # 将时间点转为列
     pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
-    # 计算每个时间点的绝对回报的滚动平均值
-    # 这确保我们对每个时间点使用前lookback_days天的数据
+    
+    # 重要修复：确保rolling基于实际交易日而不是日历日
+    # 对于周一或节假日后的第一个交易日，应该使用前一个交易日的数据
+    # 这里使用实际存在的交易日进行rolling计算
     sigma = pivot.rolling(window=lookback_days, min_periods=lookback_days).mean().shift(1)
+    
+    # 对于lookback_days=1的情况，特殊处理：直接使用前一个交易日的数据
+    if lookback_days == 1:
+        # shift(1)已经确保使用前一个交易日的数据
+        # 因为pivot的索引只包含实际的交易日，所以shift(1)会自动跳过周末
+        pass
+    
     # 转回长格式
     sigma = sigma.stack().reset_index(name='sigma')
+    
     
     # 保存一个原始数据的副本，用于计算买入持有策略
     price_df_original = price_df.copy()
@@ -503,19 +760,39 @@ def run_backtest(config):
     price_df = pd.merge(price_df, sigma, on=['Date', 'Time'], how='left')
     
     # 检查每个交易日是否有足够的sigma数据
-    # 创建一个标记，记录哪些日期的sigma数据不完整
+    # 创建一个标记，记录哪些日期的sigma数据严重不完整（缺失超过10%）
     incomplete_sigma_dates = set()
     for date in price_df['Date'].unique():
         day_data = price_df[price_df['Date'] == date]
-        if day_data['sigma'].isna().any():
+        na_count = day_data['sigma'].isna().sum()
+        total_count = len(day_data)
+        missing_ratio = na_count / total_count if total_count > 0 else 1.0
+        
+        # 只有当缺失率超过10%时才过滤掉这一天
+        if missing_ratio > 0.1:
             incomplete_sigma_dates.add(date)
+            incomplete_sigma_dates.add(date)
+            # print(f"{date} sigma缺失率过高: {na_count}/{total_count} ({missing_ratio*100:.1f}%) - 将被过滤")
+        # elif na_count > 0:
+            # 少量缺失值，填充为前值
+            # print(f"{date} 有少量sigma缺失: {na_count}/{total_count} ({missing_ratio*100:.1f}%) - 将被保留")
     
-    # 移除sigma数据不完整的日期
+    # 移除sigma数据严重不完整的日期
+    # if incomplete_sigma_dates:
+    #     print(f"sigma严重不完整的日期（将被过滤）: {sorted(incomplete_sigma_dates)}")
     price_df = price_df[~price_df['Date'].isin(incomplete_sigma_dates)]
+    
+    # 对于剩余的少量缺失值，使用前值填充（forward fill）
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].ffill()
+    # 如果还有缺失（比如第一个值），使用后值填充
+    price_df['sigma'] = price_df.groupby('Date')['sigma'].bfill()
+    # 如果整个时间点都缺失，使用0填充（保守策略）
+    price_df['sigma'] = price_df['sigma'].fillna(0)
     
     # 确保所有剩余的sigma值都有有效数据
     if price_df['sigma'].isna().any():
         print(f"警告: 仍有{price_df['sigma'].isna().sum()}个缺失的sigma值")
+    
     
     # 使用正确的参考价格计算噪声区域的上下边界
     # 从配置中获取K1和K2参数
@@ -551,6 +828,10 @@ def run_backtest(config):
         allowed_times.sort()
     
     print(f"使用{check_interval_minutes}分钟的检查间隔")
+    if min_holding_minutes > 0:
+        print(f"⏱️ 最小持仓时间: {min_holding_minutes}分钟（开仓后必须持仓满此时间才能平仓）")
+    else:
+        print(f"⏱️ 最小持仓时间: 无限制")
     
     # 初始化回测变量
     capital = initial_capital
@@ -568,7 +849,10 @@ def run_backtest(config):
         # 先运行回测，记录有交易的日期
         for trade_date in unique_dates:
             day_data = price_df[price_df['Date'] == trade_date].copy()
-            if len(day_data) < 10:  # 跳过数据不足的日期
+            # 设置数据点阈值：对于今天允许更少的数据点
+            is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+            min_data_points = 1 if is_today else 10
+            if len(day_data) < min_data_points:  # 跳过数据不足的日期
                 continue
                 
             prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
@@ -576,7 +860,7 @@ def run_backtest(config):
                 continue
                 
             # 模拟当天交易
-            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config)
+            simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config, config.get('initial_capital', 100000))
             
             # 从结果中提取交易
             trades = simulation_result
@@ -611,9 +895,11 @@ def run_backtest(config):
     for trade_date in unique_dates:
         # 获取当天的数据（从原始数据中）
         day_data = price_df_original[price_df_original['Date'] == trade_date].copy()
-        
+
         # 跳过数据不足的日期
-        if len(day_data) < 10:  # 任意阈值
+        is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+        min_data_points = 1 if is_today else 10
+        if len(day_data) < min_data_points:  # 任意阈值
             continue
         
         # 获取当天的开盘价和收盘价（用于计算买入持有）
@@ -628,19 +914,24 @@ def run_backtest(config):
         })
     
     # 处理策略交易部分
+    
     for i, trade_date in enumerate(filtered_dates):
         # 获取当天的数据
         day_data = price_df[price_df['Date'] == trade_date].copy()
         day_data = day_data.sort_values('DateTime').reset_index(drop=True)
         
+        
         # 跳过数据不足的日期
-        if len(day_data) < 10:  # 任意阈值
-            daily_results.append({
-                'Date': trade_date,
-                'capital': capital,
-                'daily_return': 0
-            })
-            continue
+        is_today = (day_data['Date'].iloc[0] == datetime.now().date()) if len(day_data) > 0 else False
+        min_data_points = 1 if is_today else 10
+        if len(day_data) < min_data_points:  # 任意阈值
+            if not is_today:
+                daily_results.append({
+                    'Date': trade_date,
+                    'capital': capital,
+                    'daily_return': 0
+                })
+                continue
         
         # 获取前一天的收盘价
         prev_close = day_data['prev_close'].iloc[0] if not pd.isna(day_data['prev_close'].iloc[0]) else None
@@ -665,7 +956,7 @@ def run_backtest(config):
             continue
                 
         # 模拟当天的交易
-        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config)
+        simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config, capital)
         
         # 从结果中提取交易
         trades = simulation_result
@@ -725,7 +1016,10 @@ def run_backtest(config):
             # 从每笔交易中提取交易费用
             if 'transaction_fees' not in trade:
                 # 如果交易数据中没有交易费用，则计算
-                trade['transaction_fees'] = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                if enable_transaction_fees:
+                    trade['transaction_fees'] = max(position_size * transaction_fee_per_share * 2, 2.16)  # 买入和卖出费用，最低2.16
+                else:
+                    trade['transaction_fees'] = 0  # 关闭手续费
             day_transaction_fees += trade['transaction_fees']
         
         # 添加到总交易费用
@@ -750,6 +1044,13 @@ def run_backtest(config):
     
     # 创建每日结果DataFrame
     daily_df = pd.DataFrame(daily_results)
+    
+    # 检查daily_results是否为空或缺少Date列
+    if daily_df.empty:
+        raise ValueError("daily_results为空，无法创建日度结果DataFrame")
+    if 'Date' not in daily_df.columns:
+        raise ValueError("daily_results中缺少Date列，无法进行日期转换")
+    
     daily_df['Date'] = pd.to_datetime(daily_df['Date'])
     daily_df.set_index('Date', inplace=True)
     
@@ -939,9 +1240,11 @@ def run_backtest(config):
     
     # 打印杠杆信息
     if leverage != 1:
+        final_capital = daily_df['capital'].iloc[-1]
         print(f"💰 资金杠杆倍数: {leverage}x")
         print(f"💵 初始资金: ${initial_capital:,.0f}")
         print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
+        print(f"💰 最终资金: ${final_capital:,.2f}")
         print(f"-"*50)
     
     # 核心表现指标
@@ -964,6 +1267,9 @@ def run_backtest(config):
     print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
     
     print(f"="*50)
+    
+    # 分析VWAP影响
+    vwap_stats = analyze_vwap_impact(trades_df)
     
     return daily_df, monthly, trades_df, metrics 
 
@@ -1226,6 +1532,61 @@ def calculate_performance_metrics(daily_df, trades_df, initial_capital, risk_fre
     
     return metrics 
 
+def analyze_vwap_impact(trades_df):
+    """
+    分析VWAP对交易平仓的影响
+    """
+    if len(trades_df) == 0:
+        print("\n=== VWAP影响分析 ===")
+        print("没有交易数据可供分析")
+        return
+    
+    # 只分析止损平仓的交易
+    stop_loss_trades = trades_df[trades_df['exit_reason'] == 'Stop Loss']
+    
+    if len(stop_loss_trades) == 0:
+        print("\n=== VWAP影响分析 ===")
+        print("没有止损平仓的交易")
+        return
+    
+    # 统计VWAP影响的交易
+    vwap_influenced_trades = stop_loss_trades[stop_loss_trades['vwap_influenced'] == True]
+    
+    total_stop_loss = len(stop_loss_trades)
+    vwap_influenced_count = len(vwap_influenced_trades)
+    vwap_influence_ratio = vwap_influenced_count / total_stop_loss * 100
+    
+    print("\n=== VWAP影响分析 ===")
+    print(f"总止损平仓交易数: {total_stop_loss}")
+    print(f"VWAP影响的平仓数: {vwap_influenced_count}")
+    print(f"VWAP生效比例: {vwap_influence_ratio:.1f}%")
+    
+    # 分多头和空头分析
+    long_stop_loss = stop_loss_trades[stop_loss_trades['side'] == 'Long']
+    short_stop_loss = stop_loss_trades[stop_loss_trades['side'] == 'Short']
+    
+    if len(long_stop_loss) > 0:
+        long_vwap_influenced = long_stop_loss[long_stop_loss['vwap_influenced'] == True]
+        long_ratio = len(long_vwap_influenced) / len(long_stop_loss) * 100
+        print(f"\n多头交易:")
+        print(f"  止损平仓数: {len(long_stop_loss)}")
+        print(f"  VWAP影响数: {len(long_vwap_influenced)}")
+        print(f"  VWAP生效比例: {long_ratio:.1f}%")
+    
+    if len(short_stop_loss) > 0:
+        short_vwap_influenced = short_stop_loss[short_stop_loss['vwap_influenced'] == True]
+        short_ratio = len(short_vwap_influenced) / len(short_stop_loss) * 100
+        print(f"\n空头交易:")
+        print(f"  止损平仓数: {len(short_stop_loss)}")
+        print(f"  VWAP影响数: {len(short_vwap_influenced)}")
+        print(f"  VWAP生效比例: {short_ratio:.1f}%")
+    
+    return {
+        'total_stop_loss': total_stop_loss,
+        'vwap_influenced_count': vwap_influenced_count,
+        'vwap_influence_ratio': vwap_influence_ratio
+    }
+
 def plot_specific_days(config, dates_to_plot):
     """
     为指定的日期生成交易图表
@@ -1249,18 +1610,22 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',
-        # 'data_path': 'spy_longport.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path':'tqqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2020, 1, 1),
-        'end_date': date(2025, 7, 15),
-        'check_interval_minutes': 15 ,
-        # 'transaction_fee_per_share': 0.01,
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 12, 1),
+        'check_interval_minutes': 1 ,
+        'min_holding_minutes': 15,  # ⏱️ 最小持仓时间（分钟），开仓后必须持仓满这个时间才能平仓
+        'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
         # 'transaction_fee_per_share': 0.013166,
+        'slippage_per_share': 0.01,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
+                                     # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
@@ -1268,14 +1633,12 @@ if __name__ == "__main__":
         # 'plots_dir': 'trading_plots',
         'print_daily_trades': False,
         'print_trade_details': False,
-        # 'debug_time': '12:46',
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 2,  # 资金杠杆倍数，默认为1
-        'volume_lookback': 30,  # 历史成交量回看期，默认5分钟
-        'volume_recent': 5,  # 近期成交量回看期，默认1分钟
-        'volume_threshold': 1.2,  # 成交量阈值，默认1.2倍
-        'use_volume_confirmation': False # 成交量确认开关
+        'leverage': 3,  # 资金杠杆倍数，默认为1
+        'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
+        'enable_intraday_stop_loss': False,  # 是否启用日内止损
+        'intraday_stop_loss_threshold': 0.04,  # 日内止损阈值（4.5%）
     }
     
     # 运行回测
