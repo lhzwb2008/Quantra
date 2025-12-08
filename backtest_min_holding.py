@@ -1619,7 +1619,7 @@ if __name__ == "__main__":
         'lookback_days':1,
         'start_date': date(2024, 1, 1),
         'end_date': date(2025, 12, 1),
-        'check_interval_minutes': 1 ,
+        'check_interval_minutes': 15 ,
         'min_holding_minutes': 15,  # ⏱️ 最小持仓时间（分钟），开仓后必须持仓满这个时间才能平仓
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
