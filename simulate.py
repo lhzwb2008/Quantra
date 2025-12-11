@@ -91,7 +91,7 @@ def create_contexts():
 
 QUOTE_CTX, TRADE_CTX = create_contexts()
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def get_account_balance():
     if DEBUG_MODE:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取美元账户余额")
@@ -112,7 +112,7 @@ def get_account_balance():
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 警告: 未找到美元账户，返回余额为0")
     return 0.0
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def get_current_positions():
     if DEBUG_MODE:
         print(f"[{get_us_eastern_time().strftime('%Y-%m-%d %H:%M:%S')}] 获取当前持仓")
@@ -129,7 +129,7 @@ def get_current_positions():
             }
     return positions
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def get_historical_data(symbol, days_back=None):
     # 简化天数计算逻辑
     if days_back is None:
@@ -282,7 +282,7 @@ def get_historical_data(symbol, days_back=None):
     
     return df
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def get_quote(symbol):
     quotes = QUOTE_CTX.quote([symbol])
     quote_data = {
@@ -559,7 +559,7 @@ def calculate_noise_area(df, lookback_days=LOOKBACK_DAYS, K1=1, K2=1):
     
     return df
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def submit_order(symbol, side, quantity, order_type="MO", price=None, outside_rth=None):
     sdk_side = OrderSide.Buy if side == "Buy" else OrderSide.Sell
     if isinstance(order_type, str):
@@ -663,7 +663,7 @@ def check_exit_conditions(df, position_quantity, current_stop):
         return exit_signal, new_stop
     return False, None
 
-@api_retry(max_retries=3, retry_delay=2)
+@api_retry(max_retries=10, retry_delay=2)
 def is_trading_day(symbol=None):
     """
     检查是否是交易日
