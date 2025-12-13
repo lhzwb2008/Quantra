@@ -137,6 +137,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     current_day_pnl = 0  # 当日累计盈亏
     intraday_stop_triggered = False  # 是否已触发日内止损
     
+    # 📊 日内资金回撤追踪
+    intraday_capital_peak = day_start_capital  # 日内资金峰值
+    intraday_max_drawdown = 0  # 日内最大回撤金额
+    
     # 调试时间点标记，确保只打印一次
     debug_printed = False
     
@@ -150,31 +154,67 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
         lower_bound = row['LowerBound']
         sigma = row.get('sigma', 0)
         
-        # 🛡️ 实时监控：如果有持仓，检查当前K线的浮动盈亏
+        # 📊 计算当前K线的账户资金（用于日内回撤计算）
+        # 如果已触发止损，不再更新回撤统计
+        if not intraday_stop_triggered:
+            # 使用K线的High和Low来计算最好和最坏情况
+            if position == 1:  # 多头持仓
+                # 多头：高点是最好情况，低点是最坏情况
+                best_unrealized = position_size * (high - entry_price)
+                worst_unrealized = position_size * (low - entry_price)
+            elif position == -1:  # 空头持仓
+                # 空头：低点是最好情况，高点是最坏情况
+                best_unrealized = position_size * (entry_price - low)
+                worst_unrealized = position_size * (entry_price - high)
+            else:  # 无持仓
+                best_unrealized = 0
+                worst_unrealized = 0
+            
+            # 计算当前K线的资金极值
+            current_best_capital = day_start_capital + current_day_pnl + best_unrealized
+            current_worst_capital = day_start_capital + current_day_pnl + worst_unrealized
+            
+            # 更新资金峰值（使用最好情况）
+            if current_best_capital > intraday_capital_peak:
+                intraday_capital_peak = current_best_capital
+            
+            # 计算当前回撤（使用最坏情况与峰值的差距）
+            current_drawdown = intraday_capital_peak - current_worst_capital
+            if current_drawdown > intraday_max_drawdown:
+                intraday_max_drawdown = current_drawdown
+        
+        # 🛡️ 实时监控：检查日内回撤（从峰值回落）
         if position != 0 and enable_intraday_stop_loss and not intraday_stop_triggered:
-            # 计算当前浮动盈亏
-            if position == 1:  # 多头
-                # 使用当前价格计算浮动盈亏（考虑滑点）
-                current_exit_price = apply_slippage(price, is_buy=False, is_entry=False)
-                unrealized_pnl = position_size * (current_exit_price - entry_price)
-            else:  # 空头
-                # 使用当前价格计算浮动盈亏（考虑滑点）
-                current_exit_price = apply_slippage(price, is_buy=True, is_entry=False)
-                unrealized_pnl = position_size * (entry_price - current_exit_price)
+            # 计算当前回撤是否超过阈值（基于日内峰值的回撤）
+            # current_drawdown 已经在上面计算过了
+            drawdown_pct = current_drawdown / day_start_capital
             
-            # 计算包含未实现盈亏的当日总盈亏
-            total_current_day_pnl = current_day_pnl + unrealized_pnl
-            
-            # 检查是否触发日内止损（基于当日开始资金的4%）
-            intraday_loss_pct = total_current_day_pnl / day_start_capital
-            if intraday_loss_pct < -intraday_stop_loss_pct:
-                # 触发日内止损，立即平仓
+            if drawdown_pct > intraday_stop_loss_pct:
+                # 触发日内回撤止损
+                # 计算止损价格（刚好触发阈值的价格）
+                max_drawdown_amount = day_start_capital * intraday_stop_loss_pct
+                # 允许的最低资金 = 峰值 - 最大回撤
+                min_capital_allowed = intraday_capital_peak - max_drawdown_amount
+                # 当前已实现盈亏后的基础资金
+                base_capital = day_start_capital + current_day_pnl
+                # 允许的最大浮亏
+                max_unrealized_loss = base_capital - min_capital_allowed
+                
+                # 计算止损价格
+                if position == 1:  # 多头
+                    # 浮亏 = position_size * (entry_price - exit_price)
+                    stop_exit_price = entry_price + max_unrealized_loss / position_size - slippage_per_share
+                else:  # 空头
+                    # 浮亏 = position_size * (exit_price - entry_price)
+                    stop_exit_price = entry_price - max_unrealized_loss / position_size + slippage_per_share
+                
                 if print_details:
-                    print(f"🛡️ 实时止损触发！时间: {current_time}, 浮动损失: {intraday_loss_pct*100:.2f}%, 阈值: {intraday_stop_loss_pct*100:.1f}%")
+                    print(f"🛡️ 日内回撤止损触发！时间: {current_time}, 回撤: {drawdown_pct*100:.2f}%, 阈值: {intraday_stop_loss_pct*100:.1f}%")
+                    print(f"   峰值资金: ${intraday_capital_peak:.2f}, 当前最差资金: ${current_worst_capital:.2f}")
                 
                 # 立即平仓
                 exit_time = row['DateTime']
-                exit_price = current_exit_price
+                exit_price = stop_exit_price
                 
                 # 计算交易费用
                 if enable_transaction_fees:
@@ -591,7 +631,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             # 🛡️ 检查日内止损
             check_intraday_stop_loss(pnl, last_time)
     
-    return trades 
+    # 计算日内最大回撤百分比（基于当日起始资金）
+    intraday_max_drawdown_pct = intraday_max_drawdown / day_start_capital if day_start_capital > 0 else 0
+    
+    return trades, intraday_max_drawdown_pct
 
 def run_backtest(config):
     """
@@ -825,6 +868,10 @@ def run_backtest(config):
     trading_days = set()       # 有交易的日期集合
     non_trading_days = set()   # 无交易的日期集合
     
+    # 追踪最大日内回撤
+    max_intraday_mdd_pct = 0   # 最大日内波动百分比
+    max_intraday_mdd_date = None  # 最大日内波动发生的日期
+    
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
     if random_plots > 0:
@@ -845,7 +892,7 @@ def run_backtest(config):
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config, config.get('initial_capital', 100000))
             
             # 从结果中提取交易
-            trades = simulation_result
+            trades, _ = simulation_result
                 
             if trades:  # 如果有交易
                 days_with_trades.append(trade_date)
@@ -940,14 +987,19 @@ def run_backtest(config):
         # 模拟当天的交易
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config, capital)
         
-        # 从结果中提取交易
-        trades = simulation_result
+        # 从结果中提取交易和日内最大回撤
+        trades, intraday_mdd_pct = simulation_result
         
         # 更新交易日期统计
         if trades:  # 有交易的日期
             trading_days.add(trade_date)
         else:  # 无交易的日期
             non_trading_days.add(trade_date)
+        
+        # 追踪最大日内资金回撤
+        if intraday_mdd_pct > max_intraday_mdd_pct:
+            max_intraday_mdd_pct = intraday_mdd_pct
+            max_intraday_mdd_date = trade_date
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
@@ -969,7 +1021,7 @@ def run_backtest(config):
             # 打印单行交易日志
             trade_info = ", ".join(trade_summary)
             leverage_info = f" [杠杆{leverage}x]" if leverage != 1 else ""
-            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f}{leverage_info} | {trade_info}")
+            print(f"{date_str} | 交易数: {len(trades)} | 总盈亏: ${day_total_pnl:.2f} | 日内回撤: {intraday_mdd_pct*100:.2f}%{leverage_info} | {trade_info}")
         
         # 检查是否需要为这一天生成图表
         if trade_date in all_plot_days:
@@ -1247,6 +1299,9 @@ def run_backtest(config):
             duration = (metrics['max_drawdown_date'] - metrics['max_drawdown_start_date']).days
             print(f"   └─ 尚未恢复 (已持续{duration}天)")
     print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
+    if max_intraday_mdd_date is not None:
+        max_mdd_date_str = pd.to_datetime(max_intraday_mdd_date).strftime('%Y-%m-%d')
+        print(f"📊 最大日内资金回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
     
     print(f"="*50)
     
@@ -1616,10 +1671,10 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 3,  # 资金杠杆倍数，默认为1
+        'leverage': 2,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
-        'enable_intraday_stop_loss': False,  # 是否启用日内止损
-        'intraday_stop_loss_threshold': 0.04,  # 日内止损阈值（4.5%）
+        'enable_intraday_stop_loss': True,  # 是否启用日内止损
+        'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
     }
     
     # 运行回测
