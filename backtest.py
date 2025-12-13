@@ -1671,7 +1671,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 2,  # 资金杠杆倍数，默认为1
+        'leverage': 1,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
