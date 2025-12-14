@@ -200,13 +200,16 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                 # 允许的最大浮亏
                 max_unrealized_loss = base_capital - min_capital_allowed
                 
-                # 计算止损价格
+                # 计算止损价格（在回撤刚好达到阈值时的价格）
+                # max_unrealized_loss 是允许的最大浮亏（正数表示亏损金额）
                 if position == 1:  # 多头
-                    # 浮亏 = position_size * (entry_price - exit_price)
-                    stop_exit_price = entry_price + max_unrealized_loss / position_size - slippage_per_share
+                    # 多头亏损 = position_size * (entry_price - exit_price)
+                    # 所以 exit_price = entry_price - 亏损金额/position_size
+                    stop_exit_price = entry_price - max_unrealized_loss / position_size - slippage_per_share
                 else:  # 空头
-                    # 浮亏 = position_size * (exit_price - entry_price)
-                    stop_exit_price = entry_price - max_unrealized_loss / position_size + slippage_per_share
+                    # 空头亏损 = position_size * (exit_price - entry_price)
+                    # 所以 exit_price = entry_price + 亏损金额/position_size
+                    stop_exit_price = entry_price + max_unrealized_loss / position_size + slippage_per_share
                 
                 if print_details:
                     print(f"🛡️ 日内回撤止损触发！时间: {current_time}, 回撤: {drawdown_pct*100:.2f}%, 阈值: {intraday_stop_loss_pct*100:.1f}%")
@@ -1160,15 +1163,30 @@ def run_backtest(config):
     print(f"\n计算策略性能指标...")
     metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, buy_hold_df=buy_hold_df)
     
-    # 打印交易费用统计
-    print(f"\n交易费用统计:")
-    print(f"总交易费用: ${total_transaction_fees:.2f}")
+    # 计算总滑点损耗
+    slippage_per_share = config.get('slippage_per_share', 0.01)
     if len(trades_df) > 0:
-        print(f"平均每笔交易费用: ${total_transaction_fees / len(trades_df):.2f}")
+        total_slippage_cost = (trades_df['position_size'] * slippage_per_share * 2).sum()
+    else:
+        total_slippage_cost = 0
+    
+    # 打印交易费用和滑点统计
+    print(f"\n交易成本统计:")
+    print(f"总手续费: ${total_transaction_fees:.2f}")
+    print(f"总滑点损耗: ${total_slippage_cost:.2f}")
+    total_trading_cost = total_transaction_fees + total_slippage_cost
+    print(f"总交易成本: ${total_trading_cost:.2f}")
+    if len(trades_df) > 0:
+        print(f"平均每笔手续费: ${total_transaction_fees / len(trades_df):.2f}")
+        print(f"平均每笔滑点: ${total_slippage_cost / len(trades_df):.2f}")
+        print(f"平均每笔总成本: ${total_trading_cost / len(trades_df):.2f}")
     if len(daily_df) > 0:
-        print(f"平均每日交易费用: ${total_transaction_fees / len(daily_df):.2f}")
-    print(f"交易费用占初始资金比例: {total_transaction_fees / initial_capital * 100:.2f}%")
-    print(f"交易费用占总收益比例: {total_transaction_fees / (capital - initial_capital) * 100:.2f}%" if capital > initial_capital else "交易费用占总收益比例: N/A (无盈利)")
+        print(f"平均每日交易成本: ${total_trading_cost / len(daily_df):.2f}")
+    print(f"交易成本占初始资金比例: {total_trading_cost / initial_capital * 100:.2f}%")
+    if capital > initial_capital:
+        print(f"交易成本占总收益比例: {total_trading_cost / (capital - initial_capital) * 100:.2f}%")
+    else:
+        print(f"交易成本占总收益比例: N/A (无盈利)")
     
     # 打印交易日期统计
     print(f"\n交易日期统计:")
@@ -1302,6 +1320,18 @@ def run_backtest(config):
     if max_intraday_mdd_date is not None:
         max_mdd_date_str = pd.to_datetime(max_intraday_mdd_date).strftime('%Y-%m-%d')
         print(f"📊 最大日内资金回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
+    
+    # 交易成本统计
+    print(f"-"*50)
+    print(f"💸 交易成本统计:")
+    print(f"   ├─ 总手续费: ${total_transaction_fees:,.2f}")
+    print(f"   ├─ 总滑点损耗: ${total_slippage_cost:,.2f}")
+    print(f"   ├─ 总交易成本: ${total_trading_cost:,.2f}")
+    print(f"   ├─ 占初始资金比例: {total_trading_cost / initial_capital * 100:.2f}%")
+    if capital > initial_capital:
+        print(f"   └─ 占总收益比例: {total_trading_cost / (capital - initial_capital) * 100:.2f}%")
+    else:
+        print(f"   └─ 占总收益比例: N/A (无盈利)")
     
     print(f"="*50)
     
@@ -1654,8 +1684,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2025, 12, 10),
+        'start_date': date(2024, 1, 1),
+        'end_date': date(2025, 12, 20),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1671,7 +1701,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 1,  # 资金杠杆倍数，默认为1
+        'leverage': 3,  # 资金杠杆倍数，默认为1
         'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
