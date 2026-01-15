@@ -140,6 +140,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     # 📊 日内资金回撤追踪
     intraday_capital_peak = day_start_capital  # 日内资金峰值
     intraday_max_drawdown = 0  # 日内最大回撤金额
+    intraday_capital_low = day_start_capital  # 日内最低资金
+    intraday_capital_high = day_start_capital  # 日内最高资金
     
     # 调试时间点标记，确保只打印一次
     debug_printed = False
@@ -182,6 +184,12 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             current_drawdown = intraday_capital_peak - current_worst_capital
             if current_drawdown > intraday_max_drawdown:
                 intraday_max_drawdown = current_drawdown
+            
+            # 追踪日内资金的绝对最高和最低点
+            if current_best_capital > intraday_capital_high:
+                intraday_capital_high = current_best_capital
+            if current_worst_capital < intraday_capital_low:
+                intraday_capital_low = current_worst_capital
         
         # 🛡️ 实时监控：检查日内回撤（从峰值回落）
         if position != 0 and enable_intraday_stop_loss and not intraday_stop_triggered:
@@ -637,7 +645,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     # 计算日内最大回撤百分比（基于当日起始资金）
     intraday_max_drawdown_pct = intraday_max_drawdown / day_start_capital if day_start_capital > 0 else 0
     
-    return trades, intraday_max_drawdown_pct
+    # 返回交易、日内回撤百分比、日内最低资金、日内最高资金
+    return trades, intraday_max_drawdown_pct, intraday_capital_low, intraday_capital_high
 
 def run_backtest(config):
     """
@@ -875,6 +884,13 @@ def run_backtest(config):
     max_intraday_mdd_pct = 0   # 最大日内波动百分比
     max_intraday_mdd_date = None  # 最大日内波动发生的日期
     
+    # 📊 精确最大回撤追踪（考虑日内波动）
+    capital_peak = initial_capital  # 资金峰值（包含日内高点）
+    precise_max_drawdown = 0  # 精确最大回撤金额
+    precise_max_drawdown_pct = 0  # 精确最大回撤百分比
+    precise_mdd_date = None  # 精确最大回撤发生日期
+    precise_mdd_peak_date = None  # 峰值日期
+    
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
     if random_plots > 0:
@@ -894,8 +910,8 @@ def run_backtest(config):
             # 模拟当天交易
             simulation_result = simulate_day(day_data, prev_close, allowed_times, 100, config, config.get('initial_capital', 100000))
             
-            # 从结果中提取交易
-            trades, _ = simulation_result
+            # 从结果中提取交易（忽略其他返回值）
+            trades = simulation_result[0]
                 
             if trades:  # 如果有交易
                 days_with_trades.append(trade_date)
@@ -990,8 +1006,8 @@ def run_backtest(config):
         # 模拟当天的交易
         simulation_result = simulate_day(day_data, prev_close, allowed_times, position_size, config, capital)
         
-        # 从结果中提取交易和日内最大回撤
-        trades, intraday_mdd_pct = simulation_result
+        # 从结果中提取交易、日内回撤、日内最低/最高资金
+        trades, intraday_mdd_pct, intraday_low, intraday_high = simulation_result
         
         # 更新交易日期统计
         if trades:  # 有交易的日期
@@ -1003,6 +1019,21 @@ def run_backtest(config):
         if intraday_mdd_pct > max_intraday_mdd_pct:
             max_intraday_mdd_pct = intraday_mdd_pct
             max_intraday_mdd_date = trade_date
+        
+        # 📊 精确最大回撤计算（考虑日内波动）
+        # 更新资金峰值（使用日内最高点）
+        if intraday_high > capital_peak:
+            capital_peak = intraday_high
+            precise_mdd_peak_date = trade_date
+        
+        # 计算当前回撤（使用日内最低点与历史峰值的差距）
+        current_precise_drawdown = capital_peak - intraday_low
+        current_precise_drawdown_pct = current_precise_drawdown / capital_peak if capital_peak > 0 else 0
+        
+        if current_precise_drawdown_pct > precise_max_drawdown_pct:
+            precise_max_drawdown = current_precise_drawdown
+            precise_max_drawdown_pct = current_precise_drawdown_pct
+            precise_mdd_date = trade_date
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
@@ -1319,7 +1350,25 @@ def run_backtest(config):
     print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
     if max_intraday_mdd_date is not None:
         max_mdd_date_str = pd.to_datetime(max_intraday_mdd_date).strftime('%Y-%m-%d')
-        print(f"📊 最大日内资金回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
+        print(f"📊 最大单日回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
+    
+    # 📊 精确最大回撤报告（考虑日内波动）
+    if precise_mdd_date is not None:
+        precise_mdd_date_str = pd.to_datetime(precise_mdd_date).strftime('%Y-%m-%d')
+        precise_peak_date_str = pd.to_datetime(precise_mdd_peak_date).strftime('%Y-%m-%d') if precise_mdd_peak_date else "N/A"
+        print(f"📉 精确最大回撤(含日内): {precise_max_drawdown_pct*100:.2f}%")
+        print(f"   └─ 峰值: {precise_peak_date_str} (${capital_peak:,.2f}) → 最低点: {precise_mdd_date_str}")
+        
+        # 爆仓风险评估
+        if precise_max_drawdown_pct >= 1.0:
+            print(f"💥 爆仓状态: 已爆仓！回撤超过100%")
+        elif precise_max_drawdown_pct >= 0.8:
+            print(f"⚠️ 爆仓风险: 极高！回撤已达{precise_max_drawdown_pct*100:.1f}%")
+        elif precise_max_drawdown_pct >= 0.5:
+            print(f"⚠️ 爆仓风险: 较高，回撤已达{precise_max_drawdown_pct*100:.1f}%")
+        else:
+            safe_margin = (1 - precise_max_drawdown_pct) * 100
+            print(f"✅ 爆仓风险: 安全，距爆仓还有{safe_margin:.1f}%空间")
     
     # 交易成本统计
     print(f"-"*50)
@@ -1681,11 +1730,11 @@ if __name__ == "__main__":
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
-        'ticker': 'TSLA',
+        'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
         'start_date': date(2025, 9, 30),
-        'end_date': date(2026, 1, 14),
+        'end_date': date(2026, 1, 13),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1701,8 +1750,8 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage': 3,  # 资金杠杆倍数，默认为1
-        'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
+        'leverage':8,  # 资金杠杆倍数，默认为1
+        'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
     }
