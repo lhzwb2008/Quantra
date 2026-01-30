@@ -16,8 +16,8 @@ TZ_ET = ZoneInfo('US/Eastern')
 
 # ———— 用户参数：美东起止日期（inclusive） ————
 # 注意：history_candlesticks_by_date 接口接受 date 类型
-start_date = date(2024, 1, 15)
-end_date   = date(2026, 1, 15)
+start_date = date(2026, 1, 1)
+end_date   = date(2026, 1, 25)
 
 all_candles = []
 
