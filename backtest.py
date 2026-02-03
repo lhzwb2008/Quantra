@@ -1739,9 +1739,9 @@ if __name__ == "__main__":
         # 'end_date': date(2025, 2, 3),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
-        'transaction_fee_per_share': 0.008166,
-        # 'transaction_fee_per_share': 0.013166,
-        'slippage_per_share': 0.01,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
+        # 'transaction_fee_per_share': 0.008166,
+        'transaction_fee_per_share': 0,
+        'slippage_per_share': 0.005,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
                                      # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
@@ -1752,7 +1752,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':3,  # 资金杠杆倍数，默认为1
+        'leverage':10,  # 资金杠杆倍数，默认为1
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
