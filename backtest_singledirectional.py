@@ -840,11 +840,22 @@ def run_backtest(config):
     K1 = config.get('K1', 1)  # 如果未设置，默认为1
     K2 = config.get('K2', 1)  # 如果未设置，默认为1
     
-    print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
+    # 🔄 新增：双向开仓模式
+    # 当 bidirectional_entry 为 True 时，使用开盘价作为参考价格计算双向边界
+    # 这样即使价格往 high/low 中间走，只要偏离开盘价超过阈值也可以开仓
+    bidirectional_entry = config.get('bidirectional_entry', False)
     
-    # 将K1和K2应用于sigma进行边界计算
-    price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
-    price_df['LowerBound'] = price_df['lower_ref'] * (1 - K2 * price_df['sigma'])
+    if bidirectional_entry:
+        print(f"🔄 启用双向开仓模式：使用开盘价作为参考价格")
+        print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
+        # 双向模式：使用开盘价作为参考价格，上下边界对称计算
+        price_df['UpperBound'] = price_df['day_open'] * (1 + K1 * price_df['sigma'])
+        price_df['LowerBound'] = price_df['day_open'] * (1 - K2 * price_df['sigma'])
+    else:
+        print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
+        # 原始模式：上边界基于 upper_ref (max)，下边界基于 lower_ref (min)
+        price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
+        price_df['LowerBound'] = price_df['lower_ref'] * (1 - K2 * price_df['sigma'])
     
     # 根据检查间隔生成允许的交易时间
     allowed_times = []
@@ -1726,17 +1737,17 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        # 'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2026, 2, 3),
-        # 'start_date': date(2020, 1, 1),
-        # 'end_date': date(2025, 2, 3),
+        # 'start_date': date(2025, 1, 1),
+        # 'end_date': date(2026, 2, 3),
+        'start_date': date(2020, 1, 1),
+        'end_date': date(2025, 2, 3),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1756,6 +1767,9 @@ if __name__ == "__main__":
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
+        'bidirectional_entry': True,  # 🔄 双向开仓模式：使用开盘价作为参考，上下边界对称
+                                      # True: 只要价格偏离开盘价超过阈值就开仓（不论往哪个方向）
+                                      # False: 原始模式，需要突破基于max/min参考价计算的边界
     }
     
     # 运行回测
