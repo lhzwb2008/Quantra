@@ -1726,17 +1726,17 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        # 'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        # 'start_date': date(2025, 1, 1),
-        # 'end_date': date(2026, 2, 3),
-        'start_date': date(2018, 1, 1),
-        'end_date': date(2025, 5, 1),
+        'start_date': date(2025, 1, 1),
+        'end_date': date(2026, 2, 3),
+        # 'start_date': date(2018, 1, 1),
+        # 'end_date': date(2025, 5, 1),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         # 'transaction_fee_per_share': 0.008166,
@@ -1752,7 +1752,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':3,  # 资金杠杆倍数，默认为1
+        'leverage':8,  # 资金杠杆倍数，默认为1
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
