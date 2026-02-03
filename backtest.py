@@ -1726,17 +1726,17 @@ def plot_specific_days(config, dates_to_plot):
 if __name__ == "__main__":  
     # 创建配置字典
     config = {
-        # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        'data_path': 'qqq_market_hours_with_indicators.csv',
         # 'data_path':'tqqq_market_hours_with_indicators.csv',
-        'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
+        # 'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2026, 2, 3),
-        # 'start_date': date(2020, 1, 1),
-        # 'end_date': date(2025, 2, 3),
+        # 'start_date': date(2025, 1, 1),
+        # 'end_date': date(2026, 2, 3),
+        'start_date': date(2018, 1, 1),
+        'end_date': date(2025, 5, 1),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         # 'transaction_fee_per_share': 0.008166,
