@@ -83,11 +83,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     intraday_stop_loss_pct = config.get('intraday_stop_loss_pct', 0.04)  # 日内止损阈值，默认4%
     initial_capital = config.get('initial_capital', 100000)  # 初始资金，用于计算日内损失
     
-    # 🎯 动态追踪止盈配置 - 新增功能
-    enable_trailing_take_profit = config.get('enable_trailing_take_profit', False)  # 是否启用动态追踪止盈
-    trailing_tp_activation_pct = config.get('trailing_tp_activation_pct', 0.005)  # 激活追踪止盈的最低浮盈百分比，默认0.5%
-    trailing_tp_callback_pct = config.get('trailing_tp_callback_pct', 0.5)  # 保护的利润比例，默认保护50%的浮盈
-    
     def apply_slippage(price, is_buy, is_entry):
         """
         应用滑点到交易价格 - 简化版本
@@ -135,11 +130,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     trade_entry_time = None
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
-    
-    # 🎯 动态追踪止盈相关变量
-    max_profit_price = np.nan  # 持仓期间的最优价格（多头：最高价，空头：最低价）
-    trailing_tp_activated = False  # 追踪止盈是否已激活
-    dynamic_take_profit_level = np.nan  # 动态止盈线
     
     # 🛡️ 日内止损监控变量
     if day_start_capital is None:
@@ -395,57 +385,17 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     current_stop = upper
                     vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
-                # 🎯 动态追踪止盈逻辑 - 多头
-                trailing_tp_exit = False
-                if enable_trailing_take_profit:
-                    # 更新最优价格（使用K线的最高价）
-                    if np.isnan(max_profit_price) or high > max_profit_price:
-                        max_profit_price = high
-                    
-                    # 计算当前浮盈百分比（使用最高价）
-                    current_profit_pct = (max_profit_price - entry_price) / entry_price
-                    
-                    # 检查是否激活追踪止盈
-                    if not trailing_tp_activated and current_profit_pct >= trailing_tp_activation_pct:
-                        trailing_tp_activated = True
-                        if print_details:
-                            print(f"🎯 追踪止盈激活！时间: {current_time}, 浮盈: {current_profit_pct*100:.2f}%, 最高价: {max_profit_price:.2f}")
-                    
-                    # 如果追踪止盈已激活，计算动态止盈线
-                    if trailing_tp_activated:
-                        # 动态止盈线 = 入场价 + (最大浮盈 * 保护比例)
-                        # 保护比例为 trailing_tp_callback_pct（例如0.5表示保护50%的利润）
-                        protected_profit = (max_profit_price - entry_price) * trailing_tp_callback_pct
-                        dynamic_take_profit_level = entry_price + protected_profit
-                        
-                        # 检查是否触发动态止盈（使用当前收盘价）
-                        if price <= dynamic_take_profit_level:
-                            trailing_tp_exit = True
-                            if print_details:
-                                print(f"🎯 动态止盈触发！时间: {current_time}, 价格: {price:.2f} <= 止盈线: {dynamic_take_profit_level:.2f}")
-                                print(f"   最高价: {max_profit_price:.2f}, 保护利润: {protected_profit:.2f}")
-                
                 # 如果价格跌破当前止损，则平仓
-                exit_condition = price < current_stop or trailing_tp_exit
+                exit_condition = price < current_stop
                 
                 # 检查是否出场
                 if exit_condition and current_time in allowed_times:
-                    # 确定出场原因
-                    if trailing_tp_exit:
-                        exit_reason = 'Trailing Take Profit'
-                    else:
-                        exit_reason = 'Stop Loss'
-                    
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
-                        print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场 ({exit_reason}):")
-                        if trailing_tp_exit:
-                            print(f"  价格: {price:.2f} <= 动态止盈线: {dynamic_take_profit_level:.2f}")
-                            print(f"  最高价: {max_profit_price:.2f}, 保护比例: {trailing_tp_callback_pct*100:.0f}%")
-                        else:
-                            print(f"  价格: {price:.2f} < 当前止损: {current_stop:.2f}")
-                            print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
+                        print(f"  价格: {price:.2f} < 当前止损: {current_stop:.2f}")
+                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓多头
@@ -458,6 +408,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (exit_price - entry_price) - transaction_fees
                     
+                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -471,10 +422,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'upper_bound': upper,
-                        'vwap_value': vwap if use_vwap else np.nan,
-                        'trailing_tp_activated': trailing_tp_activated,  # 🎯 动态止盈是否激活
-                        'max_profit_price': max_profit_price if not np.isnan(max_profit_price) else np.nan,  # 🎯 最高价
-                        'dynamic_tp_level': dynamic_take_profit_level if not np.isnan(dynamic_take_profit_level) else np.nan  # 🎯 动态止盈线
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
                     
                     # 🛡️ 检查日内止损
@@ -482,10 +430,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     
                     position = 0
                     trailing_stop = np.nan
-                    # 🎯 重置动态追踪止盈变量
-                    max_profit_price = np.nan
-                    trailing_tp_activated = False
-                    dynamic_take_profit_level = np.nan
                     
             elif position == -1:  # 空头仓位
                 # 计算当前时刻的止损水平
@@ -496,57 +440,17 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     current_stop = lower_bound
                     vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
-                # 🎯 动态追踪止盈逻辑 - 空头
-                trailing_tp_exit = False
-                if enable_trailing_take_profit:
-                    # 更新最优价格（使用K线的最低价，空头时低价是有利的）
-                    if np.isnan(max_profit_price) or low < max_profit_price:
-                        max_profit_price = low
-                    
-                    # 计算当前浮盈百分比（空头：入场价 - 最低价）
-                    current_profit_pct = (entry_price - max_profit_price) / entry_price
-                    
-                    # 检查是否激活追踪止盈
-                    if not trailing_tp_activated and current_profit_pct >= trailing_tp_activation_pct:
-                        trailing_tp_activated = True
-                        if print_details:
-                            print(f"🎯 追踪止盈激活！时间: {current_time}, 浮盈: {current_profit_pct*100:.2f}%, 最低价: {max_profit_price:.2f}")
-                    
-                    # 如果追踪止盈已激活，计算动态止盈线
-                    if trailing_tp_activated:
-                        # 动态止盈线 = 入场价 - (最大浮盈 * 保护比例)
-                        # 空头的止盈线在入场价下方，当价格上涨超过止盈线时触发
-                        protected_profit = (entry_price - max_profit_price) * trailing_tp_callback_pct
-                        dynamic_take_profit_level = entry_price - protected_profit
-                        
-                        # 检查是否触发动态止盈（使用当前收盘价）
-                        if price >= dynamic_take_profit_level:
-                            trailing_tp_exit = True
-                            if print_details:
-                                print(f"🎯 动态止盈触发！时间: {current_time}, 价格: {price:.2f} >= 止盈线: {dynamic_take_profit_level:.2f}")
-                                print(f"   最低价: {max_profit_price:.2f}, 保护利润: {protected_profit:.2f}")
-                
                 # 如果价格涨破当前止损，则平仓
-                exit_condition = price > current_stop or trailing_tp_exit
+                exit_condition = price > current_stop
                 
                 # 检查是否出场
                 if exit_condition and current_time in allowed_times:
-                    # 确定出场原因
-                    if trailing_tp_exit:
-                        exit_reason = 'Trailing Take Profit'
-                    else:
-                        exit_reason = 'Stop Loss'
-                    
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
-                        print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场 ({exit_reason}):")
-                        if trailing_tp_exit:
-                            print(f"  价格: {price:.2f} >= 动态止盈线: {dynamic_take_profit_level:.2f}")
-                            print(f"  最低价: {max_profit_price:.2f}, 保护比例: {trailing_tp_callback_pct*100:.0f}%")
-                        else:
-                            print(f"  价格: {price:.2f} > 当前止损: {current_stop:.2f}")
-                            print(f"  止损计算: min(下边界={lower_bound:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
+                        print(f"  价格: {price:.2f} > 当前止损: {current_stop:.2f}")
+                        print(f"  止损计算: min(下边界={lower_bound:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  卖出价: {entry_price:.2f}, 买入价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓空头
@@ -559,6 +463,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (entry_price - exit_price) - transaction_fees
                     
+                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -572,10 +477,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'lower_bound': lower_bound,
-                        'vwap_value': vwap if use_vwap else np.nan,
-                        'trailing_tp_activated': trailing_tp_activated,  # 🎯 动态止盈是否激活
-                        'max_profit_price': max_profit_price if not np.isnan(max_profit_price) else np.nan,  # 🎯 最低价
-                        'dynamic_tp_level': dynamic_take_profit_level if not np.isnan(dynamic_take_profit_level) else np.nan  # 🎯 动态止盈线
+                        'vwap_value': vwap if use_vwap else np.nan
                     })
                     
                     # 🛡️ 检查日内止损
@@ -583,10 +485,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     
                     position = 0
                     trailing_stop = np.nan
-                    # 🎯 重置动态追踪止盈变量
-                    max_profit_price = np.nan
-                    trailing_tp_activated = False
-                    dynamic_take_profit_level = np.nan
     
     # 获取交易结束时间字符串，格式为HH:MM
     end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
@@ -634,10 +532,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             position = 0
             trailing_stop = np.nan
-            # 🎯 重置动态追踪止盈变量
-            max_profit_price = np.nan
-            trailing_tp_activated = False
-            dynamic_take_profit_level = np.nan
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -673,10 +567,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             position = 0
             trailing_stop = np.nan
-            # 🎯 重置动态追踪止盈变量
-            max_profit_price = np.nan
-            trailing_tp_activated = False
-            dynamic_take_profit_level = np.nan
     
     # 如果仍有未平仓位且没有结束时间数据点，则在一天结束时平仓
     elif position != 0:
@@ -717,10 +607,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             # 🛡️ 检查日内止损
             check_intraday_stop_loss(pnl, last_time)
-            # 🎯 重置动态追踪止盈变量
-            max_profit_price = np.nan
-            trailing_tp_activated = False
-            dynamic_take_profit_level = np.nan
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -755,10 +641,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             # 🛡️ 检查日内止损
             check_intraday_stop_loss(pnl, last_time)
-            # 🎯 重置动态追踪止盈变量
-            max_profit_price = np.nan
-            trailing_tp_activated = False
-            dynamic_take_profit_level = np.nan
     
     # 计算日内最大回撤百分比（基于当日起始资金）
     intraday_max_drawdown_pct = intraday_max_drawdown / day_start_capital if day_start_capital > 0 else 0
@@ -808,7 +690,6 @@ def run_backtest(config):
         ticker = file_name.replace('_market_hours.csv', '')
     
     # 加载和处理数据
-    print(f"加载{ticker}数据，从{data_path}...")
     price_df = pd.read_csv(data_path, parse_dates=['DateTime'])
     price_df.sort_values('DateTime', inplace=True)
     
@@ -819,11 +700,11 @@ def run_backtest(config):
     # 按日期范围过滤数据（如果指定）
     if start_date is not None:
         price_df = price_df[price_df['Date'] >= start_date]
-        print(f"筛选数据，开始日期为{start_date}")
     
     if end_date is not None:
         price_df = price_df[price_df['Date'] <= end_date]
-        print(f"筛选数据，结束日期为{end_date}")
+    
+    print(f"加载{ticker}数据: {data_path} ({start_date} ~ {end_date})")
     
     # 检查DayOpen和DayClose列是否存在，如果不存在则创建
     if 'DayOpen' not in price_df.columns or 'DayClose' not in price_df.columns:
@@ -893,7 +774,7 @@ def run_backtest(config):
     price_df['ret'] = price_df['Close'] / price_df['day_open'] - 1 
 
     # 计算噪声区域边界
-    print(f"计算噪声区域边界...")
+    # 计算噪声区域边界
     # 将时间点转为列
     pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
     
@@ -958,7 +839,6 @@ def run_backtest(config):
     K1 = config.get('K1', 1)  # 如果未设置，默认为1
     K2 = config.get('K2', 1)  # 如果未设置，默认为1
     
-    print(f"使用上边界乘数K1={K1}，下边界乘数K2={K2}")
     
     # 将K1和K2应用于sigma进行边界计算
     price_df['UpperBound'] = price_df['upper_ref'] * (1 + K1 * price_df['sigma'])
@@ -986,7 +866,7 @@ def run_backtest(config):
         allowed_times.append(end_time_str)
         allowed_times.sort()
     
-    print(f"使用{check_interval_minutes}分钟的检查间隔")
+    print(f"使用{check_interval_minutes}分钟检查间隔, K1={K1}, K2={K2}")
     
     # 初始化回测变量
     capital = initial_capital
@@ -1266,13 +1146,8 @@ def run_backtest(config):
     
     # 打印月度回报
     print("\n月度回报:")
-    # 设置pandas显示选项以显示所有行
     pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
-    pd.set_option('display.max_colwidth', None)
     
-    # 创建格式化的月度回报显示
     monthly_display = monthly[['month_start', 'month_end', 'monthly_return']].copy()
     monthly_display['monthly_return_pct'] = monthly_display['monthly_return'] * 100
     monthly_display = monthly_display.round({'month_start': 2, 'month_end': 2, 'monthly_return_pct': 2})
@@ -1280,36 +1155,19 @@ def run_backtest(config):
     print(monthly_display[['month_start', 'month_end', 'monthly_return_pct']].rename(columns={
         'month_start': '月初资金',
         'month_end': '月末资金', 
-        'monthly_return_pct': '月度收益率(%)'
+        'monthly_return_pct': '收益率(%)'
     }))
     
-    # 打印月度回报统计信息
     monthly_returns = monthly['monthly_return'].dropna()
     if len(monthly_returns) > 0:
-        print(f"\n月度回报统计:")
-        print(f"  平均月度收益率: {monthly_returns.mean()*100:.2f}%")
-        print(f"  月度收益率标准差: {monthly_returns.std()*100:.2f}%")
-        print(f"  最佳月度收益率: {monthly_returns.max()*100:.2f}%")
-        print(f"  最差月度收益率: {monthly_returns.min()*100:.2f}%")
-        print(f"  正收益月份: {(monthly_returns > 0).sum()}个")
-        print(f"  负收益月份: {(monthly_returns < 0).sum()}个")
-        print(f"  胜率: {(monthly_returns > 0).mean()*100:.1f}%")
+        print(f"  平均: {monthly_returns.mean()*100:.2f}% | 最佳: {monthly_returns.max()*100:.2f}% | 最差: {monthly_returns.min()*100:.2f}% | 胜率: {(monthly_returns > 0).mean()*100:.0f}%")
     
-    # 恢复默认显示设置
     pd.reset_option('display.max_rows')
-    pd.reset_option('display.max_columns')
-    pd.reset_option('display.width')
-    pd.reset_option('display.max_colwidth')
-    
-    # 计算总体表现
-    total_return = capital / initial_capital - 1
-    print(f"\n总回报: {total_return*100:.2f}%")
     
     # 创建交易DataFrame
     trades_df = pd.DataFrame(all_trades)
     
     # 计算策略性能指标
-    print(f"\n计算策略性能指标...")
     metrics = calculate_performance_metrics(daily_df, trades_df, initial_capital, buy_hold_df=buy_hold_df)
     
     # 计算总滑点损耗
@@ -1318,195 +1176,68 @@ def run_backtest(config):
         total_slippage_cost = (trades_df['position_size'] * slippage_per_share * 2).sum()
     else:
         total_slippage_cost = 0
-    
-    # 打印交易费用和滑点统计
-    print(f"\n交易成本统计:")
-    print(f"总手续费: ${total_transaction_fees:.2f}")
-    print(f"总滑点损耗: ${total_slippage_cost:.2f}")
     total_trading_cost = total_transaction_fees + total_slippage_cost
-    print(f"总交易成本: ${total_trading_cost:.2f}")
-    if len(trades_df) > 0:
-        print(f"平均每笔手续费: ${total_transaction_fees / len(trades_df):.2f}")
-        print(f"平均每笔滑点: ${total_slippage_cost / len(trades_df):.2f}")
-        print(f"平均每笔总成本: ${total_trading_cost / len(trades_df):.2f}")
-    if len(daily_df) > 0:
-        print(f"平均每日交易成本: ${total_trading_cost / len(daily_df):.2f}")
-    print(f"交易成本占初始资金比例: {total_trading_cost / initial_capital * 100:.2f}%")
-    if capital > initial_capital:
-        print(f"交易成本占总收益比例: {total_trading_cost / (capital - initial_capital) * 100:.2f}%")
-    else:
-        print(f"交易成本占总收益比例: N/A (无盈利)")
     
-    # 打印交易日期统计
-    print(f"\n交易日期统计:")
-    print(f"总交易日数: {len(trading_days) + len(non_trading_days)}")
-    print(f"有交易的天数: {len(trading_days)} ({len(trading_days)/(len(trading_days) + len(non_trading_days))*100:.1f}%)")
-    print(f"无交易的天数: {len(non_trading_days)} ({len(non_trading_days)/(len(trading_days) + len(non_trading_days))*100:.1f}%)")
-    
-    # 打印简化的性能指标
-    print(f"\n策略性能指标:")
+    # 策略名称
     leverage_text = f" (杠杆{leverage}x)" if leverage != 1 else ""
     strategy_name = f"{ticker} Curr.Band + VWAP{leverage_text}"
-    print(f"策略: {strategy_name}")
-    
-    # 创建表格格式对比策略与买入持有的指标
-    print("\n性能指标对比:")
-    print(f"{'指标':<20} | {'策略':<15} | {f'{ticker} Buy & Hold':<15}")
-    print("-" * 55)
-    
-    # 总回报率
-    print(f"{'总回报率':<20} | {metrics['total_return']*100:>14.1f}% | {metrics['buy_hold_return']*100:>14.1f}%")
-    
-    # 年化收益率
-    print(f"{'年化收益率':<20} | {metrics['irr']*100:>14.1f}% | {metrics['buy_hold_irr']*100:>14.1f}%")
-    
-    # 波动率
-    print(f"{'波动率':<20} | {metrics['volatility']*100:>14.1f}% | {metrics['buy_hold_volatility']*100:>14.1f}%")
-    
-    # 夏普比率
-    print(f"{'夏普比率':<20} | {metrics['sharpe_ratio']:>14.2f} | {metrics['buy_hold_sharpe']:>14.2f}")
-    
-    # 最大回撤
-    print(f"{'最大回撤':<20} | {metrics['mdd']*100:>14.1f}% | {metrics['buy_hold_mdd']*100:>14.1f}%")
-    
-    # 打印最大回撤的详细信息
-    if 'max_drawdown_start_date' in metrics and 'max_drawdown_date' in metrics:
-        start_date = metrics['max_drawdown_start_date'].strftime('%Y-%m-%d')
-        bottom_date = metrics['max_drawdown_date'].strftime('%Y-%m-%d')
-        
-        print(f"\n最大回撤详细信息:")
-        print(f"  峰值日期: {start_date}")
-        print(f"  最低点日期: {bottom_date}")
-        
-        if metrics['max_drawdown_end_date'] is not None:
-            end_date = metrics['max_drawdown_end_date'].strftime('%Y-%m-%d')
-            print(f"  恢复日期: {end_date}")
-            
-            # 计算回撤持续时间
-            duration = (metrics['max_drawdown_end_date'] - metrics['max_drawdown_start_date']).days
-            print(f"  回撤持续时间: {duration}天")
-        else:
-            print(f"  恢复日期: 尚未恢复")
-            
-            # 计算到目前为止的回撤持续时间
-            duration = (metrics['max_drawdown_date'] - metrics['max_drawdown_start_date']).days
-            print(f"  回撤持续时间: {duration}天 (仍在回撤中)")
-    
-    # 策略特有指标
-    print(f"\n策略特有指标:")
-    print(f"胜率: {metrics['hit_ratio']*100:.1f}%")
-    print(f"总交易次数: {metrics['total_trades']}")
-    
-    # 计算做多和做空的笔数
-    if len(trades_df) > 0:
-        long_trades = len(trades_df[trades_df['side'] == 'Long'])
-        short_trades = len(trades_df[trades_df['side'] == 'Short'])
-        print(f"做多交易笔数: {long_trades}")
-        print(f"做空交易笔数: {short_trades}")
-    else:
-        print(f"做多交易笔数: 0")
-        print(f"做空交易笔数: 0")
-    
-    print(f"平均每日交易次数: {metrics['avg_daily_trades']:.2f}")
-    
-    # 打印最大单笔收益和亏损统计
-    print(f"\n单笔交易统计:")
-    print(f"最大单笔收益: ${metrics.get('max_single_gain', 0):.2f}")
-    print(f"最大单笔亏损: ${metrics.get('max_single_loss', 0):.2f}")
-    
-    # 打印前10笔最大收益
-    if metrics.get('top_10_gains'):
-        print(f"\n前10笔最大收益:")
-        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
-        print("-" * 85)
-        for i, trade in enumerate(metrics['top_10_gains'], 1):
-            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
-            side = '多' if trade['side'] == 'Long' else '空'
-            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
-    
-    # 打印前10笔最大亏损
-    if metrics.get('top_10_losses'):
-        print(f"\n前10笔最大亏损:")
-        print(f"{'排名':<4} | {'日期':<12} | {'方向':<6} | {'买入价':<8} | {'卖出价':<8} | {'盈亏':<10} | {'退出原因':<15}")
-        print("-" * 85)
-        for i, trade in enumerate(metrics['top_10_losses'], 1):
-            date_str = pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
-            side = '多' if trade['side'] == 'Long' else '空'
-            print(f"{i:<4} | {date_str:<12} | {side:<6} | ${trade['entry_price']:<7.2f} | ${trade['exit_price']:<7.2f} | ${trade['pnl']:<9.2f} | {trade['exit_reason']:<15}")
     
     # 打印策略总结
-    print(f"\n" + "="*50)
+    print(f"\n{'='*50}")
     print(f"策略回测总结 - {strategy_name}")
-    print(f"="*50)
+    print(f"{'='*50}")
     
-    # 打印杠杆信息
+    # 资金信息
+    final_capital = daily_df['capital'].iloc[-1]
     if leverage != 1:
-        final_capital = daily_df['capital'].iloc[-1]
-        print(f"💰 资金杠杆倍数: {leverage}x")
-        print(f"💵 初始资金: ${initial_capital:,.0f}")
-        print(f"💸 杠杆后可用资金: ${initial_capital * leverage:,.0f}")
-        print(f"💰 最终资金: ${final_capital:,.2f}")
-        print(f"-"*50)
+        print(f"初始资金: ${initial_capital:,.0f} | 杠杆: {leverage}x | 最终资金: ${final_capital:,.2f}")
+    else:
+        print(f"初始资金: ${initial_capital:,.0f} | 最终资金: ${final_capital:,.2f}")
     
-    # 核心表现指标
-    print(f"📈 总回报率: {metrics['total_return']*100:.1f}%")
-    print(f"📊 年化收益率: {metrics['irr']*100:.1f}%")
-    print(f"⚡ 夏普比率: {metrics['sharpe_ratio']:.2f}")
-    print(f"📉 最大回撤: {metrics['mdd']*100:.1f}%")
+    # 性能指标对比表
+    print(f"\n{'指标':<20} | {'策略':<15} | {f'{ticker} Buy & Hold':<15}")
+    print("-" * 55)
+    print(f"{'总回报率':<20} | {metrics['total_return']*100:>14.1f}% | {metrics['buy_hold_return']*100:>14.1f}%")
+    print(f"{'年化收益率':<20} | {metrics['irr']*100:>14.1f}% | {metrics['buy_hold_irr']*100:>14.1f}%")
+    print(f"{'波动率':<20} | {metrics['volatility']*100:>14.1f}% | {metrics['buy_hold_volatility']*100:>14.1f}%")
+    print(f"{'夏普比率':<20} | {metrics['sharpe_ratio']:>14.2f} | {metrics['buy_hold_sharpe']:>14.2f}")
+    print(f"{'最大回撤':<20} | {metrics['mdd']*100:>14.1f}% | {metrics['buy_hold_mdd']*100:>14.1f}%")
+    
+    # 最大回撤详情
     if 'max_drawdown_start_date' in metrics and 'max_drawdown_date' in metrics:
         start_date = metrics['max_drawdown_start_date'].strftime('%Y-%m-%d')
         bottom_date = metrics['max_drawdown_date'].strftime('%Y-%m-%d')
-        print(f"   └─ 峰值: {start_date} → 最低点: {bottom_date}")
-        
         if metrics['max_drawdown_end_date'] is not None:
             end_date = metrics['max_drawdown_end_date'].strftime('%Y-%m-%d')
             duration = (metrics['max_drawdown_end_date'] - metrics['max_drawdown_start_date']).days
-            print(f"   └─ 恢复: {end_date} (持续{duration}天)")
+            print(f"  回撤: {start_date} → {bottom_date} → 恢复: {end_date} (持续{duration}天)")
         else:
             duration = (metrics['max_drawdown_date'] - metrics['max_drawdown_start_date']).days
-            print(f"   └─ 尚未恢复 (已持续{duration}天)")
-    print(f"🎯 胜率: {metrics['hit_ratio']*100:.1f}% | 总交易: {metrics['total_trades']}次")
+            print(f"  回撤: {start_date} → {bottom_date} (已持续{duration}天, 尚未恢复)")
+    
+    # 精确最大回撤（含日内）
+    if precise_mdd_date is not None:
+        print(f"  精确最大回撤(含日内): {precise_max_drawdown_pct*100:.2f}%")
+        if precise_max_drawdown_pct >= 1.0:
+            print(f"  爆仓风险: 已爆仓！")
+        elif precise_max_drawdown_pct >= 0.5:
+            print(f"  爆仓风险: 较高 ({precise_max_drawdown_pct*100:.1f}%)")
+        else:
+            print(f"  爆仓风险: 安全 (距爆仓还有{(1 - precise_max_drawdown_pct)*100:.1f}%)")
+    
+    # 交易统计
+    print(f"\n交易统计:")
+    long_trades = len(trades_df[trades_df['side'] == 'Long']) if len(trades_df) > 0 else 0
+    short_trades = len(trades_df[trades_df['side'] == 'Short']) if len(trades_df) > 0 else 0
+    total_days = len(trading_days) + len(non_trading_days)
+    print(f"  总交易: {metrics['total_trades']}次 (多:{long_trades} 空:{short_trades}) | 胜率: {metrics['hit_ratio']*100:.1f}%")
+    print(f"  交易日: {total_days}天 (有交易:{len(trading_days)} 无交易:{len(non_trading_days)})")
     if max_intraday_mdd_date is not None:
         max_mdd_date_str = pd.to_datetime(max_intraday_mdd_date).strftime('%Y-%m-%d')
-        print(f"📊 最大单日回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
+        print(f"  最大单日回撤: {max_intraday_mdd_pct*100:.2f}% ({max_mdd_date_str})")
+    print(f"  交易成本: ${total_trading_cost:,.2f} (手续费:${total_transaction_fees:,.2f} 滑点:${total_slippage_cost:,.2f})")
     
-    # 📊 精确最大回撤报告（考虑日内波动）
-    if precise_mdd_date is not None:
-        precise_mdd_date_str = pd.to_datetime(precise_mdd_date).strftime('%Y-%m-%d')
-        precise_peak_date_str = pd.to_datetime(precise_mdd_peak_date).strftime('%Y-%m-%d') if precise_mdd_peak_date else "N/A"
-        print(f"📉 精确最大回撤(含日内): {precise_max_drawdown_pct*100:.2f}%")
-        print(f"   └─ 峰值: {precise_peak_date_str} (${capital_peak:,.2f}) → 最低点: {precise_mdd_date_str}")
-        
-        # 爆仓风险评估
-        if precise_max_drawdown_pct >= 1.0:
-            print(f"💥 爆仓状态: 已爆仓！回撤超过100%")
-        elif precise_max_drawdown_pct >= 0.8:
-            print(f"⚠️ 爆仓风险: 极高！回撤已达{precise_max_drawdown_pct*100:.1f}%")
-        elif precise_max_drawdown_pct >= 0.5:
-            print(f"⚠️ 爆仓风险: 较高，回撤已达{precise_max_drawdown_pct*100:.1f}%")
-        else:
-            safe_margin = (1 - precise_max_drawdown_pct) * 100
-            print(f"✅ 爆仓风险: 安全，距爆仓还有{safe_margin:.1f}%空间")
-    
-    # 交易成本统计
-    print(f"-"*50)
-    print(f"💸 交易成本统计:")
-    print(f"   ├─ 总手续费: ${total_transaction_fees:,.2f}")
-    print(f"   ├─ 总滑点损耗: ${total_slippage_cost:,.2f}")
-    print(f"   ├─ 总交易成本: ${total_trading_cost:,.2f}")
-    print(f"   ├─ 占初始资金比例: {total_trading_cost / initial_capital * 100:.2f}%")
-    if capital > initial_capital:
-        print(f"   └─ 占总收益比例: {total_trading_cost / (capital - initial_capital) * 100:.2f}%")
-    else:
-        print(f"   └─ 占总收益比例: N/A (无盈利)")
-    
-    print(f"="*50)
-    
-    # 分析VWAP影响
-    vwap_stats = analyze_vwap_impact(trades_df)
-    
-    # 🎯 分析动态追踪止盈影响
-    trailing_tp_stats = analyze_trailing_take_profit_impact(trades_df, config)
+    print(f"{'='*50}")
     
     return daily_df, monthly, trades_df, metrics 
 
@@ -1824,86 +1555,6 @@ def analyze_vwap_impact(trades_df):
         'vwap_influence_ratio': vwap_influence_ratio
     }
 
-def analyze_trailing_take_profit_impact(trades_df, config):
-    """
-    🎯 分析动态追踪止盈对交易的影响
-    """
-    if len(trades_df) == 0:
-        print("\n=== 动态追踪止盈分析 ===")
-        print("没有交易数据可供分析")
-        return None
-    
-    enable_trailing_tp = config.get('enable_trailing_take_profit', False)
-    if not enable_trailing_tp:
-        print("\n=== 动态追踪止盈分析 ===")
-        print("动态追踪止盈未启用")
-        return None
-    
-    # 统计追踪止盈触发的交易
-    trailing_tp_trades = trades_df[trades_df['exit_reason'] == 'Trailing Take Profit']
-    stop_loss_trades = trades_df[trades_df['exit_reason'] == 'Stop Loss']
-    intraday_close_trades = trades_df[trades_df['exit_reason'] == 'Intraday Close']
-    market_close_trades = trades_df[trades_df['exit_reason'] == 'Market Close']
-    
-    total_trades = len(trades_df)
-    trailing_tp_count = len(trailing_tp_trades)
-    trailing_tp_ratio = trailing_tp_count / total_trades * 100 if total_trades > 0 else 0
-    
-    print("\n=== 🎯 动态追踪止盈分析 ===")
-    print(f"配置参数:")
-    print(f"  激活阈值: {config.get('trailing_tp_activation_pct', 0.005)*100:.2f}%")
-    print(f"  保护比例: {config.get('trailing_tp_callback_pct', 0.5)*100:.0f}%")
-    print(f"\n出场方式统计:")
-    print(f"  总交易数: {total_trades}")
-    print(f"  追踪止盈: {trailing_tp_count} ({trailing_tp_ratio:.1f}%)")
-    print(f"  止损平仓: {len(stop_loss_trades)} ({len(stop_loss_trades)/total_trades*100:.1f}%)")
-    print(f"  日内收盘: {len(intraday_close_trades)} ({len(intraday_close_trades)/total_trades*100:.1f}%)")
-    print(f"  市场收盘: {len(market_close_trades)} ({len(market_close_trades)/total_trades*100:.1f}%)")
-    
-    # 计算各类出场的盈亏
-    if trailing_tp_count > 0:
-        trailing_tp_pnl = trailing_tp_trades['pnl'].sum()
-        trailing_tp_avg_pnl = trailing_tp_trades['pnl'].mean()
-        trailing_tp_win_rate = (trailing_tp_trades['pnl'] > 0).mean() * 100
-        print(f"\n追踪止盈交易详情:")
-        print(f"  总盈亏: ${trailing_tp_pnl:.2f}")
-        print(f"  平均盈亏: ${trailing_tp_avg_pnl:.2f}")
-        print(f"  胜率: {trailing_tp_win_rate:.1f}%")
-    
-    if len(stop_loss_trades) > 0:
-        stop_loss_pnl = stop_loss_trades['pnl'].sum()
-        stop_loss_avg_pnl = stop_loss_trades['pnl'].mean()
-        stop_loss_win_rate = (stop_loss_trades['pnl'] > 0).mean() * 100
-        print(f"\n止损平仓交易详情:")
-        print(f"  总盈亏: ${stop_loss_pnl:.2f}")
-        print(f"  平均盈亏: ${stop_loss_avg_pnl:.2f}")
-        print(f"  胜率: {stop_loss_win_rate:.1f}%")
-    
-    # 分多头和空头分析
-    long_trailing_tp = trailing_tp_trades[trailing_tp_trades['side'] == 'Long']
-    short_trailing_tp = trailing_tp_trades[trailing_tp_trades['side'] == 'Short']
-    
-    if len(long_trailing_tp) > 0:
-        print(f"\n多头追踪止盈:")
-        print(f"  次数: {len(long_trailing_tp)}")
-        print(f"  总盈亏: ${long_trailing_tp['pnl'].sum():.2f}")
-        print(f"  平均盈亏: ${long_trailing_tp['pnl'].mean():.2f}")
-    
-    if len(short_trailing_tp) > 0:
-        print(f"\n空头追踪止盈:")
-        print(f"  次数: {len(short_trailing_tp)}")
-        print(f"  总盈亏: ${short_trailing_tp['pnl'].sum():.2f}")
-        print(f"  平均盈亏: ${short_trailing_tp['pnl'].mean():.2f}")
-    
-    return {
-        'total_trades': total_trades,
-        'trailing_tp_count': trailing_tp_count,
-        'trailing_tp_ratio': trailing_tp_ratio,
-        'trailing_tp_pnl': trailing_tp_trades['pnl'].sum() if trailing_tp_count > 0 else 0,
-        'stop_loss_count': len(stop_loss_trades),
-        'stop_loss_pnl': stop_loss_trades['pnl'].sum() if len(stop_loss_trades) > 0 else 0
-    }
-
 def plot_specific_days(config, dates_to_plot):
     """
     为指定的日期生成交易图表
@@ -1934,8 +1585,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 10000,
         'lookback_days':1,
-        'start_date': date(2025, 1, 1),
-        'end_date': date(2026, 2, 3),
+        'start_date': date(2026, 1, 1),
+        'end_date': date(2026, 2, 20),
         # 'start_date': date(2018, 1, 1),
         # 'end_date': date(2025, 5, 1),
         'check_interval_minutes': 15 ,
@@ -1953,15 +1604,10 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':8,  # 资金杠杆倍数，默认为1
+        'leverage':3,  # 资金杠杆倍数，默认为1
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
-        
-        # 🎯 动态追踪止盈配置
-        'enable_trailing_take_profit': True,  # 是否启用动态追踪止盈
-        'trailing_tp_activation_pct': 0.01,  # 激活追踪止盈的最低浮盈百分比（0.5%）
-        'trailing_tp_callback_pct': 0.7,  # 保护的利润比例（50%），即从最大浮盈回撤50%时触发止盈
     }
     
     # 运行回测
