@@ -1583,10 +1583,10 @@ if __name__ == "__main__":
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 10000,
+        'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2026, 1, 1),
-        'end_date': date(2026, 2, 20),
+        'start_date': date(2025, 12, 2),
+        'end_date': date(2026, 2, 13),
         # 'start_date': date(2018, 1, 1),
         # 'end_date': date(2025, 5, 1),
         'check_interval_minutes': 15 ,
@@ -1600,12 +1600,12 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
         'leverage':3,  # 资金杠杆倍数，默认为1
-        'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
+        'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
     }
