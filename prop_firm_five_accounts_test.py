@@ -205,6 +205,8 @@ def run_five_accounts_full_period(price_df, allowed_times, filtered_dates, confi
 
 if __name__ == "__main__":
     INITIAL_CAPITAL = 100000
+    LEVERAGE = 3  # 可改为 2, 3, 4, 5 等
+
     config = {
         'data_path': 'qqq_longport.csv',
         'ticker': 'QQQ',
@@ -223,7 +225,7 @@ if __name__ == "__main__":
         'print_trade_details': False,
         'K1': 1,
         'K2': 1,
-        'leverage': 3,
+        'leverage': LEVERAGE,
         'use_vwap': False,
         'enable_intraday_stop_loss': True,
         'intraday_stop_loss_pct': 0.045,
@@ -231,7 +233,7 @@ if __name__ == "__main__":
         'trailing_tp_activation_pct': 0.01,
         'trailing_tp_callback_pct': 0.7,
     }
-    print("五账户持续在考模拟 (2024-02-01 ~ 2026-02-20, 3x 杠杆)")
+    print(f"五账户持续在考模拟 (2024-02-01 ~ 2026-02-20, {LEVERAGE}x 杠杆)")
     print("预处理回测数据...")
     price_df, allowed_times, filtered_dates = prepare_backtest_data(config)
     print(f"可用交易日: {len(filtered_dates)} ({filtered_dates[0]} ~ {filtered_dates[-1]})")
@@ -239,12 +241,12 @@ if __name__ == "__main__":
     total_passed_capital, total_exam_fees, num_passed, num_failed, total_exams = run_five_accounts_full_period(
         price_df, allowed_times, filtered_dates, config,
         initial_capital=INITIAL_CAPITAL,
-        leverage=3,
+        leverage=LEVERAGE,
         verbose=True,
     )
     print()
     print("=" * 70)
-    print("五账户持续在考模拟结果 (2024-02-01 ~ 2026-02-20, 3x 杠杆)")
+    print(f"五账户持续在考模拟结果 (2024-02-01 ~ 2026-02-20, {LEVERAGE}x 杠杆)")
     print("=" * 70)
     print(f"  通过考试的资金合计: ${total_passed_capital:,.2f}")
     print(f"  考试费合计: ${total_exam_fees:,.2f} (单次 ${EXAM_FEE}, 共 {total_exams} 次考试)")
