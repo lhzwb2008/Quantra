@@ -1780,7 +1780,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2024, 2, 1),
+        'start_date': date(2025, 10, 1),
         'end_date': date(2026, 2, 20),
         # 'start_date': date(2018, 1, 1),
         # 'end_date': date(2025, 5, 1),
@@ -1801,7 +1801,7 @@ if __name__ == "__main__":
         'K2': 1,  # 下边界sigma乘数
         'leverage':3,  # 资金杠杆倍数，默认为1
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
-        'enable_intraday_stop_loss': True,  # 是否启用日内止损
+        'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.045,  # 日内止损阈值
         
         # 🎯 动态追踪止盈配置
