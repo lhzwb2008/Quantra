@@ -1776,11 +1776,12 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
+        # 'data_path': 'spy_longport.csv',  # 使用包含Turnover字段的longport数据
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2025, 10, 1),
+        'start_date': date(2024, 2, 1),
         'end_date': date(2026, 2, 20),
         # 'start_date': date(2018, 1, 1),
         # 'end_date': date(2025, 5, 1),
