@@ -156,6 +156,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     # 调试时间点标记，确保只打印一次
     debug_printed = False
     
+    end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
+    
     for idx, row in day_df.iterrows():
         current_time = row['Time']
         price = row['Close']
@@ -306,8 +308,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
         if enable_intraday_stop_loss and intraday_stop_triggered:
             # 已触发日内止损，跳过所有开仓逻辑
             pass
-        # 在允许时间内的入场信号
-        elif position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+        # 在允许时间内的入场信号（trading_end_time只能平仓不能开仓）
+        elif position == 0 and current_time in allowed_times and current_time != end_time_str and positions_opened_today < max_positions_per_day:
             # 检查潜在多头入场
             if use_vwap:
                 # 使用VWAP条件
@@ -1779,12 +1781,12 @@ if __name__ == "__main__":
         # 'data_path': 'spy_longport.csv',  # 使用包含Turnover字段的longport数据
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         'ticker': 'QQQ',
-        'initial_capital': 100000,
+        'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2024, 2, 1),
-        'end_date': date(2026, 2, 20),
-        # 'start_date': date(2018, 1, 1),
-        # 'end_date': date(2025, 5, 1),
+        'start_date': date(2026, 2, 11),
+        'end_date': date(2026, 2, 24),
+        # 'start_date': date(2024, 2, 1),
+        # 'end_date': date(2026, 2, 20),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1796,19 +1798,19 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
-        'print_trade_details': False,
+        'print_daily_trades': True,
+        'print_trade_details': True,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':3,  # 资金杠杆倍数，默认为1
+        'leverage':2.8,  # 资金杠杆倍数，与simulate一致
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
         'intraday_stop_loss_pct': 0.045,  # 日内止损阈值
         
         # 🎯 动态追踪止盈配置
         'enable_trailing_take_profit': True,  # 是否启用动态追踪止盈
-        'trailing_tp_activation_pct': 0.01,  # 激活追踪止盈的最低浮盈百分比（0.5%）
-        'trailing_tp_callback_pct': 0.7,  # 保护的利润比例（50%），即从最大浮盈回撤50%时触发止盈
+        'trailing_tp_activation_pct': 0.01,  # 激活追踪止盈的最低浮盈百分比（1%）
+        'trailing_tp_callback_pct': 0.7,  # 保护的利润比例（70%），即从最大浮盈回撤30%时触发止盈
     }
     
     # 运行回测
