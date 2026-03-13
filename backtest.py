@@ -1783,8 +1783,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2026, 2, 11),
-        'end_date': date(2026, 2, 24),
+        'start_date': date(2025, 1, 1),
+        'end_date': date(2026, 3, 20),
         # 'start_date': date(2024, 2, 1),
         # 'end_date': date(2026, 2, 20),
         'check_interval_minutes': 15 ,
@@ -1798,8 +1798,8 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
-        'print_trade_details': True,
+        'print_daily_trades': False,
+        'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
         'leverage':2.8,  # 资金杠杆倍数，与simulate一致
