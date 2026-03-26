@@ -83,6 +83,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     intraday_stop_loss_pct = config.get('intraday_stop_loss_pct', 0.04)  # 日内止损阈值，默认4%
     initial_capital = config.get('initial_capital', 100000)  # 初始资金，用于计算日内损失
     
+    # 🎯 动态追踪止盈配置 - 新增功能
+    enable_trailing_take_profit = config.get('enable_trailing_take_profit', False)  # 是否启用动态追踪止盈
+    trailing_tp_activation_pct = config.get('trailing_tp_activation_pct', 0.005)  # 激活追踪止盈的最低浮盈百分比，默认0.5%
+    trailing_tp_callback_pct = config.get('trailing_tp_callback_pct', 0.5)  # 保护的利润比例，默认保护50%的浮盈
+    
     def apply_slippage(price, is_buy, is_entry):
         """
         应用滑点到交易价格 - 简化版本
@@ -131,6 +136,11 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     trades = []
     positions_opened_today = 0  # 今日开仓计数器
     
+    # 🎯 动态追踪止盈相关变量
+    max_profit_price = np.nan  # 持仓期间的最优价格（多头：最高价，空头：最低价）
+    trailing_tp_activated = False  # 追踪止盈是否已激活
+    dynamic_take_profit_level = np.nan  # 动态止盈线
+    
     # 🛡️ 日内止损监控变量
     if day_start_capital is None:
         day_start_capital = initial_capital  # 如果没有传入，使用初始资金
@@ -145,6 +155,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     
     # 调试时间点标记，确保只打印一次
     debug_printed = False
+    
+    end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
     
     for idx, row in day_df.iterrows():
         current_time = row['Time']
@@ -296,8 +308,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
         if enable_intraday_stop_loss and intraday_stop_triggered:
             # 已触发日内止损，跳过所有开仓逻辑
             pass
-        # 在允许时间内的入场信号
-        elif position == 0 and current_time in allowed_times and positions_opened_today < max_positions_per_day:
+        # 在允许时间内的入场信号（trading_end_time只能平仓不能开仓）
+        elif position == 0 and current_time in allowed_times and current_time != end_time_str and positions_opened_today < max_positions_per_day:
             # 检查潜在多头入场
             if use_vwap:
                 # 使用VWAP条件
@@ -385,17 +397,57 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     current_stop = upper
                     vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
+                # 🎯 动态追踪止盈逻辑 - 多头
+                trailing_tp_exit = False
+                if enable_trailing_take_profit:
+                    # 更新最优价格（使用K线的最高价）
+                    if np.isnan(max_profit_price) or high > max_profit_price:
+                        max_profit_price = high
+                    
+                    # 计算当前浮盈百分比（使用最高价）
+                    current_profit_pct = (max_profit_price - entry_price) / entry_price
+                    
+                    # 检查是否激活追踪止盈
+                    if not trailing_tp_activated and current_profit_pct >= trailing_tp_activation_pct:
+                        trailing_tp_activated = True
+                        if print_details:
+                            print(f"🎯 追踪止盈激活！时间: {current_time}, 浮盈: {current_profit_pct*100:.2f}%, 最高价: {max_profit_price:.2f}")
+                    
+                    # 如果追踪止盈已激活，计算动态止盈线
+                    if trailing_tp_activated:
+                        # 动态止盈线 = 入场价 + (最大浮盈 * 保护比例)
+                        # 保护比例为 trailing_tp_callback_pct（例如0.5表示保护50%的利润）
+                        protected_profit = (max_profit_price - entry_price) * trailing_tp_callback_pct
+                        dynamic_take_profit_level = entry_price + protected_profit
+                        
+                        # 检查是否触发动态止盈（使用当前收盘价）
+                        if price <= dynamic_take_profit_level:
+                            trailing_tp_exit = True
+                            if print_details:
+                                print(f"🎯 动态止盈触发！时间: {current_time}, 价格: {price:.2f} <= 止盈线: {dynamic_take_profit_level:.2f}")
+                                print(f"   最高价: {max_profit_price:.2f}, 保护利润: {protected_profit:.2f}")
+                
                 # 如果价格跌破当前止损，则平仓
-                exit_condition = price < current_stop
+                exit_condition = price < current_stop or trailing_tp_exit
                 
                 # 检查是否出场
                 if exit_condition and current_time in allowed_times:
+                    # 确定出场原因
+                    if trailing_tp_exit:
+                        exit_reason = 'Trailing Take Profit'
+                    else:
+                        exit_reason = 'Stop Loss'
+                    
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
-                        print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场:")
-                        print(f"  价格: {price:.2f} < 当前止损: {current_stop:.2f}")
-                        print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 多头出场 ({exit_reason}):")
+                        if trailing_tp_exit:
+                            print(f"  价格: {price:.2f} <= 动态止盈线: {dynamic_take_profit_level:.2f}")
+                            print(f"  最高价: {max_profit_price:.2f}, 保护比例: {trailing_tp_callback_pct*100:.0f}%")
+                        else:
+                            print(f"  价格: {price:.2f} < 当前止损: {current_stop:.2f}")
+                            print(f"  止损计算: max(上边界={upper:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  买入价: {entry_price:.2f}, 卖出价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓多头
@@ -408,7 +460,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (exit_price - entry_price) - transaction_fees
                     
-                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -422,7 +473,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'upper_bound': upper,
-                        'vwap_value': vwap if use_vwap else np.nan
+                        'vwap_value': vwap if use_vwap else np.nan,
+                        'trailing_tp_activated': trailing_tp_activated,  # 🎯 动态止盈是否激活
+                        'max_profit_price': max_profit_price if not np.isnan(max_profit_price) else np.nan,  # 🎯 最高价
+                        'dynamic_tp_level': dynamic_take_profit_level if not np.isnan(dynamic_take_profit_level) else np.nan  # 🎯 动态止盈线
                     })
                     
                     # 🛡️ 检查日内止损
@@ -430,6 +484,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     
                     position = 0
                     trailing_stop = np.nan
+                    # 🎯 重置动态追踪止盈变量
+                    max_profit_price = np.nan
+                    trailing_tp_activated = False
+                    dynamic_take_profit_level = np.nan
                     
             elif position == -1:  # 空头仓位
                 # 计算当前时刻的止损水平
@@ -440,17 +498,57 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     current_stop = lower_bound
                     vwap_influenced = False  # 不使用VWAP时，VWAP不影响止损
                 
+                # 🎯 动态追踪止盈逻辑 - 空头
+                trailing_tp_exit = False
+                if enable_trailing_take_profit:
+                    # 更新最优价格（使用K线的最低价，空头时低价是有利的）
+                    if np.isnan(max_profit_price) or low < max_profit_price:
+                        max_profit_price = low
+                    
+                    # 计算当前浮盈百分比（空头：入场价 - 最低价）
+                    current_profit_pct = (entry_price - max_profit_price) / entry_price
+                    
+                    # 检查是否激活追踪止盈
+                    if not trailing_tp_activated and current_profit_pct >= trailing_tp_activation_pct:
+                        trailing_tp_activated = True
+                        if print_details:
+                            print(f"🎯 追踪止盈激活！时间: {current_time}, 浮盈: {current_profit_pct*100:.2f}%, 最低价: {max_profit_price:.2f}")
+                    
+                    # 如果追踪止盈已激活，计算动态止盈线
+                    if trailing_tp_activated:
+                        # 动态止盈线 = 入场价 - (最大浮盈 * 保护比例)
+                        # 空头的止盈线在入场价下方，当价格上涨超过止盈线时触发
+                        protected_profit = (entry_price - max_profit_price) * trailing_tp_callback_pct
+                        dynamic_take_profit_level = entry_price - protected_profit
+                        
+                        # 检查是否触发动态止盈（使用当前收盘价）
+                        if price >= dynamic_take_profit_level:
+                            trailing_tp_exit = True
+                            if print_details:
+                                print(f"🎯 动态止盈触发！时间: {current_time}, 价格: {price:.2f} >= 止盈线: {dynamic_take_profit_level:.2f}")
+                                print(f"   最低价: {max_profit_price:.2f}, 保护利润: {protected_profit:.2f}")
+                
                 # 如果价格涨破当前止损，则平仓
-                exit_condition = price > current_stop
+                exit_condition = price > current_stop or trailing_tp_exit
                 
                 # 检查是否出场
                 if exit_condition and current_time in allowed_times:
+                    # 确定出场原因
+                    if trailing_tp_exit:
+                        exit_reason = 'Trailing Take Profit'
+                    else:
+                        exit_reason = 'Stop Loss'
+                    
                     # 打印出场详情（如果需要）
                     if print_details:
                         date_str = row['DateTime'].strftime('%Y-%m-%d')
-                        print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场:")
-                        print(f"  价格: {price:.2f} > 当前止损: {current_stop:.2f}")
-                        print(f"  止损计算: min(下边界={lower_bound:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
+                        print(f"\n交易点位详情 [{date_str} {current_time}] - 空头出场 ({exit_reason}):")
+                        if trailing_tp_exit:
+                            print(f"  价格: {price:.2f} >= 动态止盈线: {dynamic_take_profit_level:.2f}")
+                            print(f"  最低价: {max_profit_price:.2f}, 保护比例: {trailing_tp_callback_pct*100:.0f}%")
+                        else:
+                            print(f"  价格: {price:.2f} > 当前止损: {current_stop:.2f}")
+                            print(f"  止损计算: min(下边界={lower_bound:.2f}, VWAP={vwap:.2f}) = {current_stop:.2f}")
                         print(f"  卖出价: {entry_price:.2f}, 买入价: {price:.2f}, 股数: {position_size}")
                     
                     # 平仓空头
@@ -463,7 +561,6 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         transaction_fees = 0  # 关闭手续费
                     pnl = position_size * (entry_price - exit_price) - transaction_fees
                     
-                    exit_reason = 'Stop Loss'
                     trades.append({
                         'entry_time': trade_entry_time,
                         'exit_time': exit_time,
@@ -477,7 +574,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                         'vwap_influenced': vwap_influenced,  # 新增字段
                         'stop_level': current_stop,
                         'lower_bound': lower_bound,
-                        'vwap_value': vwap if use_vwap else np.nan
+                        'vwap_value': vwap if use_vwap else np.nan,
+                        'trailing_tp_activated': trailing_tp_activated,  # 🎯 动态止盈是否激活
+                        'max_profit_price': max_profit_price if not np.isnan(max_profit_price) else np.nan,  # 🎯 最低价
+                        'dynamic_tp_level': dynamic_take_profit_level if not np.isnan(dynamic_take_profit_level) else np.nan  # 🎯 动态止盈线
                     })
                     
                     # 🛡️ 检查日内止损
@@ -485,6 +585,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
                     
                     position = 0
                     trailing_stop = np.nan
+                    # 🎯 重置动态追踪止盈变量
+                    max_profit_price = np.nan
+                    trailing_tp_activated = False
+                    dynamic_take_profit_level = np.nan
     
     # 获取交易结束时间字符串，格式为HH:MM
     end_time_str = f"{trading_end_time[0]:02d}:{trading_end_time[1]:02d}"
@@ -532,6 +636,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             position = 0
             trailing_stop = np.nan
+            # 🎯 重置动态追踪止盈变量
+            max_profit_price = np.nan
+            trailing_tp_activated = False
+            dynamic_take_profit_level = np.nan
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -567,6 +675,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             position = 0
             trailing_stop = np.nan
+            # 🎯 重置动态追踪止盈变量
+            max_profit_price = np.nan
+            trailing_tp_activated = False
+            dynamic_take_profit_level = np.nan
     
     # 如果仍有未平仓位且没有结束时间数据点，则在一天结束时平仓
     elif position != 0:
@@ -607,6 +719,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             # 🛡️ 检查日内止损
             check_intraday_stop_loss(pnl, last_time)
+            # 🎯 重置动态追踪止盈变量
+            max_profit_price = np.nan
+            trailing_tp_activated = False
+            dynamic_take_profit_level = np.nan
                 
         else:  # 空头仓位
             # 打印出场详情（如果需要）
@@ -641,6 +757,10 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             
             # 🛡️ 检查日内止损
             check_intraday_stop_loss(pnl, last_time)
+            # 🎯 重置动态追踪止盈变量
+            max_profit_price = np.nan
+            trailing_tp_activated = False
+            dynamic_take_profit_level = np.nan
     
     # 计算日内最大回撤百分比（基于当日起始资金）
     intraday_max_drawdown_pct = intraday_max_drawdown / day_start_capital if day_start_capital > 0 else 0
@@ -773,7 +893,6 @@ def run_backtest(config):
     # 计算每分钟相对开盘的回报（使用day_open保持一致性）
     price_df['ret'] = price_df['Close'] / price_df['day_open'] - 1 
 
-    # 计算噪声区域边界
     # 计算噪声区域边界
     # 将时间点转为列
     pivot = price_df.pivot(index='Date', columns='Time', values='ret').abs()
@@ -1555,6 +1674,86 @@ def analyze_vwap_impact(trades_df):
         'vwap_influence_ratio': vwap_influence_ratio
     }
 
+def analyze_trailing_take_profit_impact(trades_df, config):
+    """
+    🎯 分析动态追踪止盈对交易的影响
+    """
+    if len(trades_df) == 0:
+        print("\n=== 动态追踪止盈分析 ===")
+        print("没有交易数据可供分析")
+        return None
+    
+    enable_trailing_tp = config.get('enable_trailing_take_profit', False)
+    if not enable_trailing_tp:
+        print("\n=== 动态追踪止盈分析 ===")
+        print("动态追踪止盈未启用")
+        return None
+    
+    # 统计追踪止盈触发的交易
+    trailing_tp_trades = trades_df[trades_df['exit_reason'] == 'Trailing Take Profit']
+    stop_loss_trades = trades_df[trades_df['exit_reason'] == 'Stop Loss']
+    intraday_close_trades = trades_df[trades_df['exit_reason'] == 'Intraday Close']
+    market_close_trades = trades_df[trades_df['exit_reason'] == 'Market Close']
+    
+    total_trades = len(trades_df)
+    trailing_tp_count = len(trailing_tp_trades)
+    trailing_tp_ratio = trailing_tp_count / total_trades * 100 if total_trades > 0 else 0
+    
+    print("\n=== 🎯 动态追踪止盈分析 ===")
+    print(f"配置参数:")
+    print(f"  激活阈值: {config.get('trailing_tp_activation_pct', 0.005)*100:.2f}%")
+    print(f"  保护比例: {config.get('trailing_tp_callback_pct', 0.5)*100:.0f}%")
+    print(f"\n出场方式统计:")
+    print(f"  总交易数: {total_trades}")
+    print(f"  追踪止盈: {trailing_tp_count} ({trailing_tp_ratio:.1f}%)")
+    print(f"  止损平仓: {len(stop_loss_trades)} ({len(stop_loss_trades)/total_trades*100:.1f}%)")
+    print(f"  日内收盘: {len(intraday_close_trades)} ({len(intraday_close_trades)/total_trades*100:.1f}%)")
+    print(f"  市场收盘: {len(market_close_trades)} ({len(market_close_trades)/total_trades*100:.1f}%)")
+    
+    # 计算各类出场的盈亏
+    if trailing_tp_count > 0:
+        trailing_tp_pnl = trailing_tp_trades['pnl'].sum()
+        trailing_tp_avg_pnl = trailing_tp_trades['pnl'].mean()
+        trailing_tp_win_rate = (trailing_tp_trades['pnl'] > 0).mean() * 100
+        print(f"\n追踪止盈交易详情:")
+        print(f"  总盈亏: ${trailing_tp_pnl:.2f}")
+        print(f"  平均盈亏: ${trailing_tp_avg_pnl:.2f}")
+        print(f"  胜率: {trailing_tp_win_rate:.1f}%")
+    
+    if len(stop_loss_trades) > 0:
+        stop_loss_pnl = stop_loss_trades['pnl'].sum()
+        stop_loss_avg_pnl = stop_loss_trades['pnl'].mean()
+        stop_loss_win_rate = (stop_loss_trades['pnl'] > 0).mean() * 100
+        print(f"\n止损平仓交易详情:")
+        print(f"  总盈亏: ${stop_loss_pnl:.2f}")
+        print(f"  平均盈亏: ${stop_loss_avg_pnl:.2f}")
+        print(f"  胜率: {stop_loss_win_rate:.1f}%")
+    
+    # 分多头和空头分析
+    long_trailing_tp = trailing_tp_trades[trailing_tp_trades['side'] == 'Long']
+    short_trailing_tp = trailing_tp_trades[trailing_tp_trades['side'] == 'Short']
+    
+    if len(long_trailing_tp) > 0:
+        print(f"\n多头追踪止盈:")
+        print(f"  次数: {len(long_trailing_tp)}")
+        print(f"  总盈亏: ${long_trailing_tp['pnl'].sum():.2f}")
+        print(f"  平均盈亏: ${long_trailing_tp['pnl'].mean():.2f}")
+    
+    if len(short_trailing_tp) > 0:
+        print(f"\n空头追踪止盈:")
+        print(f"  次数: {len(short_trailing_tp)}")
+        print(f"  总盈亏: ${short_trailing_tp['pnl'].sum():.2f}")
+        print(f"  平均盈亏: ${short_trailing_tp['pnl'].mean():.2f}")
+    
+    return {
+        'total_trades': total_trades,
+        'trailing_tp_count': trailing_tp_count,
+        'trailing_tp_ratio': trailing_tp_ratio,
+        'trailing_tp_pnl': trailing_tp_trades['pnl'].sum() if trailing_tp_count > 0 else 0,
+        'stop_loss_count': len(stop_loss_trades),
+        'stop_loss_pnl': stop_loss_trades['pnl'].sum() if len(stop_loss_trades) > 0 else 0
+    }
+
 def plot_specific_days(config, dates_to_plot):
     """
     为指定的日期生成交易图表
@@ -1579,35 +1778,39 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path':'tqqq_market_hours_with_indicators.csv',
+        # 'data_path': 'spy_longport.csv',  # 使用包含Turnover字段的longport数据
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
-        # 'data_path': 'tqqq_longport.csv',
         'ticker': 'QQQ',
-        'initial_capital': 100000,
+        'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2025, 12, 2),
-        'end_date': date(2026, 2, 13),
-        # 'start_date': date(2018, 1, 1),
-        # 'end_date': date(2025, 5, 1),
+        'start_date': date(2026, 1, 1),
+        'end_date': date(2026, 3, 20),
+        # 'start_date': date(2024, 2, 1),
+        # 'end_date': date(2026, 2, 20),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
-        # 'transaction_fee_per_share': 0.008166,
-        'transaction_fee_per_share': 0,
-        'slippage_per_share': 0.005,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
+        'transaction_fee_per_share': 0.008166,
+        # 'transaction_fee_per_share': 0,
+        'slippage_per_share': 0.01,  # 滑点设置，每股滑点金额，买入时多付，卖出时少收
                                      # 例如：0.02表示买入每股多付2美分，卖出每股少收2美分
         'trading_start_time': (9, 40),
         'trading_end_time': (15, 40),
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': True,
+        'print_daily_trades': False,
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':3,  # 资金杠杆倍数，默认为1
-        'use_vwap': True,  # VWAP开关，True为使用VWAP，False为不使用
+        'leverage':2.8,  # 资金杠杆倍数，与simulate一致
+        'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': False,  # 是否启用日内止损
-        'intraday_stop_loss_pct': 0.04,  # 日内止损阈值（4%）
+        'intraday_stop_loss_pct': 0.045,  # 日内止损阈值
+        
+        # 🎯 动态追踪止盈配置
+        'enable_trailing_take_profit': True,  # 是否启用动态追踪止盈
+        'trailing_tp_activation_pct': 0.01,  # 激活追踪止盈的最低浮盈百分比（1%）
+        'trailing_tp_callback_pct': 0.7,  # 保护的利润比例（70%），即从最大浮盈回撤30%时触发止盈
     }
     
     # 运行回测

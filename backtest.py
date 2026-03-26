@@ -56,6 +56,123 @@ def calculate_vwap_with_turnover(day_df, current_index):
     
     return vwap
 
+
+def compute_daily_trend_features(minute_df):
+    """
+    从分钟数据聚合日收盘，计算多种趋势相关标量（仅内存使用，不写回 CSV）。
+
+    列说明：
+    - weekly_trend_strength: |mom5|/rvol5（与旧版一致）
+    - trend_er5: Kaufman 式 5 日效率比，0~1，越高越像单边趋势
+    - trend_linreg5_r2: 最近 5 个日收盘对时间的线性回归 R²，越高越像直线趋势
+    - trend_dist_ma20: 前收盘相对 MA20 的偏离 (close_prev/ma20-1)
+    """
+    d = minute_df.groupby('Date', as_index=False)['Close'].last()
+    d = d.sort_values('Date').reset_index(drop=True)
+    c = d['Close']
+    d['close_prev'] = c.shift(1)
+    d['mom5'] = d['close_prev'] / c.shift(6) - 1
+    dr = c.pct_change()
+    d['rvol5'] = dr.rolling(5, min_periods=5).std().shift(1)
+    rvol = d['rvol5']
+    d['weekly_trend_strength'] = (
+        d['mom5'].abs() / rvol.replace(0, np.nan)
+    ).where(rvol.notna() & (rvol > 0))
+
+    abs_diff = c.diff().abs()
+    den = abs_diff.shift(1).rolling(5, min_periods=5).sum()
+    num = (c.shift(1) - c.shift(6)).abs()
+    d['trend_er5'] = (num / den.replace(0, np.nan)).where(den.notna() & (den > 0))
+
+    d['ma20'] = c.rolling(20, min_periods=20).mean().shift(1)
+    d['trend_dist_ma20'] = (
+        (d['close_prev'] / d['ma20'] - 1)
+        .where(d['ma20'].notna() & (d['ma20'] > 0))
+    )
+
+    arr = c.values
+    n = len(c)
+    r2 = np.full(n, np.nan)
+    x = np.arange(5, dtype=float)
+    for i in range(5, n):
+        y = arr[i - 5:i]
+        if np.any(np.isnan(y)):
+            continue
+        y_mean = y.mean()
+        x_mean = x.mean()
+        b = np.sum((x - x_mean) * (y - y_mean)) / (np.sum((x - x_mean) ** 2) + 1e-12)
+        a = y_mean - b * x_mean
+        yhat = a + b * x
+        ss_res = np.sum((y - yhat) ** 2)
+        ss_tot = np.sum((y - y_mean) ** 2)
+        r2[i] = 1 - ss_res / ss_tot if ss_tot > 1e-18 else 0.0
+    d['trend_linreg5_r2'] = r2
+
+    return d[['Date', 'weekly_trend_strength', 'trend_er5', 'trend_linreg5_r2', 'trend_dist_ma20']]
+
+
+def resolve_entry_trend_filter(config):
+    """解析开仓趋势门控：优先 entry_trend_filter，其次兼容 enable_weekly_trend_strength_entry。"""
+    f = config.get('entry_trend_filter')
+    if f is not None:
+        return f
+    if config.get('enable_weekly_trend_strength_entry'):
+        return {'metric': 'weekly_sn', 'min': config.get('min_weekly_trend_strength', 1.0)}
+    return None
+
+
+def _single_entry_trend_pass_series(df, filt):
+    """
+    单条门控规则 -> 布尔 Series。
+    metric: weekly_sn | er5 | linreg5_r2 | dist_ma20_abs
+    """
+    metric = filt['metric']
+    col = {
+        'weekly_sn': 'weekly_trend_strength',
+        'er5': 'trend_er5',
+        'linreg5_r2': 'trend_linreg5_r2',
+        'dist_ma20_abs': 'trend_dist_ma20',
+    }.get(metric, metric)
+    if col not in df.columns:
+        raise ValueError(f"缺少趋势列 {col}，请确认已 merge compute_daily_trend_features")
+
+    v = df[col]
+    if 'min' in filt:
+        ok = v >= filt['min']
+    elif 'max' in filt:
+        ok = v <= filt['max']
+    elif 'min_abs' in filt:
+        ok = v.abs() >= filt['min_abs']
+    else:
+        raise ValueError("entry_trend_filter 需要 min、max 或 min_abs 之一")
+
+    ok = ok | v.isna()
+    return ok
+
+
+def compute_entry_trend_pass_series(df, config):
+    """
+    根据 config['entry_trend_filter'] 生成与 df 等长的布尔 Series。
+    - 单 dict：一条规则
+    - list[dict]：多条规则同时满足（AND）
+    特征为 NaN 时不拦截（与历史行为一致）。
+    """
+    filt = resolve_entry_trend_filter(config)
+    if filt is None:
+        return pd.Series(True, index=df.index)
+    rules = filt if isinstance(filt, list) else [filt]
+    ok = pd.Series(True, index=df.index)
+    for r in rules:
+        ok = ok & _single_entry_trend_pass_series(df, r)
+    return ok
+
+
+def compute_weekly_trend_strength_by_date(minute_df):
+    """兼容旧名：仅返回 weekly_trend_strength。"""
+    d = compute_daily_trend_features(minute_df)
+    return d[['Date', 'weekly_trend_strength']]
+
+
 def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_start_capital=None):
     """
     模拟单日交易，使用噪声空间策略 + VWAP
@@ -87,7 +204,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
     enable_trailing_take_profit = config.get('enable_trailing_take_profit', False)  # 是否启用动态追踪止盈
     trailing_tp_activation_pct = config.get('trailing_tp_activation_pct', 0.005)  # 激活追踪止盈的最低浮盈百分比，默认0.5%
     trailing_tp_callback_pct = config.get('trailing_tp_callback_pct', 0.5)  # 保护的利润比例，默认保护50%的浮盈
-    
+
+    # 开仓趋势门控（可选）：由 run_backtest 写入 entry_trend_pass；无门控时为 True
     def apply_slippage(price, is_buy, is_entry):
         """
         应用滑点到交易价格 - 简化版本
@@ -310,6 +428,8 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             pass
         # 在允许时间内的入场信号（trading_end_time只能平仓不能开仓）
         elif position == 0 and current_time in allowed_times and current_time != end_time_str and positions_opened_today < max_positions_per_day:
+            etp = row.get('entry_trend_pass', True)
+            trend_ok = True if pd.isna(etp) else bool(etp)
             # 检查潜在多头入场
             if use_vwap:
                 # 使用VWAP条件
@@ -317,6 +437,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             else:
                 # 不使用VWAP条件
                 long_entry_condition = price > upper
+            long_entry_condition = long_entry_condition and trend_ok
                 
             if long_entry_condition:
                 # 打印边界计算详情（如果需要）
@@ -355,6 +476,7 @@ def simulate_day(day_df, prev_close, allowed_times, position_size, config, day_s
             else:
                 # 不使用VWAP条件
                 short_entry_condition = price < lower_bound
+            short_entry_condition = short_entry_condition and trend_ok
                 
             if short_entry_condition:
                 # 打印边界计算详情（如果需要）
@@ -816,6 +938,9 @@ def run_backtest(config):
     # 提取日期和时间组件
     price_df['Date'] = price_df['DateTime'].dt.date
     price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
+
+    # 用全样本日收盘计算日频趋势特征（不修改 CSV）；回测窗口截断后再按 Date 合并
+    trend_feat_df = compute_daily_trend_features(price_df)
     
     # 按日期范围过滤数据（如果指定）
     if start_date is not None:
@@ -823,6 +948,9 @@ def run_backtest(config):
     
     if end_date is not None:
         price_df = price_df[price_df['Date'] <= end_date]
+
+    price_df = pd.merge(price_df, trend_feat_df, on='Date', how='left')
+    price_df['entry_trend_pass'] = compute_entry_trend_pass_series(price_df, config)
     
     print(f"加载{ticker}数据: {data_path} ({start_date} ~ {end_date})")
     
@@ -1778,15 +1906,14 @@ if __name__ == "__main__":
     # 创建配置字典
     config = {
         # 'data_path': 'qqq_market_hours_with_indicators.csv',
-        # 'data_path': 'spy_longport.csv',  # 使用包含Turnover字段的longport数据
         'data_path': 'qqq_longport.csv',  # 使用包含Turnover字段的longport数据
         'ticker': 'QQQ',
         'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2026, 1, 1),
-        'end_date': date(2026, 3, 20),
-        # 'start_date': date(2024, 2, 1),
-        # 'end_date': date(2026, 2, 20),
+        'start_date': date(2025, 10, 1),
+        'end_date': date(2026, 3, 31),
+        # 'start_date': date(2020, 4, 1),
+        # 'end_date': date(2025, 4, 1),
         'check_interval_minutes': 15 ,
         'enable_transaction_fees': True,  # 是否启用手续费计算，False表示不计算手续费
         'transaction_fee_per_share': 0.008166,
@@ -1811,6 +1938,10 @@ if __name__ == "__main__":
         'enable_trailing_take_profit': True,  # 是否启用动态追踪止盈
         'trailing_tp_activation_pct': 0.01,  # 激活追踪止盈的最低浮盈百分比（1%）
         'trailing_tp_callback_pct': 0.7,  # 保护的利润比例（70%），即从最大浮盈回撤30%时触发止盈
+        # 开仓趋势门控：None=关闭。单 dict 或 [dict,...]（AND）。特征见 compute_daily_trend_features。
+        # 'entry_trend_filter': {'metric': 'er5', 'min': 0.1}
+        # 例：'entry_trend_filter': {'metric': 'weekly_sn', 'min': 0.65}
+        # 'entry_trend_filter': {'metric': 'linreg5_r2', 'min': 0.46},
     }
     
     # 运行回测
