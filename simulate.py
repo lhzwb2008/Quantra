@@ -27,6 +27,12 @@ K2 = 1 # 下边界sigma乘数
 # VWAP开关：False=不使用VWAP作为入场/止损条件，True=使用VWAP
 USE_VWAP = False
 
+# 开仓趋势门控（与 backtest entry_trend_filter metric=er5 对齐）
+ENABLE_ENTRY_TREND_FILTER = True
+ENTRY_TREND_ER5_MIN = 0.1
+# er5 需约 6+ 个交易日收盘；拉取分钟历史时多取自然日以覆盖节假日
+MINUTE_HISTORY_CALENDAR_DAYS_FOR_ER5 = 20
+
 # 🎯 动态追踪止盈配置
 ENABLE_TRAILING_TAKE_PROFIT = True   # 是否启用动态追踪止盈
 TRAILING_TP_ACTIVATION_PCT = 0.01    # 激活追踪止盈的最低浮盈百分比（1%）
@@ -141,7 +147,7 @@ def get_current_positions():
 def get_historical_data(symbol, days_back=None):
     # 简化天数计算逻辑
     if days_back is None:
-        days_back = LOOKBACK_DAYS + 5  # 简化为固定天数
+        days_back = history_days_back()
         
     # 直接使用1分钟K线
     sdk_period = Period.Min_1
@@ -304,6 +310,46 @@ def get_quote(symbol):
         "timestamp": quotes[0].timestamp.isoformat()
     }
     return quote_data
+
+
+def history_days_back():
+    """默认拉取分钟 K 的天数：噪声区与 er5 共用；启用 er5 时保证足够交易日。"""
+    b = LOOKBACK_DAYS + 5
+    if ENABLE_ENTRY_TREND_FILTER:
+        return max(b, MINUTE_HISTORY_CALENDAR_DAYS_FOR_ER5)
+    return b
+
+
+def compute_trend_er5_latest(minute_df):
+    """
+    与 backtest.compute_daily_trend_features 中 trend_er5 定义一致。
+    返回当前样本中「最近一个交易日」对应的 trend_er5；不足或无法计算时为 nan（与回测一致：nan 不拦截）。
+    """
+    if minute_df is None or minute_df.empty:
+        return np.nan
+    if 'Volume' in minute_df.columns:
+        d = minute_df.groupby('Date', as_index=False).agg(
+            Close=('Close', 'last'),
+            High=('High', 'max'),
+            Low=('Low', 'min'),
+            DayVol=('Volume', 'sum'),
+        )
+    else:
+        d = minute_df.groupby('Date', as_index=False).agg(
+            Close=('Close', 'last'),
+            High=('High', 'max'),
+            Low=('Low', 'min'),
+        )
+    d = d.sort_values('Date').reset_index(drop=True)
+    c = d['Close']
+    abs_diff = c.diff().abs()
+    den = abs_diff.shift(1).rolling(5, min_periods=5).sum()
+    num = (c.shift(1) - c.shift(6)).abs()
+    d['trend_er5'] = (num / den.replace(0, np.nan)).where(den.notna() & (den > 0))
+    last = d.iloc[-1]
+    v = last['trend_er5']
+    return float(v) if pd.notna(v) else np.nan
+
 
 def calculate_vwap(df):
     # 创建一个结果DataFrame的副本
@@ -1423,6 +1469,15 @@ def run_trading_strategy(symbol=SYMBOL, check_interval_minutes=CHECK_INTERVAL_MI
                 else:
                     if DEBUG_MODE:
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 不满足入场条件: 多头({long_price_above_upper} & {long_price_above_vwap}), 空头({short_price_below_lower} & {short_price_below_vwap})")
+            if signal != 0 and ENABLE_ENTRY_TREND_FILTER:
+                er5_val = compute_trend_er5_latest(df)
+                pass_trend = pd.isna(er5_val) or er5_val >= ENTRY_TREND_ER5_MIN
+                if not pass_trend:
+                    if DEBUG_MODE:
+                        print(
+                            f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 趋势门控: trend_er5={er5_val:.4f} < {ENTRY_TREND_ER5_MIN}，跳过开仓"
+                        )
+                    signal = 0
             if signal != 0:
                 # 保留交易信号日志，并添加VWAP和上下界信息
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 触发{'多' if signal == 1 else '空'}头入场信号!")
