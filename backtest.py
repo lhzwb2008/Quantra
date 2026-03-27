@@ -1910,7 +1910,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2025, 10, 1),
+        'start_date': date(2026, 1, 1),
         'end_date': date(2026, 3, 31),
         # 'start_date': date(2020, 4, 1),
         # 'end_date': date(2025, 4, 1),
