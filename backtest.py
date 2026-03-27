@@ -66,8 +66,24 @@ def compute_daily_trend_features(minute_df):
     - trend_er5: Kaufman 式 5 日效率比，0~1，越高越像单边趋势
     - trend_linreg5_r2: 最近 5 个日收盘对时间的线性回归 R²，越高越像直线趋势
     - trend_dist_ma20: 前收盘相对 MA20 的偏离 (close_prev/ma20-1)
+    - trend_range5: 前 5 个交易日日均 (High-Low)/Close，衡量日内波动相对价位
+    - trend_rsi5: 日收盘 RSI(5)，shift(1) 对齐「开盘前可知」
+    - trend_vol_ratio: 前一日全日成交量 / 前 20 日日均量
     """
-    d = minute_df.groupby('Date', as_index=False)['Close'].last()
+    if 'Volume' in minute_df.columns:
+        d = minute_df.groupby('Date', as_index=False).agg(
+            Close=('Close', 'last'),
+            High=('High', 'max'),
+            Low=('Low', 'min'),
+            DayVol=('Volume', 'sum'),
+        )
+    else:
+        d = minute_df.groupby('Date', as_index=False).agg(
+            Close=('Close', 'last'),
+            High=('High', 'max'),
+            Low=('Low', 'min'),
+        )
+        d['DayVol'] = np.nan
     d = d.sort_values('Date').reset_index(drop=True)
     c = d['Close']
     d['close_prev'] = c.shift(1)
@@ -108,7 +124,28 @@ def compute_daily_trend_features(minute_df):
         r2[i] = 1 - ss_res / ss_tot if ss_tot > 1e-18 else 0.0
     d['trend_linreg5_r2'] = r2
 
-    return d[['Date', 'weekly_trend_strength', 'trend_er5', 'trend_linreg5_r2', 'trend_dist_ma20']]
+    rng = (d['High'] - d['Low']) / c.replace(0, np.nan)
+    d['trend_range5'] = rng.rolling(5, min_periods=5).mean().shift(1)
+
+    delta = c.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    ag = gain.rolling(5, min_periods=5).mean()
+    al = loss.rolling(5, min_periods=5).mean()
+    rs_rsi = ag / al.replace(0, np.nan)
+    d['trend_rsi5'] = (100 - (100 / (1 + rs_rsi))).shift(1)
+
+    dv = d['DayVol']
+    if dv.notna().any():
+        vol_ma20 = dv.rolling(20, min_periods=20).mean().shift(1)
+        d['trend_vol_ratio'] = (dv.shift(1) / vol_ma20.replace(0, np.nan)).where(vol_ma20.notna() & (vol_ma20 > 0))
+    else:
+        d['trend_vol_ratio'] = np.nan
+
+    return d[[
+        'Date', 'weekly_trend_strength', 'trend_er5', 'trend_linreg5_r2', 'trend_dist_ma20',
+        'trend_range5', 'trend_rsi5', 'trend_vol_ratio',
+    ]]
 
 
 def resolve_entry_trend_filter(config):
@@ -132,6 +169,9 @@ def _single_entry_trend_pass_series(df, filt):
         'er5': 'trend_er5',
         'linreg5_r2': 'trend_linreg5_r2',
         'dist_ma20_abs': 'trend_dist_ma20',
+        'rsi5': 'trend_rsi5',
+        'vol_ratio': 'trend_vol_ratio',
+        'range5': 'trend_range5',
     }.get(metric, metric)
     if col not in df.columns:
         raise ValueError(f"缺少趋势列 {col}，请确认已 merge compute_daily_trend_features")
@@ -1910,7 +1950,7 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 25000,
         'lookback_days':1,
-        'start_date': date(2026, 1, 1),
+        'start_date': date(2024, 4, 1),
         'end_date': date(2026, 3, 31),
         # 'start_date': date(2020, 4, 1),
         # 'end_date': date(2025, 4, 1),
