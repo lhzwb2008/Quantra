@@ -20,11 +20,14 @@ import pandas as pd
 import numpy as np
 from datetime import date, timedelta
 from math import floor
-from backtest import simulate_day
+from backtest import simulate_day, compute_daily_trend_features, compute_entry_trend_pass_series
 
 
 def prepare_backtest_data(config):
-    """预处理回测数据，返回处理好的 price_df 和 allowed_times。"""
+    """预处理回测数据，返回处理好的 price_df 和 allowed_times。
+
+    与 run_backtest 一致：在全样本上计算日频趋势特征后再按日期截断，并写入 entry_trend_pass。
+    """
     data_path = config['data_path']
     lookback_days = config.get('lookback_days', 90)
     start_date = config.get('start_date')
@@ -40,10 +43,15 @@ def prepare_backtest_data(config):
     price_df['Date'] = price_df['DateTime'].dt.date
     price_df['Time'] = price_df['DateTime'].dt.strftime('%H:%M')
 
+    trend_feat_df = compute_daily_trend_features(price_df)
+
     if start_date is not None:
         price_df = price_df[price_df['Date'] >= start_date]
     if end_date is not None:
         price_df = price_df[price_df['Date'] <= end_date]
+
+    price_df = pd.merge(price_df, trend_feat_df, on='Date', how='left')
+    price_df['entry_trend_pass'] = compute_entry_trend_pass_series(price_df, config)
 
     if 'DayOpen' not in price_df.columns or 'DayClose' not in price_df.columns:
         opening_prices = price_df.groupby('Date').first().reset_index()[['Date', 'Open']].rename(columns={'Open': 'DayOpen'})
