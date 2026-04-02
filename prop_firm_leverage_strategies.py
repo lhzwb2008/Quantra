@@ -77,9 +77,20 @@ def run_dual_leverage_simulation(
     skipped = 0
 
     n_idx = len(sample_indices)
+    t_strat = time.perf_counter()
+    prog_every = 10 if n_idx >= 30 else max(1, n_idx // 5)
+    print(f"    [{strategy_name}] 开始 {n_idx} 个起点（约每 {prog_every} 个打印一次进度+耗时）", flush=True)
+
     for i, start_idx in enumerate(sample_indices):
-        if n_idx >= 20 and (i + 1) % max(1, n_idx // 4) == 0:
-            print(f"    [{strategy_name}] 进度 {i + 1}/{n_idx}", flush=True)
+        if (i + 1) % prog_every == 0 or (i + 1) == n_idx:
+            elapsed = time.perf_counter() - t_strat
+            per = elapsed / (i + 1)
+            eta = per * (n_idx - i - 1)
+            print(
+                f"    [{strategy_name}] {i + 1}/{n_idx} | 已用 {elapsed / 60:.1f} 分 | "
+                f"约剩 {eta / 60:.1f} 分",
+                flush=True,
+            )
 
         cfg_run = cfg.copy()
         cfg_run['leverage'] = leverage_phase1
@@ -145,7 +156,9 @@ def run_dual_leverage_simulation(
 
     df = pd.DataFrame(records)
     n = len(df)
+    done_min = (time.perf_counter() - t_strat) / 60
     if n == 0:
+        print(f"    [{strategy_name}] 无有效样本, 耗时 {done_min:.1f} 分", flush=True)
         return {
             'strategy_name': strategy_name,
             'leverage_p1': leverage_phase1,
@@ -153,6 +166,11 @@ def run_dual_leverage_simulation(
             'valid_samples': 0,
             'skipped': skipped,
         }
+
+    print(
+        f"    [{strategy_name}] 本策略结束: 有效 {n}, 丢弃 {skipped}, 耗时 {done_min:.1f} 分",
+        flush=True,
+    )
 
     both_df = df[df['both_passed']]
     p1_pass = df['p1_passed'].sum()
@@ -184,8 +202,23 @@ def main():
         '--samples', type=int, default=100,
         help='均匀采样的考试起点数量（越大越慢，统计越稳）',
     )
+    ap.add_argument(
+        '--strategies',
+        default='A,B,C',
+        help='只跑指定策略，逗号分隔: A=P3/P2, B=P2/P1, C=P2/P1.5。例: --strategies C 仅补跑策略 C',
+    )
     args = ap.parse_args()
     num_samples = max(1, args.samples)
+
+    want = {x.strip().upper() for x in args.strategies.split(',') if x.strip()}
+    all_defs = [
+        ('A', ('策略A P3/P2', 3, 2)),
+        ('B', ('策略B P2/P1', 2, 1)),
+        ('C', ('策略C P2/P1.5', 2, 1.5)),
+    ]
+    strategies = [t for key, t in all_defs if key in want]
+    if not strategies:
+        raise SystemExit('无匹配策略，请使用 A / B / C 的组合，如 --strategies C')
 
     t0 = time.perf_counter()
     print('=' * 72, flush=True)
@@ -197,6 +230,7 @@ def main():
     print(f"趋势门控: {c.get('entry_trend_filter')}", flush=True)
     print(f"规则: P1 +10% / P2 +5%；总回撤≤10%；日内回撤≤5%", flush=True)
     print(f"采样起点数: {num_samples}（命令行: python prop_firm_leverage_strategies.py --samples N）", flush=True)
+    print(f"本次运行策略: {', '.join(sorted(want))}", flush=True)
     print()
     print('预处理行情与趋势特征（仅一次）...', flush=True)
     prepared = prepare_backtest_data(c)
@@ -204,12 +238,6 @@ def main():
     step = max(1, n_days // num_samples)
     print(f'可用交易日: {n_days} | 起点步长≈每 {step} 个交易日取 1 个起点', flush=True)
     print()
-
-    strategies = [
-        ('策略A P3/P2', 3, 2),
-        ('策略B P2/P1', 2, 1),
-        ('策略C P2/P1.5', 2, 1.5),
-    ]
 
     rows = []
     for name, l1, l2 in strategies:

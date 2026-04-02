@@ -9,11 +9,13 @@ FTMO 规则:
 - 第二轮: 初始 $100,000, 目标盈利 5%, 其他限制相同
 - 两轮都通过才算考试通过
 
-关键定义:
-- 日内回撤 (Daily Loss Limit): 当天任意时刻浮动权益不能比当天开始余额低 5%
-  即: (day_start_equity - lowest_equity_of_day) / day_start_equity <= 5%
-- 最大总回撤 (Max Loss): 账户权益任意时刻不能低于初始余额的 90%
-  即: equity 不能跌破 $90,000 (硬底线)
+关键定义（与 backtest.run_backtest 中 simulate_day + 精确回撤一致，任意时刻越线即淘汰）:
+- 日内 — FTMO 口径: (day_start_equity - lowest_equity_of_day) / day_start_equity <= 5%
+- 日内 — backtest 打印的「单日真实最大回撤」: simulate_day 返回的 intraday_mdd_pct，
+  即日内相对当日起始资金的峰谷回撤（peak-to-trough / day_start），可与上条同时检查
+- 总回撤 — 相对初始 10% 硬底: 任意时刻 equity < 90% * initial 即违规
+- 总回撤 — 与 backtest metrics['mdd'] 一致的精确口径: 历史权益峰值 account_peak（跨日滚动，
+  由每日 intraday_high 更新）相对当日 intraday_low 的回撤比例，若 >10% 即违规（盈利后回撤更严）
 """
 
 import pandas as pd
@@ -132,6 +134,7 @@ def simulate_exam_phase(price_df, allowed_times, filtered_dates, config,
                         leverage):
     """
     模拟一轮 FTMO 考试，无时间限制。
+    回撤判定与 backtest.run_backtest 中 simulate_day + 精确峰值回撤一致（见模块顶部说明）。
 
     返回 dict:
         status: 'passed' | 'failed' | 'insufficient_data'
@@ -141,6 +144,9 @@ def simulate_exam_phase(price_df, allowed_times, filtered_dates, config,
     capital = initial_capital
     equity_floor = initial_capital * (1 - max_total_drawdown_pct)
     target_capital = initial_capital * (1 + profit_target_pct)
+
+    # 与 run_backtest 中 capital_peak 一致：跨考试日的权益历史高点（用于相对峰值回撤）
+    account_peak = float(initial_capital)
 
     max_dd_pct_actual = 0
     max_daily_dd_pct_actual = 0
@@ -178,25 +184,36 @@ def simulate_exam_phase(price_df, allowed_times, filtered_dates, config,
         exam_config['print_trade_details'] = False
         exam_config['print_daily_trades'] = False
 
-        trades, _, intraday_low, intraday_high = simulate_day(
+        trades, intraday_mdd_pct, intraday_low, intraday_high = simulate_day(
             day_data, prev_close_val, allowed_times, position_size, exam_config, capital
         )
 
+        # 与 run_backtest 一致：先按日内高点抬升历史峰值，再在加当日盈亏前算「相对峰值」回撤
+        if intraday_high > account_peak:
+            account_peak = float(intraday_high)
+
+        trailing_dd_pct = (
+            (account_peak - intraday_low) / account_peak if account_peak > 0 else 0.0
+        )
+        # FTMO 口径：相对当日开始余额
+        daily_dd_from_day_start = max(0.0, (day_start_equity - intraday_low) / day_start_equity)
+
         day_pnl = sum(t['pnl'] for t in trades)
-        capital += day_pnl
+        capital_eod = capital + day_pnl
 
-        # 日内回撤: (当天开始余额 - 当天最低权益) / 当天开始余额
-        daily_dd_pct = max(0, (day_start_equity - intraday_low) / day_start_equity)
-        max_daily_dd_pct_actual = max(max_daily_dd_pct_actual, daily_dd_pct)
-
-        # 总回撤: 任意时刻权益不能低于硬底线
-        lowest_equity = min(capital, intraday_low)
-        total_dd_pct = max(0, (initial_capital - lowest_equity) / initial_capital)
-        max_dd_pct_actual = max(max_dd_pct_actual, total_dd_pct)
+        # 统计：日内取 FTMO 与 backtest 两种口径的较大者；总回撤取静态(相对初始)与相对峰值的较大者
+        max_daily_dd_pct_actual = max(
+            max_daily_dd_pct_actual,
+            daily_dd_from_day_start,
+            float(intraday_mdd_pct),
+        )
+        lowest_equity_day = min(intraday_low, capital_eod)
+        static_total_dd_pct = max(0.0, (initial_capital - lowest_equity_day) / initial_capital)
+        max_dd_pct_actual = max(max_dd_pct_actual, static_total_dd_pct, trailing_dd_pct)
 
         base = {
             'days_used': days_used,
-            'final_capital': capital,
+            'final_capital': capital_eod,
             'max_dd_pct': max_dd_pct_actual,
             'max_daily_dd_pct': max_daily_dd_pct_actual,
             'start_date': start_date_val,
@@ -204,13 +221,38 @@ def simulate_exam_phase(price_df, allowed_times, filtered_dates, config,
             'end_idx': day_idx + 1,
         }
 
-        if daily_dd_pct >= max_daily_drawdown_pct:
+        # 1) 日内 — FTMO：相对当日开始
+        if daily_dd_from_day_start >= max_daily_drawdown_pct:
             return {**base, 'status': 'failed',
-                    'fail_reason': f'日内回撤超限 {daily_dd_pct*100:.2f}% (日期:{trade_date})'}
+                    'fail_reason': (
+                        f'日内回撤(相对当日起始)超限 {daily_dd_from_day_start*100:.2f}% '
+                        f'(日期:{trade_date})'
+                    )}
 
-        if lowest_equity <= equity_floor:
+        # 2) 日内 — 与 backtest「单日真实最大回撤」同一算法（峰谷/当日起始）
+        if intraday_mdd_pct >= max_daily_drawdown_pct:
             return {**base, 'status': 'failed',
-                    'fail_reason': f'总回撤超限 最低${lowest_equity:,.0f} (日期:{trade_date})'}
+                    'fail_reason': (
+                        f'日内回撤(峰谷/当日起始,同backtest)超限 {intraday_mdd_pct*100:.2f}% '
+                        f'(日期:{trade_date})'
+                    )}
+
+        # 3) 总回撤 — 相对历史峰值（与 backtest precise 最大回撤同一构造）
+        if trailing_dd_pct >= max_total_drawdown_pct:
+            return {**base, 'status': 'failed',
+                    'fail_reason': (
+                        f'总回撤(相对权益峰值)超限 {trailing_dd_pct*100:.2f}% '
+                        f'峰值${account_peak:,.0f} (日期:{trade_date})'
+                    )}
+
+        # 4) 总回撤 — 相对初始硬底（FTMO 10% max loss）
+        if lowest_equity_day <= equity_floor:
+            return {**base, 'status': 'failed',
+                    'fail_reason': (
+                        f'总回撤(相对初始)超限 最低${lowest_equity_day:,.0f} (日期:{trade_date})'
+                    )}
+
+        capital = capital_eod
 
         if capital >= target_capital:
             return {**base, 'status': 'passed', 'fail_reason': None}
