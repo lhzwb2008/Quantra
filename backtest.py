@@ -1173,7 +1173,8 @@ def run_backtest(config):
     precise_max_drawdown = 0  # 精确最大回撤金额
     precise_max_drawdown_pct = 0  # 精确最大回撤百分比
     precise_mdd_date = None  # 精确最大回撤发生日期
-    precise_mdd_peak_date = None  # 峰值日期
+    current_peak_date = None  # 当前历史资金峰值日期
+    precise_mdd_peak_date = None  # 最大回撤对应的峰值日期
     
     # 如果指定了随机生成图表的数量，随机选择交易日
     days_with_trades = []
@@ -1305,10 +1306,13 @@ def run_backtest(config):
             max_intraday_mdd_date = trade_date
         
         # 📊 精确最大回撤计算（考虑日内波动）
+        if current_peak_date is None:
+            current_peak_date = trade_date
+
         # 更新资金峰值（使用日内最高点）
         if intraday_high > capital_peak:
             capital_peak = intraday_high
-            precise_mdd_peak_date = trade_date
+            current_peak_date = trade_date
         
         # 计算当前回撤（使用日内最低点与历史峰值的差距）
         current_precise_drawdown = capital_peak - intraday_low
@@ -1318,6 +1322,7 @@ def run_backtest(config):
             precise_max_drawdown = current_precise_drawdown
             precise_max_drawdown_pct = current_precise_drawdown_pct
             precise_mdd_date = trade_date
+            precise_mdd_peak_date = current_peak_date
         
         # 打印每天的交易信息
         if trades and print_daily_trades:
@@ -1957,8 +1962,8 @@ if __name__ == "__main__":
         'ticker': 'QQQ',
         'initial_capital': 100000,
         'lookback_days':1,
-        'start_date': date(2024, 4, 1),
-        'end_date': date(2026, 3, 31),
+        'start_date': date(2026, 1, 1),
+        'end_date': date(2026, 4, 30),
         # 'start_date': date(2020, 4, 1),
         # 'end_date': date(2025, 4, 1),
         'check_interval_minutes': 15 ,
@@ -1972,11 +1977,11 @@ if __name__ == "__main__":
         'max_positions_per_day': 10,
         # 'random_plots': 3,
         # 'plots_dir': 'trading_plots',
-        'print_daily_trades': False,
+        'print_daily_trades': True,
         'print_trade_details': False,
         'K1': 1,  # 上边界sigma乘数
         'K2': 1,  # 下边界sigma乘数
-        'leverage':1.5,  # 资金杠杆倍数，与simulate一致
+        'leverage':2,  # 资金杠杆倍数，与simulate一致
         'use_vwap': False,  # VWAP开关，True为使用VWAP，False为不使用
         'enable_intraday_stop_loss': True,  # 是否启用日内止损（与 simulate 的 MAX_DAILY_LOSS_AMOUNT>0 对应）
         # 'max_daily_loss_amount': 4500,  # 可选：与 simulate_ftmo/the5ers 一致；不配则用 intraday_stop_loss_pct * 当日起始资金
